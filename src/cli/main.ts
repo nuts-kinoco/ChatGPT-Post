@@ -14,6 +14,7 @@ import { computeUsage, formatUsage, loadLimits, loadRecords } from "../diagnosti
 import { RunController } from "../state/controller.js";
 import { buildPorts } from "./adapters.js";
 import { type BridgeConfig, loadConfig } from "./config.js";
+import { runWorker } from "./worker.js";
 
 const USAGE = `chatgpt-bridge <command> [options]
 
@@ -22,7 +23,12 @@ commands:
   doctor                     環境・プロファイル・ロック・ログイン状態を診断する
   run --request <path> [--json]
                              request.json を 1 件処理する。--json は result.json の内容を標準出力に 1 行で出す
-  usage [--json]             ブリッジ経由の送信数を窓ごとに集計し、runtime/limits.json の上限と比べる
+  usage [--json] [--queue <dir>]
+                             ブリッジ経由の送信数を窓ごとに集計し、runtime/limits.json の上限と比べる
+                             （--queue でキューの done / failed / blocked も数える）
+  worker --queue <dir> [--once | --drain] [--poll-ms <n>]
+                             <dir>/pending/<requestId>/ を 1 件ずつ run と同じ経路で処理し、
+                             done / failed / blocked へ移す。exit 3 が出たらキュー全体を停止する
   bundle --root <dir> --out <file> [--include <glob>]... [--exclude <glob>]...
          [--max-bytes <n>] [--diff <gitref>]
                              リポジトリの一部を 1 つの Markdown（ツリー + fence 付き本文 [+ git diff]）に
@@ -222,8 +228,52 @@ async function cmdBundle(v: {
   return 0;
 }
 
-async function cmdUsage(cfg: BridgeConfig, json: boolean): Promise<number> {
+async function cmdWorker(
+  cfg: BridgeConfig,
+  verifiedOnly: boolean,
+  v: { queue?: string | undefined; once: boolean; drain: boolean; pollMs?: string | undefined },
+): Promise<number> {
+  if (!v.queue) {
+    process.stderr.write("worker requires --queue <dir>" + "\n");
+    return EXIT_CODES.invalidInput;
+  }
+  const pollMs = Number(v.pollMs ?? "5000");
+  if (!Number.isFinite(pollMs) || pollMs < 500) {
+    process.stderr.write("--poll-ms must be >= 500" + "\n");
+    return EXIT_CODES.invalidInput;
+  }
+  let stop = false;
+  const onSignal = () => {
+    stop = true;
+    process.stdout.write("worker: stop requested; finishing the current item" + "\n");
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  const r = await runWorker(
+    {
+      queueDir: resolve(v.queue),
+      once: v.once,
+      drain: v.drain,
+      pollMs,
+      maxBusyRetries: 3,
+    },
+    (requestPath) => cmdRun(cfg, requestPath, verifiedOnly, true),
+    (m) => process.stderr.write(`${m}\n`),
+    (ms) => new Promise((res) => setTimeout(res, ms)),
+    () => stop,
+  );
+  process.stdout.write(`${JSON.stringify({ processed: r.processed, stoppedBy: r.stoppedBy })}\n`);
+  return r.stoppedBy === "blocked" ? EXIT_CODES.manualIntervention : 0;
+}
+
+async function cmdUsage(cfg: BridgeConfig, json: boolean, queue?: string): Promise<number> {
   const records = await loadRecords(join(cfg.runtimeDir, "requests"));
+  if (queue) {
+    // queue items end up in done / failed / blocked (A-094); count them too
+    for (const d of ["done", "failed", "blocked"]) {
+      records.push(...(await loadRecords(join(resolve(queue), d))));
+    }
+  }
   const limits = await loadLimits(join(cfg.runtimeDir, "limits.json"), (reason) =>
     process.stderr.write(`limits.json is invalid (${reason}); using built-in defaults\n`),
   );
@@ -276,6 +326,10 @@ export async function main(argv: string[]): Promise<number> {
       "dump-dom": { type: "boolean", default: false },
       "walk-effort": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
+      queue: { type: "string" },
+      once: { type: "boolean", default: false },
+      drain: { type: "boolean", default: false },
+      "poll-ms": { type: "string" },
       root: { type: "string" },
       out: { type: "string" },
       include: { type: "string", multiple: true },
@@ -316,8 +370,15 @@ export async function main(argv: string[]): Promise<number> {
         maxBytes: values["max-bytes"],
         diff: values.diff,
       });
+    case "worker":
+      return cmdWorker(cfg, verifiedOnly, {
+        queue: values.queue,
+        once: values.once ?? false,
+        drain: values.drain ?? false,
+        pollMs: values["poll-ms"],
+      });
     case "usage":
-      return cmdUsage(cfg, values.json ?? false);
+      return cmdUsage(cfg, values.json ?? false, values.queue);
     case "inspect-ui":
       return cmdInspectUi(
         cfg,
