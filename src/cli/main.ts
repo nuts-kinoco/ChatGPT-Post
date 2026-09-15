@@ -49,11 +49,16 @@ async function waitForEnter(prompt: string): Promise<void> {
   rl.close();
 }
 
+/** Set by the browser's onCrash callback; `fn` reads it to detect a mid-command crash. */
+export interface CrashState {
+  cause: string | null;
+}
+
 async function withBrowser<T>(
   cfg: BridgeConfig,
   command: string,
   verifiedOnly: boolean,
-  fn: (ports: ReturnType<typeof buildPorts>) => Promise<T>,
+  fn: (ports: ReturnType<typeof buildPorts>, crash: CrashState) => Promise<T>,
 ): Promise<T | number> {
   const logger = createLogger(cfg.logLevel);
   const ports = buildPorts(cfg, logger, verifiedOnly);
@@ -73,16 +78,20 @@ async function withBrowser<T>(
       logger.stderr(`PROFILE_IN_USE: ${free.cause}`);
       return EXIT_CODES.beforeBrowser;
     }
+    const crash: CrashState = { cause: null };
     const launched = await ports.browser.launch({
       copyCaptureShim: false,
-      onCrash: (c) => logger.log("warn", `browser: ${c}`),
+      onCrash: (c) => {
+        logger.log("warn", `browser: ${c}`);
+        crash.cause = c;
+      },
     });
     if (!launched.ok) {
       logger.stderr(`BROWSER_LAUNCH_FAILED: ${launched.cause}`);
       return EXIT_CODES.beforeBrowser;
     }
     try {
-      return await fn(ports);
+      return await fn(ports, crash);
     } finally {
       await ports.browser.close().catch(() => undefined);
     }
@@ -91,13 +100,40 @@ async function withBrowser<T>(
   }
 }
 
+/**
+ * `login`/`doctor` drive ChatGptPage directly (no RunController, so no FR-042 retry). NOT_READY is
+ * a transient navigation hiccup (goto timeout, net::ERR_ABORTED); real auth states (AUTH_REQUIRED,
+ * CHALLENGE, WRONG_PAGE) are never retried — retrying those would mask a genuine fail-closed signal.
+ */
+async function observeAuthWithRetry(
+  page: ChatGptPage,
+  attempts = 3,
+): Promise<Awaited<ReturnType<ChatGptPage["navigateAndObserveAuth"]>>> {
+  let last: Awaited<ReturnType<ChatGptPage["navigateAndObserveAuth"]>> = {
+    kind: "NOT_READY",
+    cause: "not attempted",
+  };
+  for (let i = 0; i < attempts; i++) {
+    last = await page.navigateAndObserveAuth();
+    if (last.kind !== "NOT_READY") return last;
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
+  }
+  return last;
+}
+
 async function cmdLogin(cfg: BridgeConfig, verifiedOnly: boolean): Promise<number> {
-  const r = await withBrowser(cfg, "login", verifiedOnly, async (ports) => {
+  const r = await withBrowser(cfg, "login", verifiedOnly, async (ports, crash) => {
     const page = new ChatGptPage(ports.session.currentPage, { verifiedOnly });
-    const auth = await page.navigateAndObserveAuth();
+    const auth = await observeAuthWithRetry(page);
     if (auth.kind === "AUTH_OK") {
       process.stdout.write("ログイン済みです。ブラウザを閉じます。\n");
       return 0;
+    }
+    if (crash.cause) {
+      process.stdout.write(
+        `ブラウザがクラッシュしました（${crash.cause}）。ログインを完了できませんでした。もう一度 chatgpt-bridge login を実行してください（同じプロファイルを開いている他のウィンドウが無いか確認してください）。\n`,
+      );
+      return 1;
     }
     process.stdout.write(
       [
@@ -110,17 +146,26 @@ async function cmdLogin(cfg: BridgeConfig, verifiedOnly: boolean): Promise<numbe
       ].join("\n"),
     );
     let done = false;
-    const poll = (async () => {
+    const poll = (async (): Promise<"auth_ok" | "crashed" | "gave_up"> => {
       while (!done) {
+        if (crash.cause) return "crashed";
         await new Promise((r) => setTimeout(r, 2000));
+        if (crash.cause) return "crashed";
         const a = await page.observeAuth(await page.currentUrl()).catch(() => null);
-        if (a?.kind === "AUTH_OK") return true;
+        if (a?.kind === "AUTH_OK") return "auth_ok";
       }
-      return false;
+      return "gave_up";
     })();
-    const enter = waitForEnter("").then(() => false);
-    const loggedIn = await Promise.race([poll, enter]);
+    const enter = waitForEnter("").then((): "manual" => "manual");
+    const outcome = await Promise.race([poll, enter]);
     done = true;
+    if (outcome === "crashed") {
+      process.stdout.write(
+        `ブラウザがクラッシュしました（${crash.cause}）。ログインを完了できませんでした。もう一度 chatgpt-bridge login を実行してください（同じプロファイルを開いている他のウィンドウが無いか確認してください）。\n`,
+      );
+      return 1;
+    }
+    const loggedIn = outcome === "auth_ok";
     process.stdout.write(loggedIn ? "ログインを検出しました。\n" : "手動終了しました。\n");
     return loggedIn ? 0 : 1;
   });
@@ -132,9 +177,10 @@ async function cmdDoctor(cfg: BridgeConfig, verifiedOnly: boolean): Promise<numb
   const items = await runDoctor({
     cfg,
     loginProbe: async () => {
-      const r = await withBrowser(cfg, "doctor", verifiedOnly, async (ports) => {
+      const r = await withBrowser(cfg, "doctor", verifiedOnly, async (ports, crash) => {
         const page = new ChatGptPage(ports.session.currentPage, { verifiedOnly });
-        const a = await page.navigateAndObserveAuth();
+        const a = await observeAuthWithRetry(page);
+        if (crash.cause) return { ok: false, detail: `browser crashed: ${crash.cause}` };
         return {
           ok: a.kind === "AUTH_OK",
           detail:
@@ -295,9 +341,10 @@ async function cmdInspectUi(
   walkEffort: boolean,
   verifiedOnly: boolean,
 ): Promise<number> {
-  const r = await withBrowser(cfg, "inspect-ui", verifiedOnly, async (ports) => {
+  const r = await withBrowser(cfg, "inspect-ui", verifiedOnly, async (ports, crash) => {
     const page = new ChatGptPage(ports.session.currentPage, { verifiedOnly });
-    const auth = await page.navigateAndObserveAuth();
+    const auth = await observeAuthWithRetry(page);
+    if (crash.cause) process.stdout.write(`browser crashed: ${crash.cause}\n`);
     process.stdout.write(`auth: ${auth.kind}\n`);
     const dir = join(cfg.artifactsDir, "inspect-ui");
     await mkdir(dir, { recursive: true });

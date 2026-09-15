@@ -29,7 +29,7 @@ description: ChatGPT Web（Pro）に 1 往復の質問・レビュー・調査�
 5. **判定**（`exitCode`）:
    - `0` → `response.md` を読む。`images[]` があれば `images/` に生成画像
    - `3` → **人間に知らせて止まる**（ログイン / CAPTCHA / 上限）。自動再試行しない
-   - `4` → 前の実行の終了を待って同じ request を再実行してよい
+   - `4`（`ALREADY_RUNNING` / `PROFILE_IN_USE`）→ 別の誰か（人間の手動ログイン含む）が同じプロファイルを使っている可能性が高い。**すぐ再試行しない**。数十秒〜数分待ってから同じ request を再実行する。何度も `4` が続くなら `chatgpt-bridge doctor` の `lock` / `profile.*` を見て、それでも不明なら人間に聞く
    - `1` で `submitted: "unknown"` → 同じ requestId を再実行しない。`conversationUrl` を人間が確認
    - `1`/`2` で `submitted: "no"` → `error.cause` を直して、`result.json` を消してから再実行
 6. **知見化**: 残す価値があれば `S:\Projects\chatgpt-web-bridge\knowledge\INDEX.md` に 1 行追加（要約と requestId のみ。原文は写さない）
@@ -44,3 +44,4 @@ description: ChatGPT Web（Pro）に 1 往復の質問・レビュー・調査�
 - 送信状態が不明な request を再送しない
 - ブリッジの実行中にブラウザを操作しない
 - 「ChatGPT の回答」は一次情報ではない。URL や数値は確認してから採用する
+- **プロファイル・ブラウザ・ログインセッションは同時に 1 つしか無い専有リソース**。他のセッション（別の Claude Code / Codex / 人間の手動操作）が同時に使っている可能性を常に想定する。`chatgpt-bridge login` を「動作確認のため」だけの目的で試しに実行しない — 人間が手動ログイン中のブラウザと衝突してクラッシュや認証切れを引き起こし得る。`doctor` の `login` が NG のときだけ、人間に断ってから使う
