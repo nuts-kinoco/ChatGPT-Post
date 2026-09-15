@@ -105,8 +105,9 @@ async function withBrowser<T>(
  * a transient navigation hiccup (goto timeout, net::ERR_ABORTED); real auth states (AUTH_REQUIRED,
  * CHALLENGE, WRONG_PAGE) are never retried — retrying those would mask a genuine fail-closed signal.
  */
-async function observeAuthWithRetry(
-  page: ChatGptPage,
+export async function observeAuthWithRetry(
+  page: Pick<ChatGptPage, "navigateAndObserveAuth">,
+  crash: CrashState,
   attempts = 3,
 ): Promise<Awaited<ReturnType<ChatGptPage["navigateAndObserveAuth"]>>> {
   let last: Awaited<ReturnType<ChatGptPage["navigateAndObserveAuth"]>> = {
@@ -114,7 +115,15 @@ async function observeAuthWithRetry(
     cause: "not attempted",
   };
   for (let i = 0; i < attempts; i++) {
-    last = await page.navigateAndObserveAuth();
+    // Codex review of 80f816d, High #1: a crash must stop retries against the dead page immediately.
+    if (crash.cause) return last;
+    last = await page.navigateAndObserveAuth().catch(
+      (err): Awaited<ReturnType<ChatGptPage["navigateAndObserveAuth"]>> => ({
+        kind: "NOT_READY",
+        cause: `threw: ${(err as Error).message}`,
+      }),
+    );
+    if (crash.cause) return last;
     if (last.kind !== "NOT_READY") return last;
     if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
   }
@@ -124,16 +133,18 @@ async function observeAuthWithRetry(
 async function cmdLogin(cfg: BridgeConfig, verifiedOnly: boolean): Promise<number> {
   const r = await withBrowser(cfg, "login", verifiedOnly, async (ports, crash) => {
     const page = new ChatGptPage(ports.session.currentPage, { verifiedOnly });
-    const auth = await observeAuthWithRetry(page);
-    if (auth.kind === "AUTH_OK") {
-      process.stdout.write("ログイン済みです。ブラウザを閉じます。\n");
-      return 0;
-    }
+    const auth = await observeAuthWithRetry(page, crash);
+    // Codex review of 80f816d, Medium #3: a crash must win even if the last observation looks like
+    // AUTH_OK (a stale-but-well-formed read taken just before the crash was reported).
     if (crash.cause) {
       process.stdout.write(
         `ブラウザがクラッシュしました（${crash.cause}）。ログインを完了できませんでした。もう一度 chatgpt-bridge login を実行してください（同じプロファイルを開いている他のウィンドウが無いか確認してください）。\n`,
       );
       return 1;
+    }
+    if (auth.kind === "AUTH_OK") {
+      process.stdout.write("ログイン済みです。ブラウザを閉じます。\n");
+      return 0;
     }
     process.stdout.write(
       [
@@ -151,7 +162,15 @@ async function cmdLogin(cfg: BridgeConfig, verifiedOnly: boolean): Promise<numbe
         if (crash.cause) return "crashed";
         await new Promise((r) => setTimeout(r, 2000));
         if (crash.cause) return "crashed";
-        const a = await page.observeAuth(await page.currentUrl()).catch(() => null);
+        // Codex review of 80f816d, High #2: currentUrl() rejecting outside the .catch() used to
+        // reject this whole poll loop uncaught. Both calls now share one try/catch.
+        let a: Awaited<ReturnType<ChatGptPage["observeAuth"]>> | null = null;
+        try {
+          a = await page.observeAuth(await page.currentUrl());
+        } catch {
+          a = null;
+        }
+        if (crash.cause) return "crashed";
         if (a?.kind === "AUTH_OK") return "auth_ok";
       }
       return "gave_up";
@@ -179,7 +198,7 @@ async function cmdDoctor(cfg: BridgeConfig, verifiedOnly: boolean): Promise<numb
     loginProbe: async () => {
       const r = await withBrowser(cfg, "doctor", verifiedOnly, async (ports, crash) => {
         const page = new ChatGptPage(ports.session.currentPage, { verifiedOnly });
-        const a = await observeAuthWithRetry(page);
+        const a = await observeAuthWithRetry(page, crash);
         if (crash.cause) return { ok: false, detail: `browser crashed: ${crash.cause}` };
         return {
           ok: a.kind === "AUTH_OK",
@@ -343,8 +362,12 @@ async function cmdInspectUi(
 ): Promise<number> {
   const r = await withBrowser(cfg, "inspect-ui", verifiedOnly, async (ports, crash) => {
     const page = new ChatGptPage(ports.session.currentPage, { verifiedOnly });
-    const auth = await observeAuthWithRetry(page);
-    if (crash.cause) process.stdout.write(`browser crashed: ${crash.cause}\n`);
+    const auth = await observeAuthWithRetry(page, crash);
+    // Codex review of 80f816d, Medium #4: don't keep operating the page after a crash.
+    if (crash.cause) {
+      process.stdout.write(`browser crashed: ${crash.cause}\n`);
+      return 1;
+    }
     process.stdout.write(`auth: ${auth.kind}\n`);
     const dir = join(cfg.artifactsDir, "inspect-ui");
     await mkdir(dir, { recursive: true });
