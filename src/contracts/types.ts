@@ -18,7 +18,7 @@ export const OBSERVED_MODELS = ["latest", "gpt-5.6-sol", "gpt-5.5"] as const;
 export type ObservedModel = (typeof OBSERVED_MODELS)[number];
 
 export interface BridgeRequest {
-  schemaVersion: "1.0" | "1.1";
+  schemaVersion: "1.0" | "1.1" | "1.2";
   requestId: string;
   promptFile: string;
   preset: RequestedPreset;
@@ -107,7 +107,7 @@ export interface BridgeError {
 }
 
 export interface BridgeResult {
-  schemaVersion: "1.1";
+  schemaVersion: "1.2";
   bridgeVersion: string;
   requestId: string | null;
   status: ResultStatus;
@@ -126,6 +126,8 @@ export interface BridgeResult {
   completedAt: string;
   durationMs: number;
   artifacts: string[];
+  /** 1.2 (A-091): generated images, relative to requestDir (images/1.png ...). */
+  images: string[];
   warnings: string[];
   error: BridgeError | null;
 }

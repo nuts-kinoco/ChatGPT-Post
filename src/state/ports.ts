@@ -152,6 +152,12 @@ export interface ChatGptPort {
   currentUrl(): Promise<string>;
   extractLatest(): Promise<Extraction | { kind: "empty"; cause: "empty" | "canvas" }>;
   /**
+   * A-091: saves images rendered in the latest assistant turn (generated images) into `dir`.
+   * Best-effort: lightbox "保存" download first, in-page fetch of the same img.src second (A-069).
+   * Returns relative file names in turn order; problems go to `warnings`.
+   */
+  captureImages(dir: string): Promise<{ saved: string[]; warnings: string[] }>;
+  /**
    * Best-effort: puts the (account-persisted) effort slider back to the level seen before this run
    * changed it. No-op when nothing was changed. Called before CLOSE_BROWSER; failures are warnings.
    */

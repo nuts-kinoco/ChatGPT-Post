@@ -104,6 +104,7 @@ export class RunController {
     quality: BridgeResult["extractionQuality"];
   } | null = null;
   private readonly artifacts: string[] = [];
+  private readonly images: string[] = [];
   private readonly warnings: string[] = [];
   private startedAt: Date;
   private readonly startedMono: number;
@@ -385,6 +386,24 @@ export class RunController {
           const m = slugMatches(this.observedModel, this.observedPreset, x.modelSlug);
           if (!m.ok) this.warnings.push(`model_slug_mismatch: ${m.cause}`);
         }
+        // A-091: generated images (best-effort, bounded; never fails the run)
+        try {
+          const cap = await Promise.race([
+            chatgpt.captureImages(`${this.requestDir}/images`),
+            this.ports.clock
+              .sleep(120_000)
+              .then(() => ({ saved: [] as string[], warnings: ["image_capture_failed: timeout"] })),
+          ]);
+          for (const f of cap.saved) this.images.push(`images/${f}`);
+          for (const w of cap.warnings) this.warnings.push(w);
+          if (cap.saved.length > 0 && this.extraction) {
+            const links = cap.saved.map((f, i) => `![image ${i + 1}](images/${f})`).join("\n\n");
+            const body = this.extraction.markdown.replace(/\s+$/, "");
+            this.extraction.markdown = body ? `${body}\n\n${links}\n` : `${links}\n`;
+          }
+        } catch (err) {
+          this.warnings.push(`image_capture_failed: ${(err as Error).message.slice(0, 200)}`);
+        }
         return { type: "EXTRACTED" };
       }
       case "WRITE_RESPONSE_MD": {
@@ -513,7 +532,7 @@ export class RunController {
     const completed = term?.name === "COMPLETED" || (!term && this.state.name === "WRITING_RESULT");
     const safeCause = term?.cause == null ? null : sanitiseResultText(term.cause);
     return {
-      schemaVersion: "1.1",
+      schemaVersion: "1.2",
       bridgeVersion: this.opts.bridgeVersion,
       requestId: this.requestId,
       status: completed
@@ -535,6 +554,7 @@ export class RunController {
       completedAt: completedAt.toISOString(),
       durationMs: Math.max(0, completedAt.getTime() - this.startedAt.getTime()),
       artifacts: [...this.artifacts],
+      images: [...this.images],
       warnings: this.warnings.map((w) => sanitiseResultText(w)),
       error:
         completed || !term || !term.code

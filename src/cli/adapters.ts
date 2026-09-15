@@ -116,12 +116,14 @@ export function chatgptPort(
   session: BrowserSession,
   logger: Logger,
   verifiedOnly: boolean,
+  imageViaViewer = false,
 ): ChatGptPort {
   let page: ChatGptPage | null = null;
   const get = (): ChatGptPage => {
     page ??= new ChatGptPage(session.currentPage, {
       verifiedOnly,
       log: (m) => logger.log("debug", m),
+      imageViaViewer,
     });
     return page;
   };
@@ -137,6 +139,7 @@ export function chatgptPort(
     extractLatest: () => get().extractLatest(),
     inspectUiReport: (dir, o) => get().inspectUiReport(dir, o),
     restoreEffort: () => get().restoreEffort(),
+    captureImages: (dir) => get().captureImages(dir),
   };
 }
 
@@ -152,7 +155,7 @@ export function buildPorts(
     contracts: fileContracts(),
     lock,
     browser,
-    chatgpt: chatgptPort(browser.session, logger, verifiedOnly),
+    chatgpt: chatgptPort(browser.session, logger, verifiedOnly, cfg.imageViaViewer),
     log: logger.log,
     stderr: logger.stderr,
     lockRaw: lock.raw,

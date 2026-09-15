@@ -57,6 +57,8 @@ export interface ChatGptPageOptions {
   pollIntervalMs?: number;
   newChatTimeoutMs?: number;
   log?: (message: string) => void;
+  /** A-092: the viewer "保存" download crashes Chrome stable under automation (2026-09-15); opt-in only. */
+  imageViaViewer?: boolean;
 }
 
 function hostOf(url: string): string {
@@ -712,10 +714,23 @@ export class ChatGptPage implements ChatGptPort {
     if (!turn) return { kind: "empty", cause: "empty" };
     if (await exists(this.page, "sidePanel", this.sel)) return { kind: "empty", cause: "canvas" };
     const bodyProbe = await probe(turn, "assistantTurnBody", this.sel);
-    const body = bodyProbe.found && bodyProbe.locator ? bodyProbe.locator : turn;
-    const innerText = await body.innerText().catch(() => "");
-    if (innerText.trim().length === 0) return { kind: "empty", cause: "empty" };
     const modelSlug = await this.readModelSlug(turn);
+    if (!bodyProbe.found || !bodyProbe.locator) {
+      // No Markdown body: an image-only turn (A-091) carries only UI captions ("編集"). Text is
+      // empty but the turn is not, provided a large image is present; images are captured later.
+      const imgCount = await countMatches(turn, "turnImage", this.sel);
+      if (imgCount > 0) return { markdown: "", method: "dom", quality: "full", modelSlug };
+      const raw = (await turn.innerText().catch(() => "")).trim();
+      if (raw.length === 0) return { kind: "empty", cause: "empty" };
+      return { markdown: raw, method: "innerText", quality: "degraded", modelSlug };
+    }
+    const body = bodyProbe.locator;
+    const innerText = await body.innerText().catch(() => "");
+    if (innerText.trim().length === 0) {
+      const imgCount = await countMatches(turn, "turnImage", this.sel);
+      if (imgCount > 0) return { markdown: "", method: "dom", quality: "full", modelSlug };
+      return { kind: "empty", cause: "empty" };
+    }
 
     // 1. copy capture (page-side shim; no system clipboard)
     try {
@@ -758,6 +773,141 @@ export class ChatGptPage implements ChatGptPort {
 
     // 3. innerText
     return { markdown: innerText, method: "innerText", quality: "degraded", modelSlug };
+  }
+
+  /**
+   * A-091 / A-069: generated images. For each distinct large image in the latest turn:
+   *   1. click the image -> fullscreen viewer (role=dialog) -> "保存" -> Playwright download event
+   *   2. fallback: fetch the very same img.src inside the page (the URL the page itself renders)
+   * The viewer carries its own composer and send button; only "保存" and the close button are touched.
+   */
+  async captureImages(dir: string): Promise<{ saved: string[]; warnings: string[] }> {
+    const saved: string[] = [];
+    const warnings: string[] = [];
+    const turn = await latest(this.page, "assistantTurn", this.sel);
+    if (!turn) return { saved, warnings };
+    const seen = new Set<string>();
+    const targets: Array<{ src: string; locator: Locator }> = [];
+    for (const c of ELEMENTS.turnImage.candidates) {
+      if (this.opts.verifiedOnly && !c.verifiedOn) continue;
+      const loc = build(turn, c);
+      const n = await loc.count().catch(() => 0);
+      for (let i = 0; i < Math.min(n, 20); i++) {
+        const img = loc.nth(i);
+        const src = (await img.getAttribute("src").catch(() => null)) ?? "";
+        if (!src || seen.has(src)) continue;
+        const natural = await img
+          .evaluate((e) => (e as HTMLImageElement).naturalWidth)
+          .catch(() => 0);
+        if (natural < 256) continue;
+        seen.add(src);
+        targets.push({ src, locator: img });
+      }
+      if (targets.length > 0) break;
+    }
+    if (targets.length === 0) return { saved, warnings };
+    await mkdir(dir, { recursive: true });
+    for (const [i, t] of targets.entries()) {
+      const n = i + 1;
+      // A-092: in-page fetch of the rendered URL is primary (A-069); the viewer download is opt-in
+      // because Chrome stable crashes on the download under automation (crash dumps 2026-09-15).
+      const viaFetch = await this.saveImageViaFetch(t.src, dir, n).catch((err) => ({
+        ok: false as const,
+        cause: (err as Error).message,
+      }));
+      if (viaFetch.ok) {
+        saved.push(viaFetch.file);
+        continue;
+      }
+      if (!this.opts.imageViaViewer) {
+        warnings.push(`image_capture_failed: image ${n}: ${viaFetch.cause}`);
+        continue;
+      }
+      this.opts.log?.(`image ${n}: fetch failed (${viaFetch.cause}); trying viewer download`);
+      const viaViewer = await this.saveImageViaViewer(t.locator, dir, n).catch((err) => ({
+        ok: false as const,
+        cause: (err as Error).message,
+      }));
+      if (viaViewer.ok) saved.push(viaViewer.file);
+      else warnings.push(`image_capture_failed: image ${n}: ${viaFetch.cause}; ${viaViewer.cause}`);
+    }
+    return { saved, warnings };
+  }
+
+  private async saveImageViaViewer(
+    img: Locator,
+    dir: string,
+    n: number,
+  ): Promise<{ ok: true; file: string } | { ok: false; cause: string }> {
+    await img.scrollIntoViewIfNeeded().catch(() => undefined);
+    await img.click({ force: true, timeout: 5000 });
+    const deadline = Date.now() + 5000;
+    let viewer: Locator | null = null;
+    while (Date.now() < deadline) {
+      const p = await probe(this.page, "imageViewer", this.sel);
+      if (p.found && p.locator) {
+        viewer = p.locator;
+        break;
+      }
+      await this.page.waitForTimeout(150);
+    }
+    if (!viewer) return { ok: false, cause: "viewer did not open" };
+    try {
+      const save = await resolve(viewer, "imageSaveButton", this.sel);
+      const [download] = await Promise.all([
+        this.page.waitForEvent("download", { timeout: 30_000 }),
+        save.click({ timeout: 5000 }),
+      ]);
+      const suggested = download.suggestedFilename();
+      const ext = (suggested.match(/\.([A-Za-z0-9]{2,5})$/)?.[1] ?? "png").toLowerCase();
+      const file = `${n}.${ext}`;
+      await download.saveAs(join(dir, file));
+      return { ok: true, file };
+    } finally {
+      await this.closeImageViewer(viewer);
+    }
+  }
+
+  private async closeImageViewer(viewer: Locator): Promise<void> {
+    for (let i = 0; i < 3; i++) {
+      if (!(await exists(this.page, "imageViewer", this.sel))) return;
+      const close = await probe(viewer, "imageViewerClose", this.sel);
+      if (close.found && close.locator)
+        await close.locator.click({ timeout: 3000 }).catch(() => undefined);
+      else await this.page.keyboard.press("Escape").catch(() => undefined);
+      await this.page.waitForTimeout(400);
+    }
+  }
+
+  /** A-069: read the bytes the page already displays (same URL as the <img>), nothing else. */
+  private async saveImageViaFetch(
+    src: string,
+    dir: string,
+    n: number,
+  ): Promise<{ ok: true; file: string } | { ok: false; cause: string }> {
+    if (!src.startsWith(`${CHATGPT_ORIGIN}/`))
+      return { ok: false, cause: "img.src is not on chatgpt.com" };
+    const r = await this.page.evaluate(async (url) => {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) return { ok: false as const, cause: `HTTP ${res.status}` };
+      const blob = await res.blob();
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < buf.length; i += 0x8000)
+        bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      return { ok: true as const, type: blob.type, b64: btoa(bin) };
+    }, src);
+    if (!r.ok) return r;
+    const ext = r.type.includes("png")
+      ? "png"
+      : r.type.includes("jpeg")
+        ? "jpg"
+        : r.type.includes("webp")
+          ? "webp"
+          : "bin";
+    const file = `${n}.${ext}`;
+    await writeFile(join(dir, file), Buffer.from(r.b64, "base64"));
+    return { ok: true, file };
   }
 
   async restoreEffort(): Promise<

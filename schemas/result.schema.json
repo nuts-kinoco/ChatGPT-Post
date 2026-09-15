@@ -148,13 +148,14 @@
     "completedAt",
     "durationMs",
     "artifacts",
+    "images",
     "warnings",
     "error"
   ],
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "1.1"
+      "const": "1.2"
     },
     "bridgeVersion": {
       "type": "string",
@@ -285,6 +286,14 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "images": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "1.2 (A-091): generated images saved under <requestDir>/images/, as paths relative to requestDir. [] when none."
     },
     "error": {
       "oneOf": [

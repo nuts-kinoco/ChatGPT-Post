@@ -12,6 +12,7 @@ export interface BridgeConfig {
   artifactsDir: string;
   channel: "chrome" | "chromium";
   traceOnSuccess: boolean;
+  imageViaViewer: boolean;
   logLevel: LogLevel;
   bridgeVersion: string;
 }
@@ -54,6 +55,7 @@ export function loadConfig(
     artifactsDir: join(runtimeDir, "artifacts"),
     channel,
     traceOnSuccess: env.CHATGPT_BRIDGE_TRACE_ON_SUCCESS === "1",
+    imageViaViewer: env.CHATGPT_BRIDGE_IMAGE_VIA_VIEWER === "1",
     logLevel,
     bridgeVersion,
   };

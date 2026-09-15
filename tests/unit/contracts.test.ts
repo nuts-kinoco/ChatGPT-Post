@@ -134,7 +134,7 @@ describe("atomic write (FR-013, AC-009)", () => {
 
 function baseResult(over: Partial<BridgeResult> = {}): BridgeResult {
   return {
-    schemaVersion: "1.1",
+    schemaVersion: "1.2",
     bridgeVersion: "0.1.0",
     requestId: "20260914T113000Z-a1b2c3d4",
     status: "completed",
@@ -152,6 +152,7 @@ function baseResult(over: Partial<BridgeResult> = {}): BridgeResult {
     completedAt: "2026-09-14T11:33:12.412+09:00",
     durationMs: 192412,
     artifacts: [],
+    images: [],
     warnings: [],
     error: null,
     ...over,

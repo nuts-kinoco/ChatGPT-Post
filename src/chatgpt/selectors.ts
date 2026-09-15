@@ -48,7 +48,11 @@ export type ElementKey =
   | "challengeFrame"
   | "blockingDialog"
   | "fileInput"
-  | "attachmentChip";
+  | "attachmentChip"
+  | "turnImage"
+  | "imageViewer"
+  | "imageSaveButton"
+  | "imageViewerClose";
 
 /**
  * 14-SELECTOR-STRATEGY §3. Candidates carry `verifiedOn` only after confirmation on the real
@@ -321,6 +325,61 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
       {
         kind: "css",
         selector: 'form input[type="file"]:not([accept])',
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
+  turnImage: {
+    key: "turnImage",
+    purpose: "回答ターン内の生成画像（同じ src が複数回描画される。naturalWidth で絞る）",
+    mode: "count",
+    scope: "assistantTurn",
+    candidates: [
+      {
+        kind: "css",
+        selector: "img[alt^='生成された画像'], img[alt^='Generated image']",
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+      {
+        kind: "css",
+        selector: "img[src*='estuary/content']",
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
+  imageViewer: {
+    key: "imageViewer",
+    purpose:
+      "画像クリックで開く全画面ビューア（role=dialog。中に独自の入力欄と送信ボタンがあるので触らない）",
+    mode: "unique",
+    candidates: [
+      { kind: "role", role: "dialog", name: "", verifiedOn: "2026-09-15 chatgpt.com ja" },
+    ],
+  },
+  imageSaveButton: {
+    key: "imageSaveButton",
+    purpose: "ビューア内の「保存」= ダウンロード",
+    mode: "unique",
+    scope: "imageViewer",
+    candidates: [
+      {
+        kind: "role",
+        role: "button",
+        name: /^(保存|Save)$/,
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
+  imageViewerClose: {
+    key: "imageViewerClose",
+    purpose: "ビューアを閉じる",
+    mode: "unique",
+    scope: "imageViewer",
+    candidates: [
+      {
+        kind: "role",
+        role: "button",
+        name: /^(全画面表示を閉じる|Close fullscreen|Close)$/,
         verifiedOn: "2026-09-15 chatgpt.com ja",
       },
     ],

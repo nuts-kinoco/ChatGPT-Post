@@ -87,6 +87,7 @@ function fake(
       calls.push("restoreEffort");
       return { kind: "unchanged" };
     },
+    captureImages: async () => ({ saved: [], warnings: [] }),
     ...over,
   };
   const f: Fake = {
@@ -210,7 +211,8 @@ describe("RunController", () => {
     expect(out.result?.requestedModel).toBe("current");
     expect(out.result?.observedModel).toBe("latest");
     expect(out.result?.observedModelSlug).toBe("gpt-5-6");
-    expect(out.result?.schemaVersion).toBe("1.1");
+    expect(out.result?.schemaVersion).toBe("1.2");
+    expect(out.result?.images).toEqual([]);
     expect(out.result?.submitted).toBe("yes");
     expect(out.result?.conversationUrl).toBe("https://chatgpt.com/c/123");
     expect(f.calls.indexOf("writeMarker")).toBeLessThan(f.calls.indexOf("writeResponse"));

@@ -40,6 +40,7 @@ export class BrowserSession {
         ...(this.cfg.channel === "chrome" ? { channel: "chrome" } : {}),
         headless: false,
         viewport: null,
+        acceptDownloads: true,
       });
       this.context = context;
       if (opts.copyCaptureShim) await context.addInitScript(COPY_CAPTURE_SHIM);
