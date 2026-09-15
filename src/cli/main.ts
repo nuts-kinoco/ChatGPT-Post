@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { buildBundle } from "../bundle/bundle.js";
 import { ChatGptPage } from "../chatgpt/page.js";
@@ -18,7 +20,8 @@ const USAGE = `chatgpt-bridge <command> [options]
 commands:
   login                      専用ブラウザを開き、人間がログインする
   doctor                     環境・プロファイル・ロック・ログイン状態を診断する
-  run --request <path>       request.json を 1 件処理する
+  run --request <path> [--json]
+                             request.json を 1 件処理する。--json は result.json の内容を標準出力に 1 行で出す
   usage [--json]             ブリッジ経由の送信数を窓ごとに集計し、runtime/limits.json の上限と比べる
   bundle --root <dir> --out <file> [--include <glob>]... [--exclude <glob>]...
          [--max-bytes <n>] [--diff <gitref>]
@@ -145,6 +148,7 @@ async function cmdRun(
   cfg: BridgeConfig,
   requestPath: string,
   verifiedOnly: boolean,
+  json: boolean,
 ): Promise<number> {
   const logger = createLogger(cfg.logLevel);
   const ports = buildPorts(cfg, logger, verifiedOnly);
@@ -154,9 +158,21 @@ async function cmdRun(
     bridgeVersion: cfg.bridgeVersion,
     traceOnSuccess: cfg.traceOnSuccess,
   });
-  process.stdout.write(`run: ${resolve(requestPath)}\n`);
+  if (!json) process.stdout.write(`run: ${resolve(requestPath)}\n`);
   const outcome = await controller.run();
   const res = outcome.result;
+  if (json) {
+    // one JSON document on stdout for orchestrators (result.json content, or a stub when none was written)
+    const doc = res ?? {
+      status: "not_started",
+      terminal: outcome.state.name,
+      code: outcome.state.terminal?.code ?? null,
+    };
+    process.stdout.write(
+      `${JSON.stringify({ ...doc, exitCode: outcome.exitCode, resultPath: outcome.resultPath })}\n`,
+    );
+    return outcome.exitCode;
+  }
   if (res) {
     process.stdout.write(
       `status=${res.status} submitted=${res.submitted}${res.error ? ` code=${res.error.code}` : ""}\n`,
@@ -288,7 +304,7 @@ export async function main(argv: string[]): Promise<number> {
         process.stderr.write("run requires --request <path>\n");
         return EXIT_CODES.invalidInput;
       }
-      return cmdRun(cfg, values.request, verifiedOnly);
+      return cmdRun(cfg, values.request, verifiedOnly, values.json ?? false);
     case "bundle":
       return cmdBundle({
         root: values.root,
@@ -313,9 +329,19 @@ export async function main(argv: string[]): Promise<number> {
   }
 }
 
-const invokedDirectly =
-  process.argv[1] &&
-  import.meta.url === new URL(`file://${process.argv[1].replace(/\\/g, "/")}`).href;
+function invokedDirectlyCheck(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  // npm link / global installs go through a symlink; ESM resolves import.meta.url to the real path.
+  let real = argv1;
+  try {
+    real = realpathSync(argv1);
+  } catch {
+    /* keep argv1 */
+  }
+  return import.meta.url === pathToFileURL(real).href;
+}
+const invokedDirectly = invokedDirectlyCheck();
 if (invokedDirectly || process.env.CHATGPT_BRIDGE_MAIN === "1") {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
