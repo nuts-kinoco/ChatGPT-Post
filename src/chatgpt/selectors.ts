@@ -46,7 +46,9 @@ export type ElementKey =
   | "errorBanner"
   | "loginCta"
   | "challengeFrame"
-  | "blockingDialog";
+  | "blockingDialog"
+  | "fileInput"
+  | "attachmentChip";
 
 /**
  * 14-SELECTOR-STRATEGY §3. Candidates carry `verifiedOn` only after confirmation on the real
@@ -83,7 +85,7 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
         name: /^(メッセージを送信します|プロンプトを送信する|Send prompt|Send message)$/i,
         verifiedOn: "2026-09-15 chatgpt.com ja",
       },
-      { kind: "testid", testId: "send-button" },
+      { kind: "testid", testId: "send-button", verifiedOn: "2026-09-15 chatgpt.com ja" },
     ],
   },
   stopButton: {
@@ -305,6 +307,36 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "同意等のモーダル",
     mode: "presence",
     candidates: [{ kind: "role", role: "dialog", name: "" }],
+  },
+  fileInput: {
+    key: "fileInput",
+    purpose: "composer のファイル入力（hidden、multiple。Playwright setInputFiles の対象）",
+    mode: "unique",
+    candidates: [
+      {
+        kind: "css",
+        selector: 'form input[type="file"]#upload-files',
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+      {
+        kind: "css",
+        selector: 'form input[type="file"]:not([accept])',
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
+  attachmentChip: {
+    key: "attachmentChip",
+    purpose:
+      "添付チップ（aria-label = ファイル名。サーバー側で「name(1).ext」に改名されることがある）",
+    mode: "count",
+    candidates: [
+      {
+        kind: "css",
+        selector: "form [role=group][aria-label]",
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
   },
 };
 

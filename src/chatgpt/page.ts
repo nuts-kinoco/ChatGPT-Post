@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright";
+import { uploadBudgetMs } from "../contracts/attachments.js";
 import type {
   ObservedModel,
   ObservedPreset,
@@ -470,6 +471,7 @@ export class ChatGptPage implements ChatGptPort {
 
   async enterPrompt(
     text: string,
+    attachments: string[],
   ): Promise<
     | { kind: "ok" }
     | { kind: "mismatch"; cause: string }
@@ -494,7 +496,10 @@ export class ChatGptPage implements ChatGptPort {
         await this.page.waitForTimeout(150);
         const seen = normalisePrompt(await composer.innerText());
         lastSeen = seen;
-        if (seen === expected) return { kind: "ok" };
+        if (seen === expected) {
+          if (attachments.length === 0) return { kind: "ok" };
+          return this.attachFiles(attachments);
+        }
       } catch (err) {
         return { kind: "retry", cause: (err as Error).message };
       }
@@ -502,6 +507,78 @@ export class ChatGptPage implements ChatGptPort {
     return {
       kind: "mismatch",
       cause: `composer content differs (expected ${expected.length} chars, saw ${lastSeen.length} chars)`,
+    };
+  }
+
+  /**
+   * A-068: setInputFiles on the composer's hidden file input, then wait for one chip per file and for
+   * the upload to finish (send button leaves aria-disabled). Chip names may be server-renamed
+   * ("name(1).ext"), so only the count is asserted; names are logged.
+   */
+  private async attachFiles(
+    paths: string[],
+  ): Promise<
+    | { kind: "ok" }
+    | { kind: "mismatch"; cause: string }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  > {
+    const def = ELEMENTS.fileInput;
+    let input: Locator | null = null;
+    const tried: string[] = [];
+    for (const c of def.candidates) {
+      if (this.opts.verifiedOnly && !c.verifiedOn) continue;
+      const loc = build(this.page, c);
+      const n = await loc.count().catch(() => 0);
+      tried.push(`${describeCandidate(c)} -> ${n}`);
+      if (n === 1) {
+        input = loc.first();
+        break;
+      }
+    }
+    if (!input) return { kind: "dom_unexpected", element: "fileInput", tried };
+    let totalBytes = 0;
+    for (const p of paths) totalBytes += (await stat(p)).size;
+    try {
+      await input.setInputFiles(paths);
+    } catch (err) {
+      return { kind: "mismatch", cause: `attachment_failed: ${(err as Error).message}` };
+    }
+    // chips
+    const chipDeadline = Date.now() + 15_000;
+    let chips = 0;
+    while (Date.now() < chipDeadline) {
+      chips = await countMatches(this.page, "attachmentChip", this.sel);
+      if (chips >= paths.length) break;
+      await this.page.waitForTimeout(250);
+    }
+    if (chips !== paths.length) {
+      return {
+        kind: "mismatch",
+        cause: `attachment_failed: ${chips} chips for ${paths.length} files`,
+      };
+    }
+    // upload completion
+    const budget = uploadBudgetMs(totalBytes);
+    const upDeadline = Date.now() + budget;
+    while (Date.now() < upDeadline) {
+      const send = await probe(this.page, "sendButton", this.sel);
+      const ariaDisabled = send.locator
+        ? await send.locator.getAttribute("aria-disabled").catch(() => null)
+        : "true";
+      if (send.found && send.enabled && ariaDisabled !== "true") {
+        const names = await this.page
+          .locator("form [role=group][aria-label]")
+          .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label") ?? ""))
+          .catch(() => [] as string[]);
+        this.opts.log?.(`attachments uploaded: ${names.join(", ")}`);
+        return { kind: "ok" };
+      }
+      await this.page.waitForTimeout(500);
+    }
+    return {
+      kind: "mismatch",
+      cause: `attachment_failed: upload did not finish within ${budget} ms (${totalBytes} bytes)`,
     };
   }
 

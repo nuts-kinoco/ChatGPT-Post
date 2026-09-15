@@ -24,6 +24,8 @@ export interface BridgeRequest {
   preset: RequestedPreset;
   /** 1.1: optional, default "current" (observe only; the UI resets the radio to 最新 on every page load). */
   model?: RequestedModel;
+  /** 1.1 (A-068): files attached through the composer; validated by contracts/attachments.ts. */
+  attachments?: string[];
   newChat: true;
   timeoutMs?: number;
   responseFormat: "markdown";

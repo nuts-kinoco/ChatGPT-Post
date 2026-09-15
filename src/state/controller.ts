@@ -83,6 +83,7 @@ export class RunController {
   private requestId: string | null = null;
   private requestDir = "";
   private prompt = "";
+  private attachments: string[] = [];
   private timeoutMs = 0;
   private lockHeld = false;
   private browserUp = false;
@@ -225,6 +226,7 @@ export class RunController {
         this.request = v.request;
         this.prompt = v.prompt;
         this.timeoutMs = v.timeoutMs;
+        this.attachments = v.attachments;
         const profile = await browser.checkProfilePath();
         if (!profile.ok) return { type: "PROFILE_PATH_REJECTED", cause: profile.cause };
         return { type: "VALID" };
@@ -306,7 +308,7 @@ export class RunController {
         break;
       }
       case "ENTER_PROMPT": {
-        const e = await this.withPhaseLimit(chatgpt.enterPrompt(this.prompt));
+        const e = await this.withPhaseLimit(chatgpt.enterPrompt(this.prompt, this.attachments));
         if (e.kind === "ok") return { type: "PROMPT_OK" };
         if (e.kind === "mismatch") return { type: "PROMPT_MISMATCH", cause: e.cause };
         if (e.kind === "retry")

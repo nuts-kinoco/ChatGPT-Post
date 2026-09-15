@@ -34,7 +34,13 @@ export interface ContractsPort {
     requestDir: string,
   ): Promise<
     | { kind: "invalid"; errors: string[] }
-    | { kind: "valid"; request: BridgeRequest; prompt: string; timeoutMs: number }
+    | {
+        kind: "valid";
+        request: BridgeRequest;
+        prompt: string;
+        timeoutMs: number;
+        attachments: string[];
+      }
   >;
   writeResponse(requestDir: string, markdown: string): Promise<string>;
   writeResult(requestDir: string, result: BridgeResult): Promise<string>;
@@ -116,8 +122,10 @@ export interface ChatGptPort {
   >;
   /** Selects model (in-page radio) then effort (persisted slider); observes both; fails closed. */
   resolvePreset(requested: RequestedPreset, model: RequestedModel): Promise<PresetResolution>;
+  /** Types the prompt, then attaches files and waits for their upload (send button re-enabled). */
   enterPrompt(
     text: string,
+    attachments: string[],
   ): Promise<
     | { kind: "ok" }
     | { kind: "mismatch"; cause: string }

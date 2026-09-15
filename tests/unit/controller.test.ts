@@ -123,6 +123,7 @@ function fake(
           },
           prompt: "hi",
           timeoutMs: 60_000,
+          attachments: [],
         }),
         writeResponse: async (_d, md) => {
           calls.push("writeResponse");

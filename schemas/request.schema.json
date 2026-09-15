@@ -31,6 +31,15 @@
       "minLength": 1,
       "description": "Path to the UTF-8 Markdown prompt. Relative paths resolve against the request.json directory."
     },
+    "attachments": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "1.1 (A-068): files to attach via the composer file input. Relative paths resolve against the request.json directory. Secret-looking names/contents are refused before the browser starts."
+    },
     "preset": {
       "type": "string",
       "enum": [

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { checkAttachments } from "./attachments.js";
 import { validateRequest } from "./schema.js";
 import { type BridgeRequest, DEFAULT_TIMEOUT_MS } from "./types.js";
 
@@ -61,6 +62,8 @@ export type ValidateOutcome =
       prompt: string;
       promptPath: string;
       timeoutMs: number;
+      /** Absolute attachment paths (validated). */
+      attachments: string[];
     };
 
 /** Step [3]: schema validation + prompt read + non-empty check. Never throws. */
@@ -72,6 +75,8 @@ export async function validateAndLoad(raw: unknown, requestDir: string): Promise
     errors.push("/requestId is a Windows reserved device name");
   }
   if (errors.length > 0) return { kind: "invalid", errors };
+  const att = await checkAttachments(req.attachments, requestDir);
+  if (!att.ok) return { kind: "invalid", errors: att.errors };
 
   const promptPath = isAbsolute(req.promptFile)
     ? req.promptFile
@@ -91,5 +96,6 @@ export async function validateAndLoad(raw: unknown, requestDir: string): Promise
     prompt,
     promptPath,
     timeoutMs: req.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    attachments: att.paths,
   };
 }

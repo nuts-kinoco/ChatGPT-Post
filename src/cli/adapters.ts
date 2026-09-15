@@ -54,7 +54,13 @@ export function fileContracts(): ContractsPort {
       const v = await validateAndLoad(raw, dir);
       return v.kind === "invalid"
         ? v
-        : { kind: "valid", request: v.request, prompt: v.prompt, timeoutMs: v.timeoutMs };
+        : {
+            kind: "valid",
+            request: v.request,
+            prompt: v.prompt,
+            timeoutMs: v.timeoutMs,
+            attachments: v.attachments,
+          };
     },
     writeResponse: async (dir, md) => {
       const p = join(dir, "response.md");
@@ -122,7 +128,7 @@ export function chatgptPort(
     navigateAndObserveAuth: () => get().navigateAndObserveAuth(),
     openNewChat: () => get().openNewChat(),
     resolvePreset: (p, m) => get().resolvePreset(p, m),
-    enterPrompt: (t) => get().enterPrompt(t),
+    enterPrompt: (t, a) => get().enterPrompt(t, a),
     snapshotBaseline: (l) => get().snapshotBaseline(l),
     dispatchSubmit: (l) => get().dispatchSubmit(l),
     observe: (t) => get().observe(t),
