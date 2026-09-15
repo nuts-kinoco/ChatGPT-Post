@@ -92,12 +92,19 @@ API:
 | key | mode | 検証済み候補（優先順） | 備考 |
 |---|---|---|---|
 | `composer` | unique | `#prompt-textarea`（ProseMirror、role `textbox`、aria-label「ChatGPT とチャットする」） | 未ログイン画面にも表示されるため、ログイン判定には使わない（A-056） |
-| `sendButton` | unique | role `button` name `メッセージを送信します` | 送信境界前に `resolve` して保持。空入力時は無効 |
+| `sendButton` | unique | role `button` name `メッセージを送信します` / `プロンプトを送信する` → testid `send-button`（添付時に確認） | 送信境界前に `resolve` して保持。空入力時は無効。添付があると `#composer-submit-button`（testid `send-button`、「プロンプトを送信する」）になる |
 | `stopButton` | presence | testid `stop-button` | 存在 = streaming |
 | `newChatButton` | presence | 複数のリンクが同名で存在するため unique にできない。新規チャットは `https://chatgpt.com/` への遷移で開く（A-058） | |
 | `modelPicker` | unique | `form [data-composer-transition-slot="trailing"] button[aria-haspopup="menu"]` | 入力欄右端の「思考量」トリガ。ラベルは現在の段階（例「極高」）。メニューが開いている間は「思考量」と表示される |
 | `modelPickerCurrentLabel` | unique | `modelPicker` のテキスト | 逆引き不能なら `MODEL_NOT_VERIFIABLE` |
-| `modelPickerMenu` | presence | testid `composer-intelligence-picker-content` | 中に effort スライダー `[data-model-reasoning-effort-slider] [role=slider]`（`aria-valuenow` 0..4）とモデルのラジオ（「最新」既定 / GPT-5.6 Sol / GPT-5.5） |
+| `pickerMenu` | unique | testid `composer-intelligence-picker-content` | メニュー本体。開いている間だけ存在（`inspect-ui` の要素表では 0 件が正常） |
+| `effortSlider` | unique（scope: pickerMenu） | `[data-model-reasoning-effort-slider] [role=slider]` | `aria-valuenow` 0..4、`aria-valuemax` 4。`tabindex=-1` だが `.focus()` 後に矢印キーが効く（simple view のみ） |
+| `effortSliderRow` | unique（scope: pickerMenu） | `[role=menuitem][aria-describedby]:has([data-model-reasoning-effort-slider])` | `aria-describedby` 先頭 id の span が現在段階のラベル「極高、5件中4件目。」 |
+| `modelExpander` | unique（scope: pickerMenu） | `[role=menuitem][aria-expanded]` | 「モデルを選択」。クリックで advanced view（ラジオが操作可能）。ラジオをクリックすると simple に戻る |
+| `modelRadio` | count（scope: pickerMenu） | role `menuitemradio` | 「最新」「GPT-5.6 Sol」「GPT-5.5
+10月14日 に提供終了予定」。先頭行で逆引き（`MODEL_LABELS`）。選択はページ読込ごとにリセット |
+| `fileInput` | unique | `form input[type="file"]#upload-files` → `form input[type="file"]:not([accept])` | hidden、multiple。`setInputFiles` の対象。他に `#upload-photos` 等（accept 付き）が form 外にある |
+| `attachmentChip` | count | `form [role=group][aria-label]` | aria-label = ファイル名（サーバー側で `name(1).ext` に改名されることがある）。削除ボタン「ファイル N を削除：<name>」。アップロード中は送信ボタン `aria-disabled=true` |
 | `assistantTurn` | count | `section[data-turn="assistant"]` → `[data-message-author-role="assistant"]` | `data-message-model-slug` を持つ |
 | `assistantTurnBody` | unique（scope: assistantTurn） | `[data-message-author-role="assistant"] .markdown` | |
 | `copyTurnButton` | presence（scope: 最新 assistantTurn） | testid `copy-turn-action-button` → role `button` name `回答をコピーする` | アクションバー aria-label「応答アクション」内。コードブロックの「コピーする」は別物 |
@@ -119,15 +126,16 @@ DOM 構造メモ（2026-09-15）:
 
 | preset | スライダー段階（`aria-valuenow`） | UI ラベル（ja / en） | 状態 |
 |---|---|---|---|
-| `instant` | 0（推定） | 未確定 | Phase 5 で確定 |
-| `medium` | 1 or 2（推定） | 未確定 | Phase 5 で確定 |
-| `high` | 2 or 3（推定） | 未確定 | Phase 5 で確定 |
-| `extra_high` | **3** | **極高** / Extra high | **確定（2026-09-15）** |
-| `pro` | 4（推定） | 未確定 | Phase 5 で確定 |
+| `instant` | 0 | Instant / Instant | 確定（2026-09-15） |
+| `medium` | 1 | 中程度 / Medium（en は推定） | 確定（2026-09-15、ja） |
+| `high` | 2 | 高 / High（en は推定） | 確定（2026-09-15、ja） |
+| `extra_high` | 3 | 極高 / Extra high（en は推定） | 確定（2026-09-15、ja） |
+| `pro` | 4 | Pro / Pro | 確定（2026-09-15）。「最新」では GPT-6 Pro にルーティング |
 | `current` | 操作しない。`modelPickerCurrentLabel` を `PRESET_LABELS` で逆引き | — | Phase 4 で実装 |
 
-- 段階数は 5（`aria-valuemax` = 4）だが、preset 5 種との 1:1 対応は **推定であり未検証**。Phase 5 で `inspect-ui` のスライダー操作（矢印キー）でラベルを 1 段階ずつ確定してから `PRESET_LABELS` / `EFFORT_SLIDER_INDEX` に追加する。未登録段階の `current` は `MODEL_NOT_VERIFIABLE`。
-- Phase 4 では `current` 以外の preset を指定すると送信前に `MODEL_NOT_VERIFIABLE`（A-063）。
+- 5 段階と preset 5 種は 1:1（`inspect-ui --walk-effort` で確認、`EFFORT_SLIDER_INDEX`）。
+- 選択手順（A-074〜A-076）: モデル指定があれば開く → 展開 → ラジオをクリック → 再展開して `aria-checked` 確認 → 閉じる。次に開き直し（simple view）→ スライダーに `focus` → `Home` → `ArrowRight` × index（**450 ms 間隔**。短いと保存が 1 段階遅れる）→ `aria-valuenow` と described ラベルを確認 → 再展開してモデルを再確認 → 閉じる → 1.2 s 待ってトリガのラベルを `parseTriggerLabel` で逆引き（「極高」または「5.5 高」「6 Pro」形式）。どこかで一致しなければ `MODEL_NOT_VERIFIABLE`。
+- 思考量はアカウントに永続化されるため、実行終了時に元の段階へ戻す（A-073）。
 - モデル側（「最新」= 自動ルーティング相当）を preset に含めるかは OQ-009 として Phase 5 で PO 判断。
 
 ## 5. 観測（読み取り専用）と操作の分離
