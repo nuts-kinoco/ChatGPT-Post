@@ -73,6 +73,10 @@ Phase 6 でこの手順を `scripts/ask-chatgpt.ps1` にまとめる。
 
 **何もしない。** ブラウザウィンドウは見えるが、キーボード・マウスで触らない（入力欄の内容が変わると `PROMPT_INPUT_FAILED`、他タブを開くと観測が乱れる）。ブラウザを閉じると `BROWSER_CRASHED` になる。
 
+補足（Phase 5）:
+- ブリッジは `preset` に応じて**アカウントの思考量設定を変更し、終了時に元へ戻す**（A-073）。復元に失敗すると `warnings[].restore_effort_failed`。その場合は chatgpt.com で思考量を手で戻す
+- ChatGPT は入力欄の**下書きをローカル保存**する。専用プロファイルのブラウザで何か打ちかけたまま閉じると、次の `run` が `PROMPT_SUBMIT_FAILED`（cause `composer_not_empty`）で止まる。専用プロファイルの Chrome を開いて入力欄を空にする（A-082）
+
 ## 6. トラブルシューティング
 
 | 症状 / code | 原因 | 対処 |
@@ -83,7 +87,11 @@ Phase 6 でこの手順を `scripts/ask-chatgpt.ps1` にまとめる。
 | `CAPTCHA_OR_CHALLENGE` | Cloudflare / CAPTCHA | `login` で開いたブラウザでチャレンジを完了。頻発する場合は利用頻度を下げる（R-001） |
 | `MANUAL_INTERVENTION_REQUIRED` | 同意画面等 | `login` で開いて対応 |
 | `RATE_LIMITED` | 利用上限 | 時間を置く。ブリッジは自動待機しない |
-| `MODEL_NOT_AVAILABLE` / `MODEL_NOT_VERIFIABLE` | preset が UI に無い、または表示を読めない | `inspect-ui` で選択肢を確認。UI 変更なら §7 |
+| `MODEL_NOT_AVAILABLE` / `MODEL_NOT_VERIFIABLE` | preset / model が UI に無い、スライダーやラジオの読み戻しが要求と一致しない、トリガのラベルが逆引きできない | `inspect-ui --walk-effort` で段階とラベルを確認。UI 変更なら §7 |
+| `INVALID_REQUEST`（添付） | 秘密らしいファイル、空、同名重複、20 件超、100 MB 超 | stderr / `error.cause` のファイル名を見て request を直す。ブリッジは内容を表示しない |
+| `INVALID_REQUEST`（prompt が 20,000 文字超） | 入力欄への直接入力が遅すぎる | 長い本文を `attachments` に移し、prompt.md は指示だけにする |
+| `PROMPT_INPUT_FAILED`（cause `attachment_failed: …`） | チップ数不一致、アップロードが時間内に終わらない | ネットワークとファイルサイズを確認。`conversationUrl` は無い（送信前） |
+| `PROMPT_SUBMIT_FAILED`（cause `composer_not_empty`） | 入力欄に下書きが残っている | §5 補足 |
 | `DOM_CHANGED` | ChatGPT UI 変更 | §7 |
 | `PROFILE_IN_USE` | 専用プロファイルを Chrome が開いている | そのウィンドウを閉じる（`login` の残り、前回のブリッジが kill した後の残骸など。`doctor` が該当プロセスを表示） |
 | `BROWSER_LAUNCH_FAILED` | Chrome / Chromium の起動失敗 | `doctor` でブラウザ実行ファイルと版を確認。`CHATGPT_BRIDGE_CHANNEL=chromium` で切り分け |

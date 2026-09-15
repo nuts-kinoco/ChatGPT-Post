@@ -26,12 +26,16 @@ runtime/state/<requestId>/
 
 ## 2. `request.json`
 
+契約 **1.1**（2026-09-15、A-067 / A-068 / A-083）。1.0 の request もそのまま受け付ける。
+
 ```json
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "requestId": "20260914T113000Z-a1b2c3d4",
   "promptFile": "prompt.md",
-  "preset": "current",
+  "attachments": ["src/inventory.ts", "notes.md"],
+  "preset": "high",
+  "model": "latest",
   "newChat": true,
   "timeoutMs": 900000,
   "responseFormat": "markdown"
@@ -40,17 +44,19 @@ runtime/state/<requestId>/
 
 | フィールド | 型 | 制約 | 説明 |
 |---|---|---|---|
-| `schemaVersion` | string | const `"1.0"` | 契約版。不一致は `INVALID_REQUEST` |
+| `schemaVersion` | string | `"1.0"` または `"1.1"` | 契約版。不一致は `INVALID_REQUEST` |
 | `requestId` | string | `^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$`（末尾は英数字） | 呼び出し元が生成する一意 ID。ディレクトリ名に使うため、Windows 予約名（`CON`, `PRN`, `AUX`, `NUL`, `COM1`〜`9`, `LPT1`〜`9` とそれに `.` が続く形、大小文字無視）は `INVALID_REQUEST`。**推奨形式**: `<UTC 時刻 yyyyMMddTHHmmssZ>-<8 桁 hex>`（時系列ソート可、依存ライブラリ不要）。UUID v4/v7 も可（OQ-006） |
 | `promptFile` | string | 1 文字以上 | プロンプトファイル。相対パスは `request.json` のディレクトリ基準。絶対パス可（`C:\...` / `/` 混在可） |
-| `preset` | string | enum `current, instant, medium, high, extra_high, pro` | UI 上のモデル / 思考 effort。`current` は UI の現在選択を観測して使う |
+| `attachments` | string[] | 任意、最大 20、各 1 文字以上 | 1.1。composer の file input に添付するファイル。相対パスは `request.json` 基準。1 ファイル 100 MB まで。秘密らしい名前 / 拡張子 / ディレクトリ / 内容（2 MB 以下のテキストを走査）、空ファイル、同名重複は送信前に `INVALID_REQUEST`（A-080）。ChatGPT 側の制限（80 ファイル/3 時間、未検証）は `usage` で目安を出す |
+| `preset` | string | enum `current, instant, medium, high, extra_high, pro` | **思考量スライダーの段階**（Instant / 中程度 / 高 / 極高 / Pro）。`current` は現在値を観測して使う。`pro` は「最新」モデルでは GPT-6 Pro にルーティングされ週次上限を消費する（A-077） |
+| `model` | string | 任意、enum `current, latest, gpt-5.6-sol, gpt-5.5`、既定 `current` | 1.1。メニュー内のモデルのラジオ。`current` は観測のみ（ラジオはページ読込ごとに「最新」へ戻るため `latest` と実質同じ、A-078） |
 | `newChat` | boolean | const `true` | MVP では `true` のみ。`false` は `INVALID_REQUEST` |
 | `timeoutMs` | integer | 10000 〜 3600000、**任意** | 送信から完了までの上限。省略時 900000（A-030。FR-007 / NFR-003 と整合） |
 | `responseFormat` | string | const `"markdown"` | 将来拡張用。MVP は markdown のみ |
 
 `additionalProperties: false`。未知フィールドは `INVALID_REQUEST`（呼び出し元の typo を早期に検出するため）。
 
-**request.json / prompt.md** はいずれも UTF-8 で、先頭 BOM は除去して扱う（PowerShell 5.1 の `-Encoding utf8` は BOM を付けるため）。**prompt.md**: 空・空白のみは `INVALID_REQUEST`。サイズ上限は設けないが、ChatGPT 側の入力上限超過は `PROMPT_INPUT_FAILED`（入力欄内容の不一致として検出）になる。
+**request.json / prompt.md** はいずれも UTF-8 で、先頭 BOM は除去して扱う（PowerShell 5.1 の `-Encoding utf8` は BOM を付けるため）。**prompt.md**: 空・空白のみは `INVALID_REQUEST`。**20,000 文字を超える本文は `INVALID_REQUEST`**（A-083。入力欄への直接入力が遅すぎるため。長い内容は `attachments` に置き、prompt.md は短い指示にする。添付なら 57 k 文字の全行を正確に参照できることを確認済み）。
 
 ## 3. `result.json`
 
@@ -115,12 +121,15 @@ runtime/state/<requestId>/
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `schemaVersion` | `"1.0"` | |
+| `schemaVersion` | `"1.1"` | |
 | `bridgeVersion` | string | `package.json` の version |
 | `requestId` | string \| null | `request.json` から。欠落・パターン不一致の場合 null（AC-006） |
 | `status` | `completed` \| `failed` \| `manual_intervention_required` | |
 | `requestedPreset` | preset enum \| null | 検証前に失敗した場合 null |
 | `observedPreset` | `instant` \| `medium` \| `high` \| `extra_high` \| `pro` \| null | UI から観測した値。**`current` は含まない**（要求指定であり観測値ではない）。`completed` では必ず非 null（FR-020） |
+| `requestedModel` | `current` \| `latest` \| `gpt-5.6-sol` \| `gpt-5.5` \| null | 1.1。request の `model`（省略時 `current`） |
+| `observedModel` | `latest` \| `gpt-5.6-sol` \| `gpt-5.5` \| null | 1.1。送信前にメニューで確認したラジオ |
+| `observedModelSlug` | string \| null | 1.1。回答ターンの `data-message-model-slug`（例 `gpt-5-6-thinking`, `gpt-6-pro`）。`model` × `preset` の期待パターンと不一致なら `warnings[].model_slug_mismatch`（失敗にはしない、A-077） |
 | `submitted` | `"yes"` \| `"no"` \| `"unknown"` | 送信操作が dispatch されたか。`"unknown"` は `PROMPT_SUBMITTING` 状態での終端（`PROMPT_SUBMIT_FAILED` / `BROWSER_CRASHED` / `INTERNAL_ERROR`）と `SUBMIT_STATE_UNKNOWN`。**呼び出し元は `"no"` 以外を「送信された可能性あり」と扱い、同じ内容を再送する場合は必ず新しい requestId を使う** |
 | `conversationUrl` | string \| null | 送信後に観測した `https://chatgpt.com/c/...`。人間が手動で確認する際の手がかり |
 | `responseFile` | string \| null | 絶対パス。`completed` のみ非 null |
@@ -129,7 +138,7 @@ runtime/state/<requestId>/
 | `startedAt` / `completedAt` | date-time（RFC 3339、オフセット付き） | |
 | `durationMs` | integer ≥ 0 | `completedAt - startedAt` |
 | `artifacts` | string[] | 絶対パス。ブラウザ起動前の失敗では `[]` |
-| `warnings` | string[] | best-effort 処理（screenshot / trace / inspect-ui / marker 追記・削除 / ブラウザ終了）の失敗記録。`"<kind>_failed: <redacted cause>"` 形式。通常は `[]` |
+| `warnings` | string[] | best-effort 処理（screenshot / trace / inspect-ui / marker 追記・削除 / ブラウザ終了 / 思考量の復元 `restore_effort_failed`）の失敗記録と `model_slug_mismatch`。`"<kind>_failed: <redacted cause>"` 形式。通常は `[]` |
 | `error` | object \| null | `completed` のとき null、それ以外は必須 |
 | `error.code` | string | `13-ERROR-MODEL.md` の enum |
 | `error.message` | string | 人間向け（日本語）。秘密情報・プロンプト本文を含まない |
