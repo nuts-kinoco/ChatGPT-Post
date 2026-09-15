@@ -1,0 +1,46 @@
+<!doctype html>
+<!--
+  Sanitized DOM fixture reproducing the structure observed on chatgpt.com (ja) on 2026-09-15
+  (docs/14-SELECTOR-STRATEGY.md §3). Hand-written from inspect-ui / diagnostics: no user data,
+  no scripts, no external resources. Covers: composer, picker trigger, send/stop buttons, file input,
+  attachment chips, an assistant turn with markdown body + nested code block + action bar + image.
+-->
+<html lang="ja">
+<head><meta charset="utf-8"><title>fixture</title>
+<style>#prompt-textarea{min-height:24px;min-width:200px;display:block} button{min-width:16px;min-height:16px} [role=group]{display:block;min-height:16px}</style></head>
+<body>
+<main>
+  <section data-turn="user"><div data-message-author-role="user">こんにちは</div></section>
+  <section data-turn="assistant">
+    <div data-message-author-role="assistant" data-message-model-slug="gpt-5-6-thinking">
+      <div class="markdown">
+        <h1>Bridge Smoke Test</h1>
+        <p>request id: <code>20260915T000000Z-fixture1</code></p>
+        <pre><div><div><div><svg></svg>TypeScript</div><div><button aria-label="コピーする">コピーする</button></div></div>
+<div id="code-block-viewer"><pre><code><span>function</span><span> hello_bridge() {
+  console.log("hello");
+}</span></code></pre></div></div></pre>
+        <p>done</p>
+        <img alt="生成された画像：テスト" src="https://chatgpt.com/fixture/estuary/content?id=file_x" width="480" height="320">
+      </div>
+    </div>
+    <div aria-label="応答アクション">
+      <button data-testid="copy-turn-action-button" aria-label="回答をコピーする"></button>
+      <button data-testid="good-image-turn-action-button" aria-label="この画像を高く評価"></button>
+      <button aria-label="その他のアクション" aria-haspopup="menu"></button>
+    </div>
+  </section>
+  <form>
+    <input type="file" id="upload-files" multiple hidden>
+    <input type="file" id="upload-photos" accept="image/*" hidden>
+    <div contenteditable="true" id="prompt-textarea" role="textbox" aria-multiline="true" aria-label="ChatGPT とチャットする"><p data-placeholder="ChatGPT に質問"></p></div>
+    <div data-composer-transition-slot="trailing">
+      <button type="button" aria-haspopup="menu" aria-expanded="false"><span>5.5 高</span></button>
+      <button type="submit" id="composer-submit-button" aria-label="プロンプトを送信する" data-testid="send-button"></button>
+    </div>
+    <div role="group" aria-label="sample.ts"><button type="button" aria-label="sample.ts"></button><div><div>sample.ts</div><div>TypeScript</div></div><button type="button" aria-label="ファイル 1 を削除：sample.ts"></button></div>
+    <div role="group" aria-label="notes.md"><button type="button" aria-label="notes.md"></button><div><div>notes.md</div><div>ファイル</div></div><button type="button" aria-label="ファイル 2 を削除：notes.md"></button></div>
+  </form>
+</main>
+</body>
+</html>
