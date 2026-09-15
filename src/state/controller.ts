@@ -409,6 +409,10 @@ export class RunController {
         } catch (err) {
           this.warnings.push(`image_capture_failed: ${(err as Error).message.slice(0, 200)}`);
         }
+        // An image-only turn whose images could not be saved has nothing to deliver: not a success.
+        if (this.extraction && this.extraction.markdown.trim() === "" && this.images.length === 0) {
+          return { type: "EXTRACTION_EMPTY", cause: "empty" };
+        }
         return { type: "EXTRACTED" };
       }
       case "WRITE_RESPONSE_MD": {

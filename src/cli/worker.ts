@@ -6,6 +6,7 @@
  */
 import { mkdir, readdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { isValidRequestId } from "../contracts/request.js";
 import { EXIT_CODES } from "../contracts/types.js";
 
 export const QUEUE_DIRS = ["pending", "running", "done", "failed", "blocked"] as const;
@@ -39,7 +40,8 @@ async function listPending(queueDir: string): Promise<string[]> {
   const dirs: string[] = [];
   for (const e of entries) {
     const st = await stat(join(queueDir, "pending", e)).catch(() => null);
-    if (st?.isDirectory()) {
+    // the directory name is used as a path segment: only well-formed requestIds are picked up
+    if (st?.isDirectory() && isValidRequestId(e)) {
       const req = await stat(join(queueDir, "pending", e, "request.json")).catch(() => null);
       if (req?.isFile()) dirs.push(e);
     }

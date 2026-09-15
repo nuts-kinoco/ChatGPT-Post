@@ -17,6 +17,8 @@ describe("file-queue worker (21 §5c, A-094)", () => {
       await writeFile(join(q, "pending", id, "request.json"), "{}");
     }
     await mkdir(join(q, "pending", "not-a-request"), { recursive: true }); // no request.json -> ignored
+    await mkdir(join(q, "pending", "..evil"), { recursive: true }); // malformed id -> ignored
+    await writeFile(join(q, "pending", "..evil", "request.json"), "{}");
   });
   afterEach(async () => {
     await rm(q, { recursive: true, force: true });

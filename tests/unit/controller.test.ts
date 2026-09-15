@@ -307,6 +307,38 @@ describe("RunController", () => {
     expect(f.calls).not.toContain("writeMarker");
   });
 
+  it("image-only turn: success only when an image was saved (never an empty success)", async () => {
+    const ok = fake({
+      extractLatest: async () => ({
+        markdown: "",
+        method: "dom",
+        quality: "full",
+        modelSlug: "gpt-5-6",
+      }),
+      captureImages: async () => ({ saved: ["1.png"], warnings: [] }),
+    });
+    const o1 = await run(ok);
+    expect(o1.result?.status).toBe("completed");
+    expect(o1.result?.images).toEqual(["images/1.png"]);
+    expect(ok.responses[0]).toBe("![image 1](images/1.png)\n");
+    const bad = fake({
+      extractLatest: async () => ({
+        markdown: "",
+        method: "dom",
+        quality: "full",
+        modelSlug: "gpt-5-6",
+      }),
+      captureImages: async () => ({
+        saved: [],
+        warnings: ["image_capture_failed: image 1: HTTP 403"],
+      }),
+    });
+    const o2 = await run(bad);
+    expect(o2.result?.status).toBe("failed");
+    expect(o2.result?.error?.code).toBe("EXTRACTION_FAILED");
+    expect(o2.result?.warnings.join()).toContain("image_capture_failed");
+  });
+
   // Codex P4-High-1 (15 §4, 13 §6): result.json must not carry URL query/fragment or secrets
   it("result.json: conversationUrl is origin+path, cause/warnings are redacted", async () => {
     const f = fake(
