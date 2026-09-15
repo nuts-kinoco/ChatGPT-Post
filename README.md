@@ -6,9 +6,16 @@ Claude Code 等のローカルオーケストレータが、人間のコピー�
 
 ## 現状
 
-**Phase 4（最小の End-to-End 縦切り）完了。** 実ブラウザで `prompt.md → 送信 → 回答 → response.md + result.json` の一往復が通っています（`preset: current` のみ。[docs/live-results/20260915-LS-01.md](docs/live-results/20260915-LS-01.md)）。次は Phase 5（堅牢化: preset 選択、fixture テスト、Live シナリオ拡充）。
+**Phase 7（運用手順・最終レビュー）実施中。契約 1.2。** 実ブラウザで次が動いています（すべて 2026-09-15 の Live で確認、[docs/live-results/](docs/live-results/)）:
 
-進捗は [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) を参照してください。
+- 1 往復の質問 → `response.md` + `result.json`（28〜66 s）
+- 思考量 5 段階（Instant / 中程度 / 高 / 極高 / Pro）とモデル（最新 / GPT-5.6 Sol / GPT-5.5）の選択と読み戻し確認
+- ファイル添付（秘密ガード付き）、`bundle` によるリポジトリの Markdown 化、57 k 文字の参照
+- 生成画像の受け取り（`images/1.png`）、画像添付からの説明・タグ付け
+- 同一会話への追記、ファイルキュー `worker`、`usage` による使用量の目安
+- コードレビュー: 仕込んだバグ 3/3 発見・誤検出 0、修正パッチは `git apply` 通過
+
+使い方は [docs/20-COMMAND-REFERENCE.md](docs/20-COMMAND-REFERENCE.md)（貼り付け用）、運用は [docs/17-OPERATIONS.md](docs/17-OPERATIONS.md)、他 PJ の Claude Code / Codex からは [skills/chatgpt-bridge/SKILL.md](skills/chatgpt-bridge/SKILL.md)。進捗は [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。
 
 ## 方針（要約）
 
@@ -48,34 +55,35 @@ Claude Code 等のローカルオーケストレータが、人間のコピー�
 | [docs/adr/](docs/adr/) | ADR 001〜005 |
 | [schemas/](schemas/) | request / result の JSON Schema |
 
-## セットアップと使い方（Phase 4 時点）
+## セットアップと使い方
 
 ```powershell
 npm ci
-npx playwright install chromium   # fixture テスト用
 npm run build
-npm test
-node dist/cli/main.js doctor
+npm test            # unit + fixture（Chrome の headless で DOM スナップショット。ChatGPT には接続しない）
+npm link            # chatgpt-bridge をグローバルコマンドに
+chatgpt-bridge doctor
 ```
 
-初回ログイン（Google アカウントの場合は自動操作なしの通常 Chrome を専用プロファイルで起動して行う。詳細は [docs/17-OPERATIONS.md](docs/17-OPERATIONS.md) §2）:
+初回ログイン（Google アカウントの場合は自動操作なしの通常 Chrome を専用プロファイルで起動して行う。[docs/17-OPERATIONS.md](docs/17-OPERATIONS.md) §2）:
 
 ```powershell
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir="<repo>\runtime\profile" https://chatgpt.com/
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir="<repo>untime\profile" https://chatgpt.com/
 ```
 
 ```powershell
-node dist/cli/main.js login        # メール + 確認コードでログインする場合
-node dist/cli/main.js doctor       # 環境・プロファイル・ロック・ログイン状態を診断
-node dist/cli/main.js run --request .\runtime\requests\<id>\request.json
-node dist/cli/main.js inspect-ui   # UI 変更時の診断。送信はしない
+chatgpt-bridge run --request .untimeequests\<id>equest.json --json   # 1 件
+chatgpt-bridge worker --queue <dir> --drain                                  # キュー
+chatgpt-bridge bundle --root <repo> --include "src/**/*.ts" --out context.md # リポジトリを Markdown に
+chatgpt-bridge usage                                                         # 使用量の目安
+chatgpt-bridge inspect-ui --walk-effort                                      # UI 変更時の診断（送信しない）
 ```
 
-`request.json` / `result.json` の契約は [docs/12-IO-CONTRACT.md](docs/12-IO-CONTRACT.md)。貼り付け用の全コマンド一覧は [docs/20-COMMAND-REFERENCE.md](docs/20-COMMAND-REFERENCE.md)、活用範囲の所見と検証計画は [docs/21-CAPABILITY-EXPLORATION.md](docs/21-CAPABILITY-EXPLORATION.md)。
+`request.json` / `result.json` の契約は [docs/12-IO-CONTRACT.md](docs/12-IO-CONTRACT.md)。プロンプトの型は [prompts/](prompts/)、ベストプラクティスは [docs/22-BEST-PRACTICES.md](docs/22-BEST-PRACTICES.md)、活用範囲の所見は [docs/21-CAPABILITY-EXPLORATION.md](docs/21-CAPABILITY-EXPLORATION.md)。
 
 ## 技術構成
 
-Node.js LTS / TypeScript strict / Playwright（既定はインストール済み Google Chrome チャネル）/ npm / Ajv / turndown / vitest / Biome。詳細は `docs/10-ARCHITECTURE.md`。
+Node.js 24 / TypeScript strict / Playwright 1.63（既定はインストール済み Google Chrome チャネル）/ npm / Ajv / turndown / vitest / Biome。詳細は `docs/10-ARCHITECTURE.md`。
 
 ## ライセンス
 
