@@ -307,6 +307,41 @@ describe("RunController", () => {
     expect(f.calls).not.toContain("writeMarker");
   });
 
+  it("restore_effort_failed lands in result.json (restore runs before WRITE_RESULT, Codex P7-1)", async () => {
+    const f = fake({
+      restoreEffort: async () => ({ kind: "failed", cause: "slider at 2, expected 3" }),
+    });
+    const out = await run(f);
+    expect(out.result?.status).toBe("completed");
+    expect(out.result?.warnings.join()).toContain("restore_effort_failed: slider at 2, expected 3");
+    expect(f.results[0]?.warnings.join()).toContain("restore_effort_failed"); // the written document
+  });
+
+  it("image capture timeout aborts the capture and waits for it (Codex P7-2)", async () => {
+    let aborted = false;
+    const f = fake({
+      captureImages: (_dir, signal) =>
+        new Promise((res) => {
+          signal.addEventListener("abort", () => {
+            aborted = true;
+            res({ saved: [], warnings: ["image_capture_failed: image 1: aborted"] });
+          });
+        }),
+    });
+    const out = await new RunController(f.ports, {
+      requestPath: "/req/request.json",
+      artifactsRoot: "/art",
+      bridgeVersion: "0.1.0",
+      traceOnSuccess: false,
+      observationIntervalMs: 0,
+      imageCaptureBudgetMs: 30,
+    }).run();
+    expect(aborted).toBe(true);
+    expect(out.result?.status).toBe("completed");
+    expect(out.result?.images).toEqual([]);
+    expect(out.result?.warnings).toContain("image_capture_failed: timeout");
+  });
+
   it("image-only turn: success only when an image was saved (never an empty success)", async () => {
     const ok = fake({
       extractLatest: async () => ({

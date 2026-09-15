@@ -165,7 +165,7 @@ export interface ChatGptPort {
    * Best-effort: in-page fetch of the same img.src first (A-069 / A-092); viewer download opt-in.
    * Returns relative file names in turn order; problems go to `warnings`.
    */
-  captureImages(dir: string): Promise<{ saved: string[]; warnings: string[] }>;
+  captureImages(dir: string, signal: AbortSignal): Promise<{ saved: string[]; warnings: string[] }>;
   /**
    * Best-effort: puts the (account-persisted) effort slider back to the level seen before this run
    * changed it. No-op when nothing was changed. Called before CLOSE_BROWSER; failures are warnings.

@@ -52,7 +52,11 @@ export interface ControllerOptions {
   completion?: Partial<Omit<CompletionConfig, "timeoutMs">>;
   /** Phase limits for pre-submit states (11 §5). */
   phaseLimitsMs?: Partial<Record<StateName, number>>;
+  /** Image capture budget (A-091); tests shorten it. */
+  imageCaptureBudgetMs?: number;
 }
+
+export const IMAGE_CAPTURE_BUDGET_MS = 120_000;
 
 export const DEFAULT_PHASE_LIMITS_MS: Partial<Record<StateName, number>> = {
   BROWSER_STARTED: 60_000,
@@ -391,14 +395,34 @@ export class RunController {
           const m = slugMatches(this.observedModel, this.observedPreset, x.modelSlug);
           if (!m.ok) this.warnings.push(`model_slug_mismatch: ${m.cause}`);
         }
-        // A-091: generated images (best-effort, bounded; never fails the run)
+        // A-091: generated images (best-effort, bounded; never fails the run). Codex P7-2: on
+        // timeout the capture is aborted and awaited, so no file appears after result.json is final.
         try {
-          const cap = await Promise.race([
-            chatgpt.captureImages(`${this.requestDir}/images`),
-            this.ports.clock
-              .sleep(120_000)
-              .then(() => ({ saved: [] as string[], warnings: ["image_capture_failed: timeout"] })),
-          ]);
+          const abort = new AbortController();
+          const capture = chatgpt.captureImages(`${this.requestDir}/images`, abort.signal);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const timeout = new Promise<"timeout">((res) => {
+            timer = setTimeout(
+              () => res("timeout"),
+              this.opts.imageCaptureBudgetMs ?? IMAGE_CAPTURE_BUDGET_MS,
+            );
+          });
+          const first = await Promise.race([capture, timeout]);
+          if (timer) clearTimeout(timer);
+          let cap: { saved: string[]; warnings: string[] };
+          if (first === "timeout") {
+            abort.abort();
+            const settled = await capture.catch((e: Error) => ({
+              saved: [] as string[],
+              warnings: [`image_capture_failed: ${e.message}`],
+            }));
+            cap = {
+              saved: settled.saved,
+              warnings: ["image_capture_failed: timeout", ...settled.warnings],
+            };
+          } else {
+            cap = first;
+          }
           for (const f of cap.saved) this.images.push(`images/${f}`);
           for (const w of cap.warnings) this.warnings.push(w);
           if (cap.saved.length > 0 && this.extraction) {
@@ -443,6 +467,9 @@ export class RunController {
         return null;
       }
       case "WRITE_RESULT": {
+        // A-073 / Codex P7-1: the effort slider is restored before the result is written so that a
+        // failure lands in result.json.warnings (CLOSE_BROWSER runs after WRITE_RESULT everywhere).
+        await this.restoreEffortBestEffort();
         const result = this.buildResult();
         try {
           this.resultPath = await contracts.writeResult(this.requestDir, result);
@@ -457,19 +484,7 @@ export class RunController {
       }
       case "CLOSE_BROWSER":
         if (this.browserUp) {
-          // A-073: leave the account's effort setting as we found it (best-effort, bounded).
-          if (!this.crashCause) {
-            const r = await Promise.race([
-              chatgpt
-                .restoreEffort()
-                .catch((e: Error) => ({ kind: "failed" as const, cause: e.message })),
-              this.ports.clock
-                .sleep(15_000)
-                .then(() => ({ kind: "failed" as const, cause: "timeout" })),
-            ]);
-            if (r.kind === "failed") this.warnings.push(`restore_effort_failed: ${r.cause}`);
-            else if (r.kind === "restored") this.ports.log("info", "effort slider restored");
-          }
+          await this.restoreEffortBestEffort(); // no-op when WRITE_RESULT already did it
           this.browserUp = false;
           await browser.close();
         }
@@ -576,6 +591,26 @@ export class RunController {
               cause: safeCause,
             },
     };
+  }
+
+  private effortRestoreDone = false;
+  /** A-073: put the account's effort slider back (best-effort, 15 s cap). Runs at most once. */
+  private async restoreEffortBestEffort(): Promise<void> {
+    if (this.effortRestoreDone || !this.browserUp || this.crashCause) return;
+    this.effortRestoreDone = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<{ kind: "failed"; cause: string }>((res) => {
+      timer = setTimeout(() => res({ kind: "failed", cause: "timeout" }), 15_000);
+    });
+    const r = await Promise.race([
+      this.ports.chatgpt
+        .restoreEffort()
+        .catch((e: Error) => ({ kind: "failed" as const, cause: e.message })),
+      timeout,
+    ]);
+    if (timer) clearTimeout(timer);
+    if (r.kind === "failed") this.warnings.push(`restore_effort_failed: ${r.cause}`);
+    else if (r.kind === "restored") this.ports.log("info", "effort slider restored");
   }
 
   private requireId(): string {

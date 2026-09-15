@@ -140,7 +140,7 @@ export function chatgptPort(
     extractLatest: () => get().extractLatest(),
     inspectUiReport: (dir, o) => get().inspectUiReport(dir, o),
     restoreEffort: () => get().restoreEffort(),
-    captureImages: (dir) => get().captureImages(dir),
+    captureImages: (dir, signal) => get().captureImages(dir, signal),
   };
 }
 

@@ -85,8 +85,8 @@ chatgpt-bridge bundle --root S:\Projects\PixivVault --include "src/**/*.ts" --ex
 | ID | 内容 | 状態 / 方針 |
 |---|---|---|
 | MM-01 | 画像を添付して説明させる（スクリーンショットのバグ報告など） | 🔶 `setInputFiles`。取得は通常の Markdown |
-| MM-02 | 画像生成を依頼し、生成画像を `runtime/requests/<id>/images/` に保存する | 🔶 回答ターン内の `<img>` に対する画面上の「ダウンロード」ボタンをクリックし、Playwright の `download` イベントで受け取る（DOM 操作）。ボタンが無い場合はページ内 `fetch(img.src)` で blob を取る案があるが、これは「ページが自分で読む画像を読むだけ」でも内部 API に近づくので **PO 判断**（OQ-010 として登録） |
-| MM-03 | 生成画像の Markdown 表現 | `response.md` に `![generated](images/1.png)` の相対リンクで記録。`result.json.artifacts` にも列挙 |
+| MM-02 | 画像生成を依頼し、生成画像を `runtime/requests/<id>/images/` に保存する | ✅ **実装済み（A-091 / A-092）**: ページ内 `fetch(img.src)`（ページ自身が表示に使う同一 URL、A-069 で PO 許容）が主経路。ビューア「保存」経由は Chrome がクラッシュしたため opt-in（`CHATGPT_BRIDGE_IMAGE_VIA_VIEWER=1`） |
+| MM-03 | 生成画像の Markdown 表現 | ✅ `response.md` 末尾に `![image n](images/n.png)`、`result.json.images[]`（1.2） |
 | MM-04 | 図表（Mermaid / SVG）の取得 | 回答内 fence として取れるはず。レンダリングされた図は対象外 |
 | MM-05 | Canvas（サイドパネル）に出力された場合 | 現状は `EXTRACTION_FAILED(canvas)`。Canvas 本文の DOM 取得を Phase 6 候補に |
 | MM-06 | 音声 / 動画 | ⛔ 範囲外（ブラウザの音声入力は自動化しない） |
@@ -171,10 +171,10 @@ chatgpt-bridge worker --queue <dir> [--once]
 
 | ID | 内容 | 期限 |
 |---|---|---|
-| OQ-010 | 生成画像の取得方法。ダウンロードボタン経由（DOM 操作）を第 1 案とし、ページ内 `fetch(img.src)` を許容するか PO 判断 | Phase 5 着手前 |
-| OQ-011 | `preset` を effort 限定にし `model` を追加する契約変更（`schemaVersion` 1.1）を認めるか | Phase 5 着手前 |
-| OQ-012 | 添付方式（`setInputFiles`）を採用するか。DOM 操作だが「アップロード」はブラウザ外のファイルを ChatGPT に送る行為なので、除外パターン（秘密情報）を必須にする | Phase 5 着手前 |
-| OQ-013 | えまきのこ等への組み込みは「自分の PC・自分のアカウント・バッチ」の範囲に限定する方針でよいか | Phase 6 着手前 |
+| OQ-010 | **解決（A-069 → A-092）**: ページ内 `fetch(img.src)` を主経路、ビューア経由は opt-in | — |
+| OQ-011 | **解決（A-067）**: 契約 1.1 で `model` 追加 | — |
+| OQ-012 | **解決（A-068 / A-080 / A-087）**: 添付採用、秘密ガード必須 | — |
+| OQ-013 | **解決（A-070）**: バッチ限定 | — |
 
 ---
 

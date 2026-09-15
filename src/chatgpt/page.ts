@@ -834,7 +834,10 @@ export class ChatGptPage implements ChatGptPort {
    *      -> Playwright download event. Chrome stable crashed on this under automation (2026-09-15).
    * The viewer carries its own composer and send button; only "保存" and the close button are touched.
    */
-  async captureImages(dir: string): Promise<{ saved: string[]; warnings: string[] }> {
+  async captureImages(
+    dir: string,
+    signal: AbortSignal,
+  ): Promise<{ saved: string[]; warnings: string[] }> {
     const saved: string[] = [];
     const warnings: string[] = [];
     const turn = await latest(this.page, "assistantTurn", this.sel);
@@ -862,9 +865,13 @@ export class ChatGptPage implements ChatGptPort {
     await mkdir(dir, { recursive: true });
     for (const [i, t] of targets.entries()) {
       const n = i + 1;
+      if (signal.aborted) {
+        warnings.push(`image_capture_failed: image ${n}: aborted (time budget exhausted)`);
+        continue;
+      }
       // A-092: in-page fetch of the rendered URL is primary (A-069); the viewer download is opt-in
       // because Chrome stable crashes on the download under automation (crash dumps 2026-09-15).
-      const viaFetch = await this.saveImageViaFetch(t.src, dir, n).catch((err) => ({
+      const viaFetch = await this.saveImageViaFetch(t.src, dir, n, signal).catch((err) => ({
         ok: false as const,
         cause: (err as Error).message,
       }));
@@ -877,7 +884,7 @@ export class ChatGptPage implements ChatGptPort {
         continue;
       }
       this.opts.log?.(`image ${n}: fetch failed (${viaFetch.cause}); trying viewer download`);
-      const viaViewer = await this.saveImageViaViewer(t.locator, dir, n).catch((err) => ({
+      const viaViewer = await this.saveImageViaViewer(t.locator, dir, n, signal).catch((err) => ({
         ok: false as const,
         cause: (err as Error).message,
       }));
@@ -891,6 +898,7 @@ export class ChatGptPage implements ChatGptPort {
     img: Locator,
     dir: string,
     n: number,
+    signal: AbortSignal,
   ): Promise<{ ok: true; file: string } | { ok: false; cause: string }> {
     await img.scrollIntoViewIfNeeded().catch(() => undefined);
     await img.click({ force: true, timeout: 5000 });
@@ -911,6 +919,7 @@ export class ChatGptPage implements ChatGptPort {
         this.page.waitForEvent("download", { timeout: 30_000 }),
         save.click({ timeout: 5000 }),
       ]);
+      if (signal.aborted) return { ok: false, cause: "aborted before write" };
       const suggested = download.suggestedFilename();
       const ext = (suggested.match(/\.([A-Za-z0-9]{2,5})$/)?.[1] ?? "png").toLowerCase();
       const file = `${n}.${ext}`;
@@ -937,6 +946,7 @@ export class ChatGptPage implements ChatGptPort {
     src: string,
     dir: string,
     n: number,
+    signal: AbortSignal,
   ): Promise<{ ok: true; file: string } | { ok: false; cause: string }> {
     if (!src.startsWith(`${CHATGPT_ORIGIN}/`))
       return { ok: false, cause: "img.src is not on chatgpt.com" };
@@ -951,6 +961,7 @@ export class ChatGptPage implements ChatGptPort {
       return { ok: true as const, type: blob.type, b64: btoa(bin) };
     }, src);
     if (!r.ok) return r;
+    if (signal.aborted) return { ok: false, cause: "aborted before write" };
     const ext = r.type.includes("png")
       ? "png"
       : r.type.includes("jpeg")
