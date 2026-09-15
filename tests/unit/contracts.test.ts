@@ -164,6 +164,19 @@ describe("result.json schema + invariants (AC-007)", () => {
     expect(validateResult(baseResult()).valid).toBe(true);
     expect(checkResultInvariants(baseResult())).toEqual([]);
   });
+  it("1.2: images[] must be images/<n>.<ext>, unique, and only on completed (Codex P6-3)", () => {
+    expect(checkResultInvariants(baseResult({ images: ["images/1.png", "images/2.jpg"] }))).toEqual(
+      [],
+    );
+    expect(checkResultInvariants(baseResult({ images: ["../x.png"] })).join()).toMatch(/images:/);
+    expect(checkResultInvariants(baseResult({ images: ["images/0.png"] })).join()).toMatch(
+      /images:/,
+    );
+    expect(
+      checkResultInvariants(baseResult({ images: ["images/1.png", "images/1.png"] })).join(),
+    ).toMatch(/duplicate/);
+    expect(validateResult(baseResult({ images: ["C:/x/1.png"] })).valid).toBe(false);
+  });
   it("1.2: newChat false requires conversationUrl on chatgpt.com/c/", () => {
     expect(validateRequest({ ...okReq, schemaVersion: "1.2", newChat: false }).valid).toBe(false);
     expect(

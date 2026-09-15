@@ -13,9 +13,20 @@ const POST_BOUNDARY = new Set(STATE_NAMES.slice(STATE_NAMES.indexOf("WAITING_FOR
  * Invariants that JSON Schema cannot express (12-IO-CONTRACT §3.4). Returns a list of violations;
  * empty means the result is consistent. Schema validation is included so callers need one call.
  */
+const IMAGE_PATH = /^images\/[1-9][0-9]*\.(png|jpg|jpeg|webp|gif)$/;
+
 export function checkResultInvariants(result: BridgeResult): string[] {
   const problems = validateResult(result).errors.map((e) => `schema: ${e}`);
   const err = result.error;
+  // 1.2 images[]: requestDir-relative, under images/, numbered, unique, only on success (A-091)
+  const images = result.images ?? [];
+  for (const img of images) {
+    if (!IMAGE_PATH.test(img)) problems.push(`images: "${img}" is not images/<n>.<ext>`);
+  }
+  if (new Set(images).size !== images.length) problems.push("images: duplicate entries");
+  if (images.length > 0 && result.status !== "completed") {
+    problems.push("images: present although status is not completed");
+  }
   if (result.status === "completed") {
     if (err !== null) problems.push("completed must have error == null");
     if (result.submitted !== "yes") problems.push("completed must have submitted == yes");

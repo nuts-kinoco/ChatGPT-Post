@@ -212,7 +212,9 @@ export class ChatGptPage implements ChatGptPort {
       const composer = await probe(this.page, "composer", this.sel);
       if (composer.found && composer.locator) {
         await this.page.waitForTimeout(1000); // history renders after the composer
-        if (new URL(this.page.url()).pathname !== target.pathname) {
+        const now = new URL(this.page.url());
+        // Codex P6-1: a redirect to another origin with a composer must never receive the prompt
+        if (now.origin !== CHATGPT_ORIGIN || now.pathname !== target.pathname) {
           return { kind: "failed", cause: "conversation_not_found" };
         }
         if ((await countMatches(this.page, "assistantTurn", this.sel)) === 0) {
@@ -826,9 +828,10 @@ export class ChatGptPage implements ChatGptPort {
   }
 
   /**
-   * A-091 / A-069: generated images. For each distinct large image in the latest turn:
-   *   1. click the image -> fullscreen viewer (role=dialog) -> "保存" -> Playwright download event
-   *   2. fallback: fetch the very same img.src inside the page (the URL the page itself renders)
+   * A-091 / A-069 / A-092: generated images. For each distinct large image in the latest turn:
+   *   1. fetch the very same img.src inside the page (the URL the page itself renders)
+   *   2. opt-in fallback (CHATGPT_BRIDGE_IMAGE_VIA_VIEWER=1): image -> viewer (role=dialog) -> "保存"
+   *      -> Playwright download event. Chrome stable crashed on this under automation (2026-09-15).
    * The viewer carries its own composer and send button; only "保存" and the close button are touched.
    */
   async captureImages(dir: string): Promise<{ saved: string[]; warnings: string[] }> {

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { destinationFor, runWorker } from "../../src/cli/worker.js";
+import { destinationFor, recoverRunning, runWorker } from "../../src/cli/worker.js";
 
 describe("file-queue worker (21 §5c, A-094)", () => {
   let q: string;
@@ -73,6 +73,31 @@ describe("file-queue worker (21 §5c, A-094)", () => {
     expect(calls).toBe(9);
     expect(r.stoppedBy).toBe("drain");
     expect((await readdir(join(q, "failed"))).length).toBe(3);
+  });
+
+  it("recovers orphans in running/ on start: by result status, or back to pending (Codex P6-2)", async () => {
+    for (const [id, status] of [
+      ["20260915T000010Z-dddddddd", "completed"],
+      ["20260915T000011Z-eeeeeeee", "manual_intervention_required"],
+      ["20260915T000012Z-ffffffff", "failed"],
+    ]) {
+      await mkdir(join(q, "running", id), { recursive: true });
+      await writeFile(join(q, "running", id, "result.json"), JSON.stringify({ status }));
+    }
+    await mkdir(join(q, "running", "20260915T000013Z-99999999"), { recursive: true }); // no result.json
+    await writeFile(join(q, "running", "20260915T000013Z-99999999", "request.json"), "{}");
+    const logs: string[] = [];
+    await recoverRunning(
+      q,
+      (m) => logs.push(m),
+      async () => undefined,
+    );
+    expect(await readdir(join(q, "running"))).toEqual([]);
+    expect(await readdir(join(q, "done"))).toEqual(["20260915T000010Z-dddddddd"]);
+    expect(await readdir(join(q, "blocked"))).toEqual(["20260915T000011Z-eeeeeeee"]);
+    expect(await readdir(join(q, "failed"))).toEqual(["20260915T000012Z-ffffffff"]);
+    expect(await readdir(join(q, "pending"))).toContain("20260915T000013Z-99999999");
+    expect(logs.length).toBe(4);
   });
 
   it("--once processes exactly one item", async () => {

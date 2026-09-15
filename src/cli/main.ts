@@ -263,7 +263,8 @@ async function cmdWorker(
     () => stop,
   );
   process.stdout.write(`${JSON.stringify({ processed: r.processed, stoppedBy: r.stoppedBy })}\n`);
-  return r.stoppedBy === "blocked" ? EXIT_CODES.manualIntervention : 0;
+  if (r.stoppedBy === "blocked") return EXIT_CODES.manualIntervention;
+  return r.stoppedBy === "error" ? EXIT_CODES.afterBrowser : 0;
 }
 
 async function cmdUsage(cfg: BridgeConfig, json: boolean, queue?: string): Promise<number> {

@@ -4,7 +4,7 @@
 
 ## 現在のフェーズ
 
-**Phase 5 — 堅牢化と活用範囲の探索: 完了（2026-09-15）。Phase 6 の続行指示待ち。**
+**Phase 6 — 画像・キュー・追記・SKILL: 完了（2026-09-15）。Phase 7（運用手順の仕上げと最終レビュー）の続行指示待ち。**
 
 ## フェーズ進捗
 
@@ -13,6 +13,7 @@
 | 1 調査・要件定義 | 完了 | 2026-09-14 | 文書 7 本 + README + .gitignore + DECISION-LOG |
 | 2 基本設計 | 完了 | 2026-09-14 | docs/10〜17、ADR 001〜005、schemas 2 本。Freeze は Phase 3 |
 | 3 Codex レビュー・Freeze | 完了 | 2026-09-15 | Codex 7 指摘（High 3・Medium 4）を全件 Accept、反映済み。FROZEN FOR MVP v1.0 |
+| 6 画像・キュー・追記 | 完了 | 2026-09-15 | 契約 1.2（images[]、newChat:false）、生成画像取得、画像添付、worker、SKILL.md、EX-08 / CX-06。Live 13 件（`docs/live-results/20260915-phase6.md`）。Unit 105 件。Codex: High 2 / Medium 1 / Low 1 を修正、Low 1 を保留 |
 | 5 堅牢化・活用探索 | 完了 | 2026-09-15 | 契約 1.1、思考量 5 段階 + モデル選択、添付、bundle、usage、--json、npm link。Live 13 件（`docs/live-results/20260915-phase5.md`）。Unit 97 件。Codex Medium レビュー: High 2 / Medium 1 / Low 1 を修正 |
 | 4 縦切り実装 | 完了 | 2026-09-15 | LS-01 合格（`completed` / `copy` 抽出 / 24 s、修正後再実行 29 s）。Unit 80 件通過。Codex Medium レビュー: High 2 件を修正・回帰テスト化 |
 | 5 堅牢化 | 未着手 | - | |
@@ -35,7 +36,7 @@
 - `docs/03-RISK-REGISTER.md`（R-001〜R-015、Critical 2 件）
 - `docs/04-ACCEPTANCE-CRITERIA.md`（AC-001〜AC-034、Live シナリオ LS-01〜LS-11）
 - `docs/05-PHASE-PLAN.md`（付録 A: Codex レビュー依頼テンプレート）
-- `docs/DECISION-LOG.md`（A-001〜A-090）
+- `docs/DECISION-LOG.md`（A-001〜A-098）
 - `reviews/phase1-self-review.md`（+ round1/round2 JSON 原文）
 - `reviews/architecture-review-request.md` / `architecture-review-codex.md`（Codex 原文）/ `architecture-review-adjudication.md`（採否）
 - `README.md`, `.gitignore`
@@ -68,4 +69,4 @@
 
 ## 次のアクション
 
-PO の `続行: Phase 6` を受けて: 画像生成の受け取り（MM-02/03、A-069 でページ内取得も許容）、画像添付（MM-01）、ファイルキュー + `worker`（21 §5c）、同一チャット追記（EX-03）、`SKILL.md`（Claude Code / Codex 向け手順）、バッチ分類 EX-08（えまきのこ想定）、CX-03 / CX-06、英語 UI 確認。OQ-001（規約の手動確認）は PO 待ち。
+PO の `続行: Phase 7` を受けて: 運用手順の最終化（17 の全面改訂、UI 変更時の復旧手順の実演）、全エラーコードの fixture テスト、README の整理、最終 Codex レビュー（High 設定）、`knowledge/` の初期運用。残る探索: CX-03（大規模 bundle）、英語 UI、NSFW 拒否範囲の観測（回避なし）。OQ-001（規約の手動確認）は PO 待ち。
