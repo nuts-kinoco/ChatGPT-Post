@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
+import { buildBundle } from "../bundle/bundle.js";
 import { ChatGptPage } from "../chatgpt/page.js";
 import { EXIT_CODES } from "../contracts/types.js";
 import { formatDoctor, runDoctor } from "../diagnostics/doctor.js";
@@ -19,6 +20,10 @@ commands:
   doctor                     環境・プロファイル・ロック・ログイン状態を診断する
   run --request <path>       request.json を 1 件処理する
   usage [--json]             ブリッジ経由の送信数を窓ごとに集計し、runtime/limits.json の上限と比べる
+  bundle --root <dir> --out <file> [--include <glob>]... [--exclude <glob>]...
+         [--max-bytes <n>] [--diff <gitref>]
+                             リポジトリの一部を 1 つの Markdown（ツリー + fence 付き本文 [+ git diff]）に
+                             まとめる。秘密らしい内容があれば生成を拒否する（ブラウザは使わない）
   inspect-ui [--dump-dom] [--walk-effort]
                              UI 要素の検出状況を出力する（送信しない）。--walk-effort は
                              思考量スライダーを全段階なめてラベルを記録し、元の段階に戻す
@@ -165,6 +170,42 @@ async function cmdRun(
   return outcome.exitCode;
 }
 
+async function cmdBundle(v: {
+  root?: string | undefined;
+  out?: string | undefined;
+  include?: string[] | undefined;
+  exclude?: string[] | undefined;
+  maxBytes?: string | undefined;
+  diff?: string | undefined;
+}): Promise<number> {
+  if (!v.root || !v.out) {
+    process.stderr.write("bundle requires --root <dir> and --out <file>\n");
+    return EXIT_CODES.invalidInput;
+  }
+  const maxBytes = Number(v.maxBytes ?? "200000");
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
+    process.stderr.write("--max-bytes must be a positive number\n");
+    return EXIT_CODES.invalidInput;
+  }
+  const r = await buildBundle({
+    root: resolve(v.root),
+    include: v.include ?? [],
+    exclude: v.exclude ?? [],
+    maxBytes,
+    ...(v.diff ? { diffRef: v.diff } : {}),
+  });
+  if (!r.ok) {
+    process.stderr.write(`bundle refused:\n${r.errors.map((e) => `  ${e}`).join("\n")}\n`);
+    return EXIT_CODES.invalidInput;
+  }
+  await mkdir(dirname(resolve(v.out)), { recursive: true });
+  await writeFile(resolve(v.out), r.result.markdown, "utf8");
+  process.stdout.write(
+    `bundle: ${resolve(v.out)} (${r.result.included.length} files, ${r.result.totalBytes} bytes${r.result.omitted.length ? `, ${r.result.omitted.length} omitted` : ""})\n`,
+  );
+  return 0;
+}
+
 async function cmdUsage(cfg: BridgeConfig, json: boolean): Promise<number> {
   const records = await loadRecords(join(cfg.runtimeDir, "requests"));
   const limits = await loadLimits(join(cfg.runtimeDir, "limits.json"));
@@ -217,6 +258,12 @@ export async function main(argv: string[]): Promise<number> {
       "dump-dom": { type: "boolean", default: false },
       "walk-effort": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
+      root: { type: "string" },
+      out: { type: "string" },
+      include: { type: "string", multiple: true },
+      exclude: { type: "string", multiple: true },
+      "max-bytes": { type: "string" },
+      diff: { type: "string" },
       "allow-unverified": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
@@ -242,6 +289,15 @@ export async function main(argv: string[]): Promise<number> {
         return EXIT_CODES.invalidInput;
       }
       return cmdRun(cfg, values.request, verifiedOnly);
+    case "bundle":
+      return cmdBundle({
+        root: values.root,
+        out: values.out,
+        include: values.include,
+        exclude: values.exclude,
+        maxBytes: values["max-bytes"],
+        diff: values.diff,
+      });
     case "usage":
       return cmdUsage(cfg, values.json ?? false);
     case "inspect-ui":
