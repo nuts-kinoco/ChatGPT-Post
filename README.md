@@ -68,11 +68,11 @@ chatgpt-bridge doctor
 初回ログイン（Google アカウントの場合は自動操作なしの通常 Chrome を専用プロファイルで起動して行う。[docs/17-OPERATIONS.md](docs/17-OPERATIONS.md) §2）:
 
 ```powershell
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir="<repo>untime\profile" https://chatgpt.com/
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --user-data-dir="<repo>\runtime\profile" https://chatgpt.com/
 ```
 
 ```powershell
-chatgpt-bridge run --request .untimeequests\<id>equest.json --json   # 1 件
+chatgpt-bridge run --request .\runtime\requests\<id>\request.json --json   # 1 件
 chatgpt-bridge worker --queue <dir> --drain                                  # キュー
 chatgpt-bridge bundle --root <repo> --include "src/**/*.ts" --out context.md # リポジトリを Markdown に
 chatgpt-bridge usage                                                         # 使用量の目安
