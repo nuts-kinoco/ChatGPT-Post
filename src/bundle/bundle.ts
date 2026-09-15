@@ -163,9 +163,13 @@ export async function buildBundle(
   let diffSection = "";
   if (opts.diffRef) {
     try {
-      const { stdout } = await execFileAsync("git", ["-C", root, "diff", opts.diffRef, "--"], {
-        maxBuffer: 50 * 1024 * 1024,
-      });
+      // user excludes also narrow the diff (":(glob,exclude)<pattern>" pathspecs)
+      const pathspecs = [".", ...opts.exclude.map((g) => `:(glob,exclude)${g}`)];
+      const { stdout } = await execFileAsync(
+        "git",
+        ["-C", root, "diff", opts.diffRef, "--", ...pathspecs],
+        { maxBuffer: 50 * 1024 * 1024 },
+      );
       if (containsSecret(stdout))
         return { ok: false, errors: ["git diff: content matches a secret pattern"] };
       const fence = fenceFor(stdout);
