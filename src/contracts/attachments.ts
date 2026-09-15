@@ -2,7 +2,7 @@
  * A-068 / SEC-*: attachment guard. Files leave the machine, so anything that looks like a secret is
  * refused before the browser starts (INVALID_REQUEST). Names only appear in errors, never contents.
  */
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, resolve, sep } from "node:path";
 import { containsSecret } from "../diagnostics/redact.js";
 
@@ -10,6 +10,8 @@ export const MAX_ATTACHMENTS = 20;
 /** ChatGPT's own per-file limit as answered 2026-09-15 (unverified); the bridge is stricter by default. */
 export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 const CONTENT_SCAN_MAX_BYTES = 2 * 1024 * 1024;
+/** Text files (by bytes) larger than this are refused rather than sent unscanned. */
+const LARGE_TEXT_SCAN_MAX_BYTES = 20 * 1024 * 1024;
 
 const DENY_NAMES = [
   /^\.env(\..*)?$/i,
@@ -121,7 +123,12 @@ export async function checkAttachments(
     seenBase.add(base.toLowerCase());
     let size: number;
     try {
-      const st = await stat(abs);
+      // lstat: a symlink / junction pointing at a secret must not pass as its target (Codex P5-1)
+      const st = await lstat(abs);
+      if (st.isSymbolicLink()) {
+        errors.push(`${label}: symbolic links are not attached`);
+        continue;
+      }
       if (!st.isFile()) {
         errors.push(`${label}: not a regular file`);
         continue;
@@ -139,11 +146,22 @@ export async function checkAttachments(
       errors.push(`${label}: larger than ${MAX_ATTACHMENT_BYTES} bytes`);
       continue;
     }
-    if (TEXT_EXT.has(ext) && size <= CONTENT_SCAN_MAX_BYTES) {
+    // Content scan is decided by the bytes, not the extension (a .pdf may be plain text, Codex P5-1).
+    // Large files are only checked when their extension says text.
+    if (size <= CONTENT_SCAN_MAX_BYTES || TEXT_EXT.has(ext)) {
       try {
-        const text = await readFile(abs, "utf8");
-        if (containsSecret(text)) {
-          errors.push(`${label}: content matches a secret pattern (token / cookie / key)`);
+        const buf = await readFile(abs);
+        const head = buf.subarray(0, Math.min(buf.length, 8000));
+        const looksText = !head.includes(0);
+        if (looksText && buf.length <= LARGE_TEXT_SCAN_MAX_BYTES) {
+          if (containsSecret(buf.toString("utf8"))) {
+            errors.push(`${label}: content matches a secret pattern (token / cookie / key)`);
+            continue;
+          }
+        } else if (looksText) {
+          errors.push(
+            `${label}: text file too large to scan for secrets (> ${LARGE_TEXT_SCAN_MAX_BYTES} bytes)`,
+          );
           continue;
         }
       } catch {

@@ -91,3 +91,7 @@
 | A-084 | 2026-09-15 | Decision | `ENTER_PROMPT` のフェーズ上限（`PRESET_VERIFIED` 60 s）は添付がある場合 `uploadBudgetMs(合計バイト)`（60 s + 15 s/MB）だけ延長する | 3 MB のアップロードが 10 s 超で、固定 60 s では phase timeout になる | `controller.ts withPhaseLimit(extraMs)`、11 §5 補足 | 決定 |
 | A-085 | 2026-09-15 | Decision | `bundle` は `--exclude` を glob 除外と `git diff` の pathspec 除外（`:(glob,exclude)`）の両方に適用。秘密パターンに当たるファイルが 1 つでもあれば全体を拒否（名前のみ表示） | 21 §2 / A-068 | `bundle/bundle.ts` | 決定 |
 | A-086 | 2026-09-15 | Decision | `run --json` は result.json の内容 + `exitCode` + `resultPath` を標準出力に 1 行で出す。result.json が書かれない場合（`ALREADY_RUNNING` 等）は `status: not_started` のスタブ。`npm link` でグローバル `chatgpt-bridge` として他 PJ から呼べる（シンボリックリンク経由の起動判定を realpath で修正） | 21 §5b | `cli/main.ts` | 決定 |
+| A-087 | 2026-09-15 | Decision | 添付ガードは `lstat` でシンボリックリンクを拒否し、内容走査は拡張子ではなくバイト判定（先頭 8 KB に NUL 無し = テキスト）で行う。テキストは 20 MB まで走査、超えるものは拒否 | Codex P5-1（High） | `contracts/attachments.ts` | 決定 |
+| A-088 | 2026-09-15 | Decision | `bundle --diff` は `-` 始まりを拒否し、`git rev-parse --verify --end-of-options <ref>^{commit}` で解決した commit id のみを `git diff` に渡す | Codex P5-2（High） | `bundle/bundle.ts` | 決定 |
+| A-089 | 2026-09-15 | Decision | トリガのラベル接頭部は `MODEL_HINTS`（"5.6"=GPT-5.6 Sol、"5.5"=GPT-5.5、"6"=最新の Pro 段階）のみ受理し、`hintMatches` でメニュー観測と突合。未知の接頭部・不一致は `MODEL_NOT_VERIFIABLE` | Codex P5-3。実画面で 3 種を確認 | `selectors.ts MODEL_HINTS / hintMatches`、14 §4 | 決定 |
+| A-090 | 2026-09-15 | Decision | `limits.json` は `validateLimits` で全項目を検証し、不正なら警告して既定値を使う | Codex P5-4 | `diagnostics/usage.ts` | 決定 |

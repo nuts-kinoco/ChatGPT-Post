@@ -224,7 +224,9 @@ async function cmdBundle(v: {
 
 async function cmdUsage(cfg: BridgeConfig, json: boolean): Promise<number> {
   const records = await loadRecords(join(cfg.runtimeDir, "requests"));
-  const limits = await loadLimits(join(cfg.runtimeDir, "limits.json"));
+  const limits = await loadLimits(join(cfg.runtimeDir, "limits.json"), (reason) =>
+    process.stderr.write(`limits.json is invalid (${reason}); using built-in defaults\n`),
+  );
   const report = computeUsage(records, limits, new Date());
   process.stdout.write(
     json

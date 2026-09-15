@@ -153,12 +153,12 @@ chatgpt-bridge run --request .\runtime\requests\<requestId>\request.json --json
 
 | 項目 | 意味 |
 |---|---|
-| `status` | `completed` / `failed` / `manual_intervention_required` / `already_processed` |
+| `status` | `completed` / `failed` / `manual_intervention_required`（`ALREADY_PROCESSED` / `ALREADY_RUNNING` は result.json を作らない） |
 | `submitted` | `yes`: ChatGPT に送信済み。`no`: 送信前に停止。`unknown`: 送信したか不明（**再実行禁止**。ブラウザで会話を確認） |
 | `observedPreset` | 送信直前に画面で読み取った思考量（`current` の実体） |
 | `observedModel` / `observedModelSlug` | 送信前に確認したモデルと、回答ターンの内部 slug（`gpt-5-6-thinking`, `gpt-5-5-thinking`, `gpt-6-pro` 等）。期待と食い違えば `warnings` に `model_slug_mismatch` |
 | `extractionMethod` | `copy`（「回答をコピーする」経由の Markdown）/ `dom`（HTML→Markdown 変換）/ `innerText` |
-| `extractionQuality` | `full` / `partial`（本文検証で差があった） |
+| `extractionQuality` | `full` / `degraded`（`innerText` にしか落とせなかった） |
 | `artifacts` | screenshot / trace の相対パス（失敗時に自動保存） |
 | `warnings` | 処理は続行したが記録すべき事象（`restore_effort_failed`: 思考量を元に戻せなかった → 画面で手動で戻す） |
 | `error` | `{ code, message, cause }` または `null` |

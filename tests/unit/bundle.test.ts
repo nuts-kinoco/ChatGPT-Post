@@ -44,6 +44,26 @@ describe("bundle (21 §2)", () => {
     expect(small.ok && small.result.omitted.length).toBe(2);
     expect(small.ok && small.result.markdown).toContain("omitted to stay under 10 bytes");
   });
+  it("refuses option-like or unresolvable --diff refs (Codex P5-2)", async () => {
+    const inj = await buildBundle({
+      root: dir,
+      include: [],
+      exclude: [],
+      maxBytes: 1e6,
+      diffRef: "--output=x",
+    });
+    expect(inj.ok).toBe(false);
+    expect(!inj.ok && inj.errors[0]).toMatch(/not a valid ref/);
+    const nope = await buildBundle({
+      root: dir,
+      include: [],
+      exclude: [],
+      maxBytes: 1e6,
+      diffRef: "HEAD",
+    });
+    expect(nope.ok).toBe(false); // not a git repo
+    expect(!nope.ok && nope.errors[0]).toMatch(/cannot resolve/);
+  });
   it("refuses when a file content looks like a secret", async () => {
     await writeFile(join(dir, "src", "c.ts"), 'const t = "Bearer abcdefghijklmnopqrstuvwxyz";\n');
     const r = await buildBundle({ root: dir, include: [], exclude: [], maxBytes: 100_000 });

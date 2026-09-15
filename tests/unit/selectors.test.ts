@@ -5,6 +5,7 @@ import {
   EFFORT_SLIDER_MAX,
   ELEMENTS,
   type ElementKey,
+  hintMatches,
   PRESET_LABELS,
   parseTriggerLabel,
   reverseLookupModel,
@@ -74,13 +75,32 @@ describe("selectors (14-SELECTOR-STRATEGY, AC-016)", () => {
       effortLabel: "高",
       modelHint: "5.5",
     });
-    expect(parseTriggerLabel("5.6 Sol 極高", "ja")).toEqual({
+    expect(parseTriggerLabel("5.6 極高", "ja")).toEqual({
       preset: "extra_high",
       effortLabel: "極高",
-      modelHint: "5.6 Sol",
+      modelHint: "5.6",
+    });
+    expect(parseTriggerLabel("6 Pro", "ja")).toEqual({
+      preset: "pro",
+      effortLabel: "Pro",
+      modelHint: "6",
     });
     expect(parseTriggerLabel("思考量", "ja")).toEqual({ error: "unmapped" });
     expect(parseTriggerLabel("5.5高", "ja")).toEqual({ error: "unmapped" }); // no separator
+    // unknown prefixes are refused (Codex P5-3)
+    expect(parseTriggerLabel("Unknown Pro", "ja")).toEqual({ error: "unmapped" });
+    expect(parseTriggerLabel("Foo 高", "ja")).toEqual({ error: "unmapped" });
+  });
+  it("hintMatches cross-checks the trigger prefix with the menu observation", () => {
+    expect(hintMatches(null, "latest", "high")).toBe(true);
+    expect(hintMatches(null, "latest", "pro")).toBe(false); // pro on latest shows "6 Pro"
+    expect(hintMatches("6", "latest", "pro")).toBe(true);
+    expect(hintMatches("6", "latest", "high")).toBe(false);
+    expect(hintMatches("5.5", "gpt-5.5", "high")).toBe(true);
+    expect(hintMatches("5.5", "latest", "high")).toBe(false);
+    expect(hintMatches("5.6", "gpt-5.6-sol", "medium")).toBe(true);
+    expect(hintMatches(null, "gpt-5.6-sol", "medium")).toBe(false);
+    expect(hintMatches("7", "latest", "high")).toBe(false);
   });
   it("model radio text maps by its first line (GPT-5.5 carries a retirement notice)", () => {
     expect(reverseLookupModel("最新", "ja")).toEqual({ model: "latest" });

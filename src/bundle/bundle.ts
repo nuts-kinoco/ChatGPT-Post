@@ -162,12 +162,33 @@ export async function buildBundle(
 
   let diffSection = "";
   if (opts.diffRef) {
+    // Codex P5-2: never let the ref become a git option; pin it to a resolved commit id.
+    if (opts.diffRef.startsWith("-")) {
+      return { ok: false, errors: [`--diff: "${opts.diffRef}" is not a valid ref`] };
+    }
+    let commit: string;
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["-C", root, "rev-parse", "--verify", "--end-of-options", `${opts.diffRef}^{commit}`],
+        { maxBuffer: 1024 * 1024 },
+      );
+      commit = stdout.trim();
+      if (!/^[0-9a-f]{40,64}$/.test(commit)) throw new Error("unexpected rev-parse output");
+    } catch (err) {
+      return {
+        ok: false,
+        errors: [
+          `--diff: cannot resolve "${opts.diffRef}": ${(err as Error).message.split("\n")[0]}`,
+        ],
+      };
+    }
     try {
       // user excludes also narrow the diff (":(glob,exclude)<pattern>" pathspecs)
       const pathspecs = [".", ...opts.exclude.map((g) => `:(glob,exclude)${g}`)];
       const { stdout } = await execFileAsync(
         "git",
-        ["-C", root, "diff", opts.diffRef, "--", ...pathspecs],
+        ["-C", root, "diff", commit, "--", ...pathspecs],
         { maxBuffer: 50 * 1024 * 1024 },
       );
       if (containsSecret(stdout))

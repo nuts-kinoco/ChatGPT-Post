@@ -32,6 +32,7 @@ import {
   ELEMENTS,
   type ElementKey,
   exists,
+  hintMatches,
   type Locale,
   latest,
   PHRASES,
@@ -458,6 +459,12 @@ export class ChatGptPage implements ChatGptPort {
     const r = parseTriggerLabel(label, this.locale);
     if ("error" in r) return { kind: "not_verifiable", cause: `${r.error}: "${label}"` };
     if (r.modelHint) this.opts.log?.(`trigger label carries model hint "${r.modelHint}"`);
+    if (!hintMatches(r.modelHint, observedModel, r.preset)) {
+      return {
+        kind: "not_verifiable",
+        cause: `trigger "${label}" does not agree with menu (model ${observedModel}, ${r.preset})`,
+      };
+    }
     if (requested !== "current" && r.preset !== requested) {
       return {
         kind: "not_verifiable",

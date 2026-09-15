@@ -189,14 +189,57 @@ export async function loadRecords(requestsDir: string): Promise<UsageRecord[]> {
   return out;
 }
 
-export async function loadLimits(path: string): Promise<UsageLimits> {
-  try {
-    const raw = JSON.parse(await readFile(path, "utf8")) as Partial<UsageLimits>;
-    if (raw && typeof raw === "object" && raw.windows && typeof raw.windows === "object") {
-      return { source: raw.source ?? DEFAULT_LIMITS.source, windows: raw.windows };
+/** Validates every window; returns an error reason when anything is off (Codex P5-4). */
+export function validateLimits(raw: unknown): { limits: UsageLimits } | { error: string } {
+  if (!raw || typeof raw !== "object") return { error: "not an object" };
+  const r = raw as Partial<UsageLimits>;
+  if (!r.windows || typeof r.windows !== "object") return { error: "windows missing" };
+  const windows: Record<string, UsageWindow> = {};
+  for (const [key, w] of Object.entries(r.windows as Record<string, Partial<UsageWindow>>)) {
+    if (!w || typeof w !== "object") return { error: `${key}: not an object` };
+    if (typeof w.label !== "string" || !w.label) return { error: `${key}: label` };
+    if (typeof w.slug !== "string" || !w.slug) return { error: `${key}: slug` };
+    if (w.slug !== "*") {
+      try {
+        new RegExp(w.slug);
+      } catch {
+        return { error: `${key}: slug is not a valid regex` };
+      }
     }
-  } catch {
-    /* create defaults below */
+    if (!(w.limit === null || (Number.isInteger(w.limit) && (w.limit as number) > 0))) {
+      return { error: `${key}: limit must be null or a positive integer` };
+    }
+    if (typeof w.windowHours !== "number" || !(w.windowHours > 0) || w.windowHours > 24 * 366) {
+      return { error: `${key}: windowHours` };
+    }
+    windows[key] = {
+      label: w.label,
+      slug: w.slug,
+      limit: w.limit as number | null,
+      windowHours: w.windowHours,
+      ...(w.countsAttachments ? { countsAttachments: true } : {}),
+    };
+  }
+  if (Object.keys(windows).length === 0) return { error: "no windows" };
+  return {
+    limits: { source: typeof r.source === "string" ? r.source : DEFAULT_LIMITS.source, windows },
+  };
+}
+
+export async function loadLimits(
+  path: string,
+  onInvalid: (reason: string) => void = () => undefined,
+): Promise<UsageLimits> {
+  try {
+    const v = validateLimits(JSON.parse(await readFile(path, "utf8")));
+    if ("limits" in v) return v.limits;
+    onInvalid(v.error);
+    return DEFAULT_LIMITS;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      onInvalid((err as Error).message);
+      return DEFAULT_LIMITS;
+    }
   }
   try {
     await writeFile(path, `${JSON.stringify(DEFAULT_LIMITS, null, 2)}\n`, { flag: "wx" });

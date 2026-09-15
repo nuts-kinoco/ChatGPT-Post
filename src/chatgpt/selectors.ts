@@ -623,6 +623,31 @@ export function reverseLookupModel(
  * observed 2026-09-15) once a model radio is chosen. Match the effort label as the whole string or
  * as the last space-separated token (longest label first so "極高" is not read as "高").
  */
+/**
+ * Trigger label prefixes observed 2026-09-15: none (latest), "5.6" (GPT-5.6 Sol), "5.5" (GPT-5.5),
+ * "6" (latest routed to GPT-6 Pro at the pro level). Anything else is unknown -> fail closed.
+ */
+export const MODEL_HINTS: Record<string, { model: ObservedModel; preset?: ObservedPreset }> = {
+  "5.6": { model: "gpt-5.6-sol" },
+  "5.5": { model: "gpt-5.5" },
+  "6": { model: "latest", preset: "pro" },
+};
+
+/** True when the trigger prefix agrees with what the menu showed (Codex P5-3). */
+export function hintMatches(
+  hint: string | null,
+  model: ObservedModel,
+  preset: ObservedPreset,
+): boolean {
+  if (hint === null) return model === "latest" && preset !== "pro";
+  const h = MODEL_HINTS[hint];
+  if (!h) return false;
+  if (h.model !== model) return false;
+  if (h.preset && h.preset !== preset) return false;
+  if (!h.preset && model === "latest") return false;
+  return true;
+}
+
 export function parseTriggerLabel(
   label: string,
   locale: Locale,
@@ -643,7 +668,9 @@ export function parseTriggerLabel(
     const suffix = ` ${c.l.toLowerCase()}`;
     if (lower.endsWith(suffix)) {
       const hint = norm.slice(0, norm.length - suffix.length).trim();
-      return { preset: c.preset, effortLabel: c.l, modelHint: hint || null };
+      // unknown prefixes are not accepted (Codex P5-3): the caller cross-checks with hintMatches()
+      if (!hint || !MODEL_HINTS[hint]) return { error: "unmapped" };
+      return { preset: c.preset, effortLabel: c.l, modelHint: hint };
     }
   }
   return { error: "unmapped" };

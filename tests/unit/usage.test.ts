@@ -4,6 +4,7 @@ import {
   DEFAULT_LIMITS,
   formatUsage,
   type UsageRecord,
+  validateLimits,
 } from "../../src/diagnostics/usage.js";
 
 const now = new Date("2026-09-15T12:00:00Z");
@@ -43,6 +44,21 @@ describe("usage ledger (PO 2026-09-15)", () => {
     expect(by.attachments_3h?.remaining).toBe(77);
     expect(r.lastRateLimited?.requestId).toBe("f");
     expect(formatUsage(r)).toContain("残り 49");
+  });
+  it("validateLimits rejects broken windows (Codex P5-4)", () => {
+    expect("limits" in validateLimits(DEFAULT_LIMITS)).toBe(true);
+    expect(
+      validateLimits({ windows: { x: { label: "a", slug: "(", limit: null, windowHours: 1 } } }),
+    ).toEqual({
+      error: "x: slug is not a valid regex",
+    });
+    expect(
+      validateLimits({ windows: { x: { label: "a", slug: "*", limit: -1, windowHours: 1 } } }),
+    ).toHaveProperty("error");
+    expect(
+      validateLimits({ windows: { x: { label: "a", slug: "*", limit: 1, windowHours: "1" } } }),
+    ).toHaveProperty("error");
+    expect(validateLimits({ windows: {} })).toEqual({ error: "no windows" });
   });
   it("unknown limits report counts without remaining", () => {
     const r = computeUsage([rec({})], DEFAULT_LIMITS, now);

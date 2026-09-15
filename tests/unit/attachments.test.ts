@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -56,6 +56,22 @@ describe("attachment guard (A-068, SEC)", () => {
     expect(joined).toMatch(/sub.*ok\.ts|attachments\/6.*duplicate/);
     expect(joined).toMatch(/missing\.txt.*cannot be read/);
     expect(joined).not.toMatch(/Bearer abcdefghijklmnop/); // never echo contents
+  });
+  it("scans by content regardless of extension and refuses symlinks (Codex P5-1)", async () => {
+    await writeFile(join(dir, "report.pdf"), "Authorization: Bearer abcdefghijklmnop\n");
+    const spoof = await checkAttachments(["report.pdf"], dir);
+    expect(spoof.ok).toBe(false);
+    expect(spoof.errors.join()).toMatch(/report\.pdf.*secret pattern/);
+    await writeFile(join(dir, "real.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]));
+    expect((await checkAttachments(["real.png"], dir)).ok).toBe(true);
+    try {
+      await symlink(join(dir, ".env"), join(dir, "link.txt"), "file");
+      const l = await checkAttachments(["link.txt"], dir);
+      expect(l.ok).toBe(false);
+      expect(l.errors.join()).toMatch(/link\.txt.*symbolic/);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err; // no symlink privilege
+    }
   });
   it("rejects non-string entries and too many files", async () => {
     expect((await checkAttachments([1], dir)).ok).toBe(false);
