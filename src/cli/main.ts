@@ -7,6 +7,7 @@ import { ChatGptPage } from "../chatgpt/page.js";
 import { EXIT_CODES } from "../contracts/types.js";
 import { formatDoctor, runDoctor } from "../diagnostics/doctor.js";
 import { createLogger } from "../diagnostics/logger.js";
+import { computeUsage, formatUsage, loadLimits, loadRecords } from "../diagnostics/usage.js";
 import { RunController } from "../state/controller.js";
 import { buildPorts } from "./adapters.js";
 import { type BridgeConfig, loadConfig } from "./config.js";
@@ -17,6 +18,7 @@ commands:
   login                      専用ブラウザを開き、人間がログインする
   doctor                     環境・プロファイル・ロック・ログイン状態を診断する
   run --request <path>       request.json を 1 件処理する
+  usage [--json]             ブリッジ経由の送信数を窓ごとに集計し、runtime/limits.json の上限と比べる
   inspect-ui [--dump-dom] [--walk-effort]
                              UI 要素の検出状況を出力する（送信しない）。--walk-effort は
                              思考量スライダーを全段階なめてラベルを記録し、元の段階に戻す
@@ -163,6 +165,20 @@ async function cmdRun(
   return outcome.exitCode;
 }
 
+async function cmdUsage(cfg: BridgeConfig, json: boolean): Promise<number> {
+  const records = await loadRecords(join(cfg.runtimeDir, "requests"));
+  const limits = await loadLimits(join(cfg.runtimeDir, "limits.json"));
+  const report = computeUsage(records, limits, new Date());
+  process.stdout.write(
+    json
+      ? `${JSON.stringify(report, null, 2)}
+`
+      : `${formatUsage(report)}
+`,
+  );
+  return 0;
+}
+
 async function cmdInspectUi(
   cfg: BridgeConfig,
   dumpDom: boolean,
@@ -200,6 +216,7 @@ export async function main(argv: string[]): Promise<number> {
       "log-level": { type: "string" },
       "dump-dom": { type: "boolean", default: false },
       "walk-effort": { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
       "allow-unverified": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
@@ -225,6 +242,8 @@ export async function main(argv: string[]): Promise<number> {
         return EXIT_CODES.invalidInput;
       }
       return cmdRun(cfg, values.request, verifiedOnly);
+    case "usage":
+      return cmdUsage(cfg, values.json ?? false);
     case "inspect-ui":
       return cmdInspectUi(
         cfg,
