@@ -43,6 +43,7 @@
 
 ## 検証記録
 
+- Phase 4 追加（2026-09-15）: R-012 参考値取得（`20260915T063230Z-14314bf9`、109 s、web 検索付き 8.9 KB の回答を `copy`/`full` で取得）
 - Phase 4（2026-09-15）: LS-01 を 6 回試行し、4 件の実装修正（A-057〜A-060）を経て検証済み selector のみで合格。Unit 79 件通過。
 - Phase 1（2026-09-14）: 3 視点の独立検証を 2 ラウンド実施。ラウンド 1 で 30 件、ラウンド 2 で 25 件を検出し、すべて反映（A-015、`reviews/phase1-self-review.md`）。
 - Phase 3（2026-09-15）: Codex CLI 0.153.4 / `gpt-5.6-terra` / high / read-only で独立レビュー。7 指摘（High 3・Medium 4）を全件 Accept し反映、代替案は Reject 2・Deferred 1。Freeze 済み。

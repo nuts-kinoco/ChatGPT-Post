@@ -159,6 +159,7 @@
 | 扱い | Mitigate + Transfer |
 | 緩和策 | (1) `RATE_LIMITED` は `manual_intervention_required` で停止し自動待機・再送しない（FR-029, FR-042）。(2) 送信前のモデル自動切替は FR-021 の一致確認で検出。(3) 上限管理は PO の判断（Transfer） |
 | 残存リスク | 送信後・生成中に発生するモデル切替は検出対象外（FR-021、R-005 と同じ）。受容 |
+| 参考値（2026-09-15） | PO のプランは **Pro**。ChatGPT 自身への質問（`docs/live-results/20260915-R-012-usage-limits.md`、未検証）では: 通常チャットは「無制限」だが abuse guardrails あり、Sol Pro / GPT-6 Pro は明示上限（$100: 合算 50 件/週）、Thinking 段階（Medium/High/Extra High）は同一枠で段階による消費差なし、添付 80 ファイル/3 h。**Pro 系モデルの固定使用は避け、既定は `latest` + effort 指定**とする（A-072） |
 
 ### R-013 スコープ膨張
 
