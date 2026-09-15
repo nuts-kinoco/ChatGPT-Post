@@ -283,7 +283,12 @@ export class RunController {
         break;
       }
       case "OPEN_NEW_CHAT": {
-        const n = await this.withPhaseLimit(chatgpt.openNewChat());
+        const req = this.requireRequest();
+        const n = await this.withPhaseLimit(
+          req.newChat === false && req.conversationUrl
+            ? chatgpt.openConversation(req.conversationUrl)
+            : chatgpt.openNewChat(),
+        );
         if (n.kind === "ok") return { type: "NEW_CHAT_OK" };
         if (n.kind === "failed") return { type: "NEW_CHAT_FAILED", cause: n.cause };
         if (n.kind === "retry")

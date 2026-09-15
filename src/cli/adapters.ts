@@ -130,6 +130,7 @@ export function chatgptPort(
   return {
     navigateAndObserveAuth: () => get().navigateAndObserveAuth(),
     openNewChat: () => get().openNewChat(),
+    openConversation: (u) => get().openConversation(u),
     resolvePreset: (p, m) => get().resolvePreset(p, m),
     enterPrompt: (t, a) => get().enterPrompt(t, a),
     snapshotBaseline: (l) => get().snapshotBaseline(l),

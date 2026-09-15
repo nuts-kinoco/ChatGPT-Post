@@ -12,6 +12,7 @@ import type {
 import { COPY_CAPTURE_GLOBAL } from "../extraction/copy-capture.js";
 import { htmlToMarkdown } from "../extraction/markdown.js";
 import { verifyCandidate } from "../extraction/verify.js";
+import type { NewChatFailure } from "../state/machine.js";
 import type {
   AuthObservation,
   Baseline,
@@ -178,6 +179,55 @@ export class ChatGptPage implements ChatGptPort {
   }
 
   // ---------- new chat ----------
+
+  /**
+   * A-096: continue an existing conversation. The URL must stay on /c/<id> after load (a redirect to
+   * "/" means the conversation does not exist for this account); the composer must be empty and no
+   * generation may be in progress. Assistant turns already present become the baseline count.
+   */
+  async openConversation(
+    url: string,
+  ): Promise<
+    | { kind: "ok" }
+    | { kind: "failed"; cause: NewChatFailure }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  > {
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      return { kind: "failed", cause: "conversation_not_found" };
+    }
+    if (target.origin !== CHATGPT_ORIGIN || !/^\/c\/[A-Za-z0-9-]+$/.test(target.pathname)) {
+      return { kind: "failed", cause: "conversation_not_found" };
+    }
+    try {
+      await this.page.goto(`${target.origin}${target.pathname}`, { waitUntil: "domcontentloaded" });
+    } catch (err) {
+      return { kind: "retry", cause: (err as Error).message };
+    }
+    const deadline = Date.now() + (this.opts.newChatTimeoutMs ?? 30_000);
+    while (Date.now() < deadline) {
+      const composer = await probe(this.page, "composer", this.sel);
+      if (composer.found && composer.locator) {
+        await this.page.waitForTimeout(1000); // history renders after the composer
+        if (new URL(this.page.url()).pathname !== target.pathname) {
+          return { kind: "failed", cause: "conversation_not_found" };
+        }
+        if ((await countMatches(this.page, "assistantTurn", this.sel)) === 0) {
+          return { kind: "failed", cause: "conversation_not_found" };
+        }
+        if (await exists(this.page, "stopButton", this.sel))
+          return { kind: "failed", cause: "generating" };
+        const text = (await composer.locator.innerText().catch(() => "")).trim();
+        if (text.length > 0) return { kind: "failed", cause: "composer_not_empty" };
+        return { kind: "ok" };
+      }
+      await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 250);
+    }
+    return { kind: "retry", cause: "composer did not appear in the conversation" };
+  }
 
   async openNewChat(): Promise<
     | { kind: "ok" }

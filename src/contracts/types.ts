@@ -26,7 +26,9 @@ export interface BridgeRequest {
   model?: RequestedModel;
   /** 1.1 (A-068): files attached through the composer; validated by contracts/attachments.ts. */
   attachments?: string[];
-  newChat: true;
+  newChat: boolean;
+  /** 1.2 (A-096): required when newChat is false. */
+  conversationUrl?: string;
   timeoutMs?: number;
   responseFormat: "markdown";
 }

@@ -58,6 +58,7 @@ function fake(
   const chatgpt: ChatGptPort = {
     navigateAndObserveAuth: async () => ({ kind: "AUTH_OK" }),
     openNewChat: async () => ({ kind: "ok" }),
+    openConversation: async () => ({ kind: "ok" }),
     resolvePreset: async () => ({
       kind: "observed",
       preset: "pro",

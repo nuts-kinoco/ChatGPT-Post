@@ -11,7 +11,11 @@ import {
 // ---------- events (11-STATE-MACHINE §3) ----------
 
 export type ChallengeKind = "captcha" | "consent" | "rate_limited";
-export type NewChatFailure = "existing_conversation" | "generating" | "composer_not_empty";
+export type NewChatFailure =
+  | "existing_conversation"
+  | "generating"
+  | "composer_not_empty"
+  | "conversation_not_found";
 export type SubmitFailure = "click_failed" | "send_button_missing" | "send_button_disabled";
 export type ChatErrorCause = "banner" | "network" | "output_truncated" | "multiple_responses";
 export type PostChallengeKind = "login" | "captcha" | "consent";

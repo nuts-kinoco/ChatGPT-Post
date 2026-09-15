@@ -164,6 +164,25 @@ describe("result.json schema + invariants (AC-007)", () => {
     expect(validateResult(baseResult()).valid).toBe(true);
     expect(checkResultInvariants(baseResult())).toEqual([]);
   });
+  it("1.2: newChat false requires conversationUrl on chatgpt.com/c/", () => {
+    expect(validateRequest({ ...okReq, schemaVersion: "1.2", newChat: false }).valid).toBe(false);
+    expect(
+      validateRequest({
+        ...okReq,
+        schemaVersion: "1.2",
+        newChat: false,
+        conversationUrl: "https://chatgpt.com/c/6aa8f9e7-f47c-83e8-9f20-e6e71c33026f",
+      }).valid,
+    ).toBe(true);
+    expect(
+      validateRequest({ ...okReq, newChat: false, conversationUrl: "https://evil.example/c/x" })
+        .valid,
+    ).toBe(false);
+    expect(
+      validateRequest({ ...okReq, newChat: true, conversationUrl: "https://chatgpt.com/c/abc" })
+        .valid,
+    ).toBe(false);
+  });
   it("1.1: model is optional in request (default current) and rejects unknown models", () => {
     expect(validateRequest({ ...okReq, schemaVersion: "1.1" }).valid).toBe(true);
     expect(validateRequest({ ...okReq, schemaVersion: "1.1", model: "gpt-5.5" }).valid).toBe(true);

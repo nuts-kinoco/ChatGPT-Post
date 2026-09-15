@@ -66,8 +66,12 @@
     },
     "newChat": {
       "type": "boolean",
-      "const": true,
-      "description": "MVP supports new chats only."
+      "description": "true: open a new chat. false (1.2, A-096): continue the conversation at conversationUrl; the latest assistant turn after submit is extracted."
+    },
+    "conversationUrl": {
+      "type": "string",
+      "pattern": "^https://chatgpt\\.com/c/[A-Za-z0-9-]+$",
+      "description": "1.2: required when newChat is false. Taken from a previous result.json."
     },
     "timeoutMs": {
       "type": "integer",
@@ -80,5 +84,47 @@
       "type": "string",
       "const": "markdown"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "newChat": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "conversationUrl": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversationUrl"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "newChat": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "properties": {
+            "conversationUrl": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "conversationUrl"
+          ]
+        }
+      }
+    }
+  ]
 }

@@ -116,6 +116,15 @@ export interface ChatGptPort {
   navigateAndObserveAuth(): Promise<
     AuthObservation | { kind: "dom_unexpected"; element: string; tried: string[] }
   >;
+  /** A-096: opens an existing conversation (newChat: false). Same checks as openNewChat. */
+  openConversation(
+    url: string,
+  ): Promise<
+    | { kind: "ok" }
+    | { kind: "failed"; cause: NewChatFailure }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  >;
   openNewChat(): Promise<
     | { kind: "ok" }
     | { kind: "failed"; cause: NewChatFailure }
