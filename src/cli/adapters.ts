@@ -121,14 +121,15 @@ export function chatgptPort(
   return {
     navigateAndObserveAuth: () => get().navigateAndObserveAuth(),
     openNewChat: () => get().openNewChat(),
-    resolvePreset: (p) => get().resolvePreset(p),
+    resolvePreset: (p, m) => get().resolvePreset(p, m),
     enterPrompt: (t) => get().enterPrompt(t),
     snapshotBaseline: (l) => get().snapshotBaseline(l),
     dispatchSubmit: (l) => get().dispatchSubmit(l),
     observe: (t) => get().observe(t),
     currentUrl: () => get().currentUrl(),
     extractLatest: () => get().extractLatest(),
-    inspectUiReport: (dir) => get().inspectUiReport(dir),
+    inspectUiReport: (dir, o) => get().inspectUiReport(dir, o),
+    restoreEffort: () => get().restoreEffort(),
   };
 }
 

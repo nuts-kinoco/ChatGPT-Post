@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright";
-import type { RequestedPreset } from "../contracts/types.js";
+import type {
+  ObservedModel,
+  ObservedPreset,
+  RequestedModel,
+  RequestedPreset,
+} from "../contracts/types.js";
 import { COPY_CAPTURE_GLOBAL } from "../extraction/copy-capture.js";
 import { htmlToMarkdown } from "../extraction/markdown.js";
 import { verifyCandidate } from "../extraction/verify.js";
@@ -19,14 +24,20 @@ import {
   countMatches,
   DomUnexpected,
   describeCandidate,
+  EFFORT_INDEX_OF,
+  EFFORT_KEY_INTERVAL_MS,
+  EFFORT_SLIDER_INDEX,
+  EFFORT_SLIDER_MAX,
   ELEMENTS,
   type ElementKey,
   exists,
   type Locale,
   latest,
   PHRASES,
+  parseTriggerLabel,
   probe,
   resolve,
+  reverseLookupModel,
   reverseLookupPreset,
 } from "./selectors.js";
 
@@ -68,6 +79,8 @@ export class ChatGptPage implements ChatGptPort {
   private sendButton: Locator | null = null;
   private lastError: string | null = null;
   private streamingCandidateLogged = false;
+  /** Effort slider index before this run changed it (null = untouched). */
+  private effortToRestore: number | null = null;
 
   constructor(
     private readonly page: Page,
@@ -194,7 +207,7 @@ export class ChatGptPage implements ChatGptPort {
     return { kind: "retry", cause: "composer did not appear after new chat" };
   }
 
-  // ---------- preset ----------
+  // ---------- preset / model picker ----------
 
   private async readPresetLabel(): Promise<string | null> {
     const p = await probe(this.page, "modelPickerCurrentLabel", this.sel);
@@ -203,12 +216,229 @@ export class ChatGptPage implements ChatGptPort {
     return text || null;
   }
 
-  async resolvePreset(requested: RequestedPreset): Promise<PresetResolution> {
-    if (requested !== "current") {
+  /** Opens the picker (trigger click) and waits for the menu. Throws DomUnexpected / Error. */
+  private async openPicker(): Promise<Locator> {
+    const menuProbe = await probe(this.page, "pickerMenu", this.sel);
+    if (menuProbe.found && menuProbe.locator) return menuProbe.locator;
+    const trigger = await resolve(this.page, "modelPicker", this.sel);
+    await trigger.click({ timeout: 3000 });
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const m = await probe(this.page, "pickerMenu", this.sel);
+      if (m.found && m.locator) {
+        await this.page.waitForTimeout(400); // transitions-ready
+        return m.locator;
+      }
+      await this.page.waitForTimeout(100);
+    }
+    throw new Error("picker menu did not open");
+  }
+
+  /** Closes the picker by clicking outside (Escape was observed not to close it). */
+  private async closePicker(): Promise<void> {
+    for (let i = 0; i < 3; i++) {
+      if (!(await exists(this.page, "pickerMenu", this.sel))) return;
+      await this.page.mouse.click(5, 5);
+      await this.page.waitForTimeout(500);
+    }
+    if (await exists(this.page, "pickerMenu", this.sel)) {
+      await this.page.keyboard.press("Escape").catch(() => undefined);
+      await this.page.waitForTimeout(300);
+    }
+  }
+
+  private async readSlider(
+    menu: Locator,
+  ): Promise<{ now: number; max: number; label: string; slider: Locator; row: Locator }> {
+    const slider = await resolve(menu, "effortSlider", this.sel);
+    const row = await resolve(menu, "effortSliderRow", this.sel);
+    const now = Number(await slider.getAttribute("aria-valuenow"));
+    const max = Number(await slider.getAttribute("aria-valuemax"));
+    const ids = ((await row.getAttribute("aria-describedby")) ?? "").split(/\s+/).filter(Boolean);
+    let label = "";
+    if (ids[0]) {
+      const raw = await this.page
+        .locator(`[id="${ids[0]}"]`)
+        .innerText()
+        .catch(() => "");
+      // "極高、5件中4件目。" -> "極高"
+      label = raw.split(/[、,]/)[0]?.trim() ?? "";
+    }
+    return { now, max, label, slider, row };
+  }
+
+  /**
+   * Moves the effort slider to the requested level with keyboard (Home, then ArrowRight × index,
+   * spaced by EFFORT_KEY_INTERVAL_MS so the persisted value keeps up), then verifies in the menu.
+   * The menu is left open; the caller closes it and re-verifies the trigger label.
+   */
+  private async selectEffort(
+    menu: Locator,
+    target: ObservedPreset,
+  ): Promise<{ ok: true } | { ok: false; cause: string }> {
+    const before = await this.readSlider(menu);
+    if (before.max !== EFFORT_SLIDER_MAX) {
+      return { ok: false, cause: `effort slider has ${before.max + 1} levels, expected 5` };
+    }
+    const idx = EFFORT_INDEX_OF[target];
+    if (before.now !== idx) {
+      if (this.effortToRestore === null) this.effortToRestore = before.now;
+      // The menuitem row owns the keyboard shortcuts (aria-keyshortcuts="ArrowLeft ArrowRight");
+      // the slider span itself is tabindex=-1. Focus the row, fall back to the span.
+      await before.slider.focus().catch(() => before.row.focus());
+      await this.page.keyboard.press("Home");
+      await this.page.waitForTimeout(EFFORT_KEY_INTERVAL_MS);
+      for (let i = 0; i < idx; i++) {
+        await this.page.keyboard.press("ArrowRight");
+        await this.page.waitForTimeout(EFFORT_KEY_INTERVAL_MS);
+      }
+      await this.page.waitForTimeout(800);
+    }
+    const after = await this.readSlider(menu);
+    if (after.now !== idx) return { ok: false, cause: `slider at ${after.now}, expected ${idx}` };
+    const r = reverseLookupPreset(after.label, this.locale);
+    if ("error" in r || r.preset !== target) {
+      return { ok: false, cause: `slider label "${after.label}" does not map to ${target}` };
+    }
+    return { ok: true };
+  }
+
+  private async readModelRadios(
+    menu: Locator,
+  ): Promise<Array<{ text: string; checked: boolean; locator: Locator }>> {
+    const def = ELEMENTS.modelRadio;
+    const out: Array<{ text: string; checked: boolean; locator: Locator }> = [];
+    for (const c of def.candidates) {
+      if (this.opts.verifiedOnly && !c.verifiedOn) continue;
+      const loc = build(menu, c);
+      const n = await loc.count().catch(() => 0);
+      for (let i = 0; i < Math.min(n, 20); i++) {
+        const item = loc.nth(i);
+        out.push({
+          text: (await item.innerText().catch(() => "")).trim(),
+          checked: (await item.getAttribute("aria-checked").catch(() => null)) === "true",
+          locator: item,
+        });
+      }
+      if (out.length > 0) break;
+    }
+    return out;
+  }
+
+  /** Switches the menu to the advanced view where model radios are interactive. */
+  private async expandModels(menu: Locator): Promise<void> {
+    const expander = await resolve(menu, "modelExpander", this.sel);
+    if ((await expander.getAttribute("aria-expanded")) !== "true") {
+      await expander.click({ timeout: 3000 });
+      await this.page.waitForTimeout(500);
+    }
+  }
+
+  private async observeModel(
+    menu: Locator,
+  ): Promise<{ ok: true; model: ObservedModel; label: string } | { ok: false; cause: string }> {
+    const radios = await this.readModelRadios(menu);
+    const checked = radios.filter((r) => r.checked);
+    if (radios.length === 0) return { ok: false, cause: "no model radios found" };
+    if (checked.length !== 1) return { ok: false, cause: `${checked.length} model radios checked` };
+    const c = checked[0] as { text: string };
+    const r = reverseLookupModel(c.text, this.locale);
+    if ("error" in r) return { ok: false, cause: `${r.error} model label: "${c.text}"` };
+    return { ok: true, model: r.model, label: c.text.split(/\r?\n/)[0] ?? c.text };
+  }
+
+  /**
+   * Clicks the target radio (advanced view), re-expands (the click flips the view back to simple)
+   * and verifies aria-checked. Model selection is per page load (A-067 note), never persisted.
+   */
+  private async selectModel(
+    menu: Locator,
+    target: ObservedModel,
+  ): Promise<{ ok: true; label: string } | { ok: false; cause: string; available: boolean }> {
+    await this.expandModels(menu);
+    const radios = await this.readModelRadios(menu);
+    const hits = radios.filter((r) => {
+      const m = reverseLookupModel(r.text, this.locale);
+      return !("error" in m) && m.model === target;
+    });
+    if (hits.length === 0) {
+      return { ok: false, cause: `model ${target} not in picker`, available: false };
+    }
+    if (hits.length > 1) {
+      return { ok: false, cause: `model ${target} matched ${hits.length} radios`, available: true };
+    }
+    const hit = hits[0] as { checked: boolean; locator: Locator };
+    if (!hit.checked) {
+      await hit.locator.click({ timeout: 3000 });
+      await this.page.waitForTimeout(1200);
+      await this.expandModels(menu);
+    }
+    const obs = await this.observeModel(menu);
+    if (!obs.ok) return { ok: false, cause: obs.cause, available: true };
+    if (obs.model !== target) {
       return {
-        kind: "not_verifiable",
-        cause: "preset selection is not implemented in Phase 4 (use current)",
+        ok: false,
+        cause: `model radio shows ${obs.model} after selecting ${target}`,
+        available: true,
       };
+    }
+    return { ok: true, label: obs.label };
+  }
+
+  /**
+   * FR-021 / A-063 / A-067: model (in-page radio) first, then effort (persisted slider), then a final
+   * read of the trigger label with the menu closed. Any doubt -> not_verifiable (fail closed).
+   */
+  async resolvePreset(
+    requested: RequestedPreset,
+    model: RequestedModel,
+  ): Promise<PresetResolution> {
+    let observedModel: ObservedModel;
+    let modelLabel: string;
+    try {
+      // 1. model (advanced view). Selecting a radio flips the view and steals keyboard focus, so the
+      //    picker is closed and reopened before touching the slider.
+      if (model !== "current") {
+        const menu = await this.openPicker();
+        try {
+          const r = await this.selectModel(menu, model);
+          if (!r.ok) {
+            return r.available
+              ? { kind: "not_verifiable", cause: r.cause }
+              : { kind: "not_available" };
+          }
+        } finally {
+          await this.closePicker();
+        }
+        await this.page.waitForTimeout(500);
+      }
+      // 2. effort (simple view), then re-observe the model radio in the same menu instance
+      const menu = await this.openPicker();
+      try {
+        if (requested !== "current") {
+          const e = await this.selectEffort(menu, requested);
+          if (!e.ok) return { kind: "not_verifiable", cause: e.cause };
+        }
+        await this.expandModels(menu);
+        const obs = await this.observeModel(menu);
+        if (!obs.ok) return { kind: "not_verifiable", cause: obs.cause };
+        if (model !== "current" && obs.model !== model) {
+          return {
+            kind: "not_verifiable",
+            cause: `model radio shows ${obs.model} after selecting ${model}`,
+          };
+        }
+        observedModel = obs.model;
+        modelLabel = obs.label;
+      } finally {
+        await this.closePicker();
+      }
+      // persisted value catches up shortly after close; read the trigger label afterwards
+      await this.page.waitForTimeout(1200);
+    } catch (err) {
+      if (err instanceof DomUnexpected)
+        return { kind: "dom_unexpected", element: err.element, tried: err.tried };
+      return { kind: "retry", cause: (err as Error).message };
     }
     let label: string | null;
     try {
@@ -224,9 +454,16 @@ export class ChatGptPage implements ChatGptPort {
       return { kind: "retry", cause: (err as Error).message };
     }
     if (!label) return { kind: "not_verifiable", cause: "preset label is empty" };
-    const r = reverseLookupPreset(label, this.locale);
+    const r = parseTriggerLabel(label, this.locale);
     if ("error" in r) return { kind: "not_verifiable", cause: `${r.error}: "${label}"` };
-    return { kind: "observed", preset: r.preset, label };
+    if (r.modelHint) this.opts.log?.(`trigger label carries model hint "${r.modelHint}"`);
+    if (requested !== "current" && r.preset !== requested) {
+      return {
+        kind: "not_verifiable",
+        cause: `trigger shows "${label}" (${r.preset}) after selecting ${requested}`,
+      };
+    }
+    return { kind: "observed", preset: r.preset, label, model: observedModel, modelLabel };
   }
 
   // ---------- prompt ----------
@@ -394,6 +631,7 @@ export class ChatGptPage implements ChatGptPort {
     const body = bodyProbe.found && bodyProbe.locator ? bodyProbe.locator : turn;
     const innerText = await body.innerText().catch(() => "");
     if (innerText.trim().length === 0) return { kind: "empty", cause: "empty" };
+    const modelSlug = await this.readModelSlug(turn);
 
     // 1. copy capture (page-side shim; no system clipboard)
     try {
@@ -415,7 +653,7 @@ export class ChatGptPage implements ChatGptPort {
         );
         if (typeof captured === "string" && captured.trim().length > 0) {
           const v = verifyCandidate(captured, innerText);
-          if (v.ok) return { markdown: captured, method: "copy", quality: "full" };
+          if (v.ok) return { markdown: captured, method: "copy", quality: "full", modelSlug };
           this.opts.log?.(`copy capture rejected: ${v.reason}`);
         }
       }
@@ -428,14 +666,52 @@ export class ChatGptPage implements ChatGptPort {
       const html = await body.innerHTML();
       const md = htmlToMarkdown(html);
       const v = verifyCandidate(md, innerText);
-      if (v.ok) return { markdown: md, method: "dom", quality: "full" };
+      if (v.ok) return { markdown: md, method: "dom", quality: "full", modelSlug };
       this.opts.log?.(`dom conversion rejected: ${v.reason}`);
     } catch (err) {
       this.opts.log?.(`dom conversion failed: ${(err as Error).message}`);
     }
 
     // 3. innerText
-    return { markdown: innerText, method: "innerText", quality: "degraded" };
+    return { markdown: innerText, method: "innerText", quality: "degraded", modelSlug };
+  }
+
+  async restoreEffort(): Promise<
+    { kind: "unchanged" } | { kind: "restored" } | { kind: "failed"; cause: string }
+  > {
+    if (this.effortToRestore === null) return { kind: "unchanged" };
+    const target = EFFORT_SLIDER_INDEX[this.effortToRestore];
+    if (!target) return { kind: "failed", cause: `unknown level ${this.effortToRestore}` };
+    try {
+      const menu = await this.openPicker();
+      let r: { ok: true } | { ok: false; cause: string };
+      try {
+        r = await this.selectEffort(menu, target);
+      } finally {
+        await this.closePicker();
+      }
+      if (!r.ok) return { kind: "failed", cause: r.cause };
+      await this.page.waitForTimeout(1200);
+      const label = (await this.readPresetLabel()) ?? "";
+      const parsed = parseTriggerLabel(label, this.locale);
+      if ("error" in parsed || parsed.preset !== target) {
+        return { kind: "failed", cause: `trigger shows "${label}" after restore to ${target}` };
+      }
+      this.effortToRestore = null;
+      return { kind: "restored" };
+    } catch (err) {
+      return { kind: "failed", cause: (err as Error).message };
+    }
+  }
+
+  private async readModelSlug(turn: Locator): Promise<string | null> {
+    const el = turn.locator("[data-message-model-slug]").first();
+    if ((await el.count().catch(() => 0)) === 0) {
+      const self = await turn.getAttribute("data-message-model-slug").catch(() => null);
+      return self?.trim() || null;
+    }
+    const v = await el.getAttribute("data-message-model-slug").catch(() => null);
+    return v?.trim() || null;
   }
 
   private async findCopyTurnButton(turn: Locator): Promise<Locator | null> {
@@ -459,65 +735,58 @@ export class ChatGptPage implements ChatGptPort {
   // ---------- diagnostics ----------
 
   /**
-   * Opens the picker, records the effort slider state and model options, closes it with Escape.
-   * Read-only apart from the menu toggle (no selection is changed).
+   * Opens the picker and records the effort slider state and model options. With `walk`, steps the
+   * slider through every level reading its label, then restores the original level and verifies it
+   * (the account-level effort setting is otherwise left untouched). Never sends.
    */
-  private async listPresetOptions(): Promise<Record<string, unknown> | null> {
-    const picker = await probe(this.page, "modelPicker", this.sel);
-    if (!picker.found || !picker.locator) return null;
+  private async listPresetOptions(walk: boolean): Promise<Record<string, unknown> | null> {
+    let menu: Locator;
     try {
-      await picker.locator.click({ timeout: 3000 });
-      await this.page.waitForTimeout(400);
-      const slider = this.page
-        .locator("[data-model-reasoning-effort-slider] [role=slider]")
-        .first();
-      const sliderInfo =
-        (await slider.count().catch(() => 0)) > 0
-          ? {
-              valueNow: await slider.getAttribute("aria-valuenow"),
-              valueMax: await slider.getAttribute("aria-valuemax"),
-              description: (
-                await this.page
-                  .locator("[data-model-reasoning-effort-slider]")
-                  .locator("xpath=ancestor::*[@role='menuitem'][1]")
-                  .innerText()
-                  .catch(() => "")
-              )
-                .replace(/\s+/g, " ")
-                .trim(),
-            }
-          : null;
-      const radios = build(this.page, { kind: "role", role: "menuitemradio", name: "" });
-      const models: string[] = [];
-      const n = await radios.count().catch(() => 0);
-      for (let i = 0; i < Math.min(n, 20); i++) {
-        const t = (
-          await radios
-            .nth(i)
-            .innerText()
-            .catch(() => "")
-        )
-          .replace(/\s+/g, " ")
-          .trim();
-        const checked = await radios
-          .nth(i)
-          .getAttribute("aria-checked")
-          .catch(() => null);
-        if (t) models.push(`${t}${checked === "true" ? " [checked]" : ""}`);
-      }
-      return {
+      menu = await this.openPicker();
+    } catch (err) {
+      return { error: (err as Error).message };
+    }
+    try {
+      const before = await this.readSlider(menu);
+      const report: Record<string, unknown> = {
         triggerLabel: await this.readPresetLabel(),
-        effortSlider: sliderInfo,
-        modelOptions: models,
+        effortSlider: { valueNow: before.now, valueMax: before.max, label: before.label },
       };
+      if (walk) {
+        const labels: Record<number, string> = {};
+        for (let i = 0; i <= before.max; i++) {
+          const preset = EFFORT_SLIDER_INDEX[i];
+          if (!preset) break;
+          const r = await this.selectEffort(menu, preset);
+          labels[i] = r.ok ? (await this.readSlider(menu)).label : `ERROR: ${r.cause}`;
+        }
+        report.effortLabels = labels;
+        const orig = EFFORT_SLIDER_INDEX[before.now];
+        const restore = orig
+          ? await this.selectEffort(menu, orig)
+          : { ok: false, cause: "unknown" };
+        report.restored = restore.ok
+          ? before.now
+          : `FAILED: ${"cause" in restore ? restore.cause : ""}`;
+        if (restore.ok) this.effortToRestore = null;
+      }
+      await this.expandModels(menu).catch(() => undefined);
+      report.modelOptions = (await this.readModelRadios(menu)).map(
+        (r) => `${r.text.replace(/\s+/g, " ")}${r.checked ? " [checked]" : ""}`,
+      );
+      return report;
     } catch (err) {
       return { error: (err as Error).message };
     } finally {
-      await this.page.keyboard.press("Escape").catch(() => undefined);
+      await this.closePicker();
+      await this.page.waitForTimeout(1200);
     }
   }
 
-  async inspectUiReport(artifactsDir: string): Promise<string> {
+  async inspectUiReport(
+    artifactsDir: string,
+    opts: { walkEffort?: boolean } = {},
+  ): Promise<string> {
     await mkdir(artifactsDir, { recursive: true });
     const report: Record<string, unknown> = {
       url: this.page.url(),
@@ -566,7 +835,8 @@ export class ChatGptPage implements ChatGptPort {
       elements[key] = { mode: def.mode, scope: def.scope ?? null, candidates: rows };
     }
     report.presetLabel = await this.readPresetLabel();
-    report.presetOptions = await this.listPresetOptions();
+    report.presetOptions = await this.listPresetOptions(opts.walkEffort ?? false);
+    report.presetLabelAfter = await this.readPresetLabel();
     const path = join(artifactsDir, "inspect-ui.json");
     await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     return path;

@@ -11,11 +11,19 @@ export type RequestedPreset = (typeof REQUESTED_PRESETS)[number];
 export const OBSERVED_PRESETS = ["instant", "medium", "high", "extra_high", "pro"] as const;
 export type ObservedPreset = (typeof OBSERVED_PRESETS)[number];
 
+/** Contract 1.1 (A-067): model is the radio in the picker; preset is the effort slider. */
+export const REQUESTED_MODELS = ["current", "latest", "gpt-5.6-sol", "gpt-5.5"] as const;
+export type RequestedModel = (typeof REQUESTED_MODELS)[number];
+export const OBSERVED_MODELS = ["latest", "gpt-5.6-sol", "gpt-5.5"] as const;
+export type ObservedModel = (typeof OBSERVED_MODELS)[number];
+
 export interface BridgeRequest {
-  schemaVersion: "1.0";
+  schemaVersion: "1.0" | "1.1";
   requestId: string;
   promptFile: string;
   preset: RequestedPreset;
+  /** 1.1: optional, default "current" (observe only; the UI resets the radio to 最新 on every page load). */
+  model?: RequestedModel;
   newChat: true;
   timeoutMs?: number;
   responseFormat: "markdown";
@@ -97,12 +105,16 @@ export interface BridgeError {
 }
 
 export interface BridgeResult {
-  schemaVersion: "1.0";
+  schemaVersion: "1.1";
   bridgeVersion: string;
   requestId: string | null;
   status: ResultStatus;
   requestedPreset: RequestedPreset | null;
   observedPreset: ObservedPreset | null;
+  requestedModel: RequestedModel | null;
+  observedModel: ObservedModel | null;
+  /** data-message-model-slug of the extracted assistant turn (post-hoc evidence, not a gate). */
+  observedModelSlug: string | null;
   submitted: Submitted;
   conversationUrl: string | null;
   responseFile: string | null;

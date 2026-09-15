@@ -108,6 +108,23 @@
         "extra_high",
         "pro"
       ]
+    },
+    "requestedModel": {
+      "type": "string",
+      "enum": [
+        "current",
+        "latest",
+        "gpt-5.6-sol",
+        "gpt-5.5"
+      ]
+    },
+    "observedModel": {
+      "type": "string",
+      "enum": [
+        "latest",
+        "gpt-5.6-sol",
+        "gpt-5.5"
+      ]
     }
   },
   "type": "object",
@@ -119,6 +136,9 @@
     "status",
     "requestedPreset",
     "observedPreset",
+    "requestedModel",
+    "observedModel",
+    "observedModelSlug",
     "submitted",
     "conversationUrl",
     "responseFile",
@@ -134,7 +154,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "1.0"
+      "const": "1.1"
     },
     "bridgeVersion": {
       "type": "string",
@@ -174,6 +194,33 @@
           "type": "null"
         }
       ]
+    },
+    "requestedModel": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/requestedModel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observedModel": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/observedModel"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observedModelSlug": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 100
     },
     "submitted": {
       "type": "string",

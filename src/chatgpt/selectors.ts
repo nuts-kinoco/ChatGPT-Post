@@ -1,5 +1,5 @@
 import type { Locator, Page } from "playwright";
-import type { ObservedPreset } from "../contracts/types.js";
+import type { ObservedModel, ObservedPreset } from "../contracts/types.js";
 
 export type Locale = "ja" | "en";
 
@@ -32,8 +32,12 @@ export type ElementKey =
   | "stopButton"
   | "newChatButton"
   | "modelPicker"
-  | "modelPickerOption"
   | "modelPickerCurrentLabel"
+  | "pickerMenu"
+  | "effortSlider"
+  | "effortSliderRow"
+  | "modelExpander"
+  | "modelRadio"
   | "assistantTurn"
   | "assistantTurnBody"
   | "copyTurnButton"
@@ -118,11 +122,67 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
       { kind: "testid", testId: "model-switcher-dropdown-button" },
     ],
   },
-  modelPickerOption: {
-    key: "modelPickerOption",
-    purpose: "メニュー内の選択肢",
+  pickerMenu: {
+    key: "pickerMenu",
+    purpose: "思考量 / モデル選択メニュー本体（開いている間だけ存在）",
+    mode: "unique",
+    candidates: [
+      {
+        kind: "testid",
+        testId: "composer-intelligence-picker-content",
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
+  effortSlider: {
+    key: "effortSlider",
+    purpose: "思考量スライダー（aria-valuenow 0..4、矢印キーで操作）",
+    mode: "unique",
+    scope: "pickerMenu",
+    candidates: [
+      {
+        kind: "css",
+        selector: "[data-model-reasoning-effort-slider] [role=slider]",
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
+  effortSliderRow: {
+    key: "effortSliderRow",
+    purpose:
+      "スライダーを含む menuitem（aria-describedby の先頭 id が現在の段階ラベル「極高、5件中4件目。」）",
+    mode: "unique",
+    scope: "pickerMenu",
+    candidates: [
+      {
+        kind: "css",
+        selector: "[role=menuitem][aria-describedby]:has([data-model-reasoning-effort-slider])",
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
+  modelExpander: {
+    key: "modelExpander",
+    purpose:
+      "「モデルを選択」menuitem（aria-expanded。クリックで advanced view = モデルのラジオが操作可能になる）",
+    mode: "unique",
+    scope: "pickerMenu",
+    candidates: [
+      {
+        kind: "css",
+        selector: "[role=menuitem][aria-expanded]",
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
+  modelRadio: {
+    key: "modelRadio",
+    purpose: "モデルのラジオ（最新 / GPT-5.6 Sol / GPT-5.5。advanced view でのみクリック可能）",
     mode: "count",
-    candidates: [{ kind: "role", role: "menuitem", name: "" }],
+    scope: "pickerMenu",
+    candidates: [
+      { kind: "role", role: "menuitemradio", name: "", verifiedOn: "2026-09-15 chatgpt.com ja" },
+    ],
   },
   modelPickerCurrentLabel: {
     key: "modelPickerCurrentLabel",
@@ -249,20 +309,76 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
 };
 
 /**
- * preset = 思考 effort スライダーの段階（5 段階、aria-valuenow 0..4）。モデルのラジオ（「最新」等）は別次元で、
- * MVP では変更しない。ラベルは実画面で確認したものだけを登録する（2026-09-15: 「極高」= index 3）。
- * 他の段階のラベルは Phase 5 の選択実装時に確定する（未登録の段階は MODEL_NOT_VERIFIABLE で fail closed）。
+ * preset = 思考 effort スライダーの段階（5 段階、aria-valuenow 0..4）。ja ラベルは 2026-09-15 に全段階を
+ * 実画面で確認（Instant / 中程度 / 高 / 極高 / Pro）。en ラベルは未検証の推定で、英語 UI では
+ * inspect-ui で確認してから信頼すること。
  */
 export const PRESET_LABELS: Record<ObservedPreset, Record<Locale, string[]>> = {
-  instant: { ja: [], en: [] },
-  medium: { ja: [], en: [] },
-  high: { ja: [], en: [] },
+  instant: { ja: ["Instant"], en: ["Instant"] },
+  medium: { ja: ["中程度"], en: ["Medium"] },
+  high: { ja: ["高"], en: ["High"] },
   extra_high: { ja: ["極高"], en: ["Extra high"] },
-  pro: { ja: [], en: [] },
+  pro: { ja: ["Pro"], en: ["Pro"] },
 };
 
-/** Slider index -> preset (5 levels). Confirmed only for index 3 so far. */
-export const EFFORT_SLIDER_INDEX: Partial<Record<number, ObservedPreset>> = { 3: "extra_high" };
+/** Slider index <-> preset (5 levels, all confirmed 2026-09-15). */
+export const EFFORT_SLIDER_INDEX: Record<number, ObservedPreset> = {
+  0: "instant",
+  1: "medium",
+  2: "high",
+  3: "extra_high",
+  4: "pro",
+};
+export const EFFORT_INDEX_OF: Record<ObservedPreset, number> = {
+  instant: 0,
+  medium: 1,
+  high: 2,
+  extra_high: 3,
+  pro: 4,
+};
+export const EFFORT_SLIDER_MAX = 4;
+/** Keyboard presses closer than this were observed to lose the last step on persistence (2026-09-15). */
+export const EFFORT_KEY_INTERVAL_MS = 450;
+
+/**
+ * Model radios (advanced view). Matched against the first line of the radio text (GPT-5.5 carries a
+ * second line "10月14日 に提供終了予定"). en labels unknown -> fail closed on an English UI.
+ */
+export const MODEL_LABELS: Record<ObservedModel, Record<Locale, string[]>> = {
+  latest: { ja: ["最新"], en: [] },
+  "gpt-5.6-sol": { ja: ["GPT-5.6 Sol"], en: ["GPT-5.6 Sol"] },
+  "gpt-5.5": { ja: ["GPT-5.5"], en: ["GPT-5.5"] },
+};
+
+/**
+ * data-message-model-slug of the assistant turn, observed 2026-09-15 (post-hoc evidence only, never a
+ * pre-submit gate). latest+instant=gpt-5-6, latest+thinking levels=gpt-5-6-thinking,
+ * latest+pro=gpt-6-pro, gpt-5.6-sol+medium=gpt-5-6-thinking, gpt-5.5+high=gpt-5-5-thinking.
+ */
+export const MODEL_SLUG_PATTERNS: Partial<Record<ObservedModel, RegExp>> = {
+  latest: /^gpt-(5-6|6)(-|$)/,
+  "gpt-5.6-sol": /^gpt-5-6(-|$)/,
+  "gpt-5.5": /^gpt-5-5(-|$)/,
+};
+export const EFFORT_SLUG_PATTERNS: Record<ObservedPreset, RegExp> = {
+  instant: /^gpt-[0-9-]+$/,
+  medium: /-thinking$/,
+  high: /-thinking$/,
+  extra_high: /-thinking$/,
+  pro: /-pro$/,
+};
+export function slugMatches(
+  model: ObservedModel | null,
+  preset: ObservedPreset | null,
+  slug: string,
+): { ok: boolean; cause: string | null } {
+  const m = model ? MODEL_SLUG_PATTERNS[model] : undefined;
+  if (m && !m.test(slug)) return { ok: false, cause: `slug ${slug} does not match model ${model}` };
+  const e = preset ? EFFORT_SLUG_PATTERNS[preset] : undefined;
+  if (e && !e.test(slug))
+    return { ok: false, cause: `slug ${slug} does not match preset ${preset}` };
+  return { ok: true, cause: null };
+}
 
 export const PHRASES = {
   rateLimited: {
@@ -451,6 +567,54 @@ export async function latest(
     }
   }
   return best ? best.loc.last() : null;
+}
+
+export function reverseLookupModel(
+  radioText: string,
+  locale: Locale,
+): { model: ObservedModel } | { error: "unmapped" | "ambiguous" } {
+  const first = (radioText.split(/\r?\n/)[0] ?? "").trim().toLowerCase();
+  const hits: ObservedModel[] = [];
+  for (const model of Object.keys(MODEL_LABELS) as ObservedModel[]) {
+    const labels = [
+      ...MODEL_LABELS[model][locale],
+      ...MODEL_LABELS[model][locale === "ja" ? "en" : "ja"],
+    ];
+    if (labels.some((l) => l.trim().toLowerCase() === first)) hits.push(model);
+  }
+  if (hits.length === 1) return { model: hits[0] as ObservedModel };
+  return { error: hits.length === 0 ? "unmapped" : "ambiguous" };
+}
+
+/**
+ * The trigger reads "極高" with the default model and "<model short> <effort>" (e.g. "5.5 高",
+ * observed 2026-09-15) once a model radio is chosen. Match the effort label as the whole string or
+ * as the last space-separated token (longest label first so "極高" is not read as "高").
+ */
+export function parseTriggerLabel(
+  label: string,
+  locale: Locale,
+):
+  | { preset: ObservedPreset; effortLabel: string; modelHint: string | null }
+  | { error: "unmapped" } {
+  const norm = label.trim();
+  const whole = reverseLookupPreset(norm, locale);
+  if (!("error" in whole)) return { preset: whole.preset, effortLabel: norm, modelHint: null };
+  const candidates: Array<{ preset: ObservedPreset; l: string }> = [];
+  for (const preset of Object.keys(PRESET_LABELS) as ObservedPreset[]) {
+    for (const loc of ["ja", "en"] as Locale[])
+      for (const l of PRESET_LABELS[preset][loc]) candidates.push({ preset, l });
+  }
+  candidates.sort((x, y) => y.l.length - x.l.length);
+  const lower = norm.toLowerCase();
+  for (const c of candidates) {
+    const suffix = ` ${c.l.toLowerCase()}`;
+    if (lower.endsWith(suffix)) {
+      const hint = norm.slice(0, norm.length - suffix.length).trim();
+      return { preset: c.preset, effortLabel: c.l, modelHint: hint || null };
+    }
+  }
+  return { error: "unmapped" };
 }
 
 export function reverseLookupPreset(

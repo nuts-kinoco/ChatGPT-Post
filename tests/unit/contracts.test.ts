@@ -134,12 +134,15 @@ describe("atomic write (FR-013, AC-009)", () => {
 
 function baseResult(over: Partial<BridgeResult> = {}): BridgeResult {
   return {
-    schemaVersion: "1.0",
+    schemaVersion: "1.1",
     bridgeVersion: "0.1.0",
     requestId: "20260914T113000Z-a1b2c3d4",
     status: "completed",
     requestedPreset: "current",
     observedPreset: "pro",
+    requestedModel: "current",
+    observedModel: "latest",
+    observedModelSlug: "gpt-5-6",
     submitted: "yes",
     conversationUrl: "https://chatgpt.com/c/abc",
     responseFile: "S:/x/response.md",
@@ -159,6 +162,18 @@ describe("result.json schema + invariants (AC-007)", () => {
   it("accepts the completed example", () => {
     expect(validateResult(baseResult()).valid).toBe(true);
     expect(checkResultInvariants(baseResult())).toEqual([]);
+  });
+  it("1.1: model is optional in request (default current) and rejects unknown models", () => {
+    expect(validateRequest({ ...okReq, schemaVersion: "1.1" }).valid).toBe(true);
+    expect(validateRequest({ ...okReq, schemaVersion: "1.1", model: "gpt-5.5" }).valid).toBe(true);
+    expect(validateRequest({ ...okReq, model: "latest" }).valid).toBe(true);
+    expect(validateRequest({ ...okReq, model: "gpt-9" }).valid).toBe(false);
+    expect(validateResult(baseResult({ observedModel: "current" as never })).valid).toBe(false);
+    expect(
+      validateResult(
+        baseResult({ requestedModel: null, observedModel: null, observedModelSlug: null }),
+      ).valid,
+    ).toBe(true);
   });
   const failed = (
     code: BridgeResult["error"] extends infer E ? (E extends { code: infer C } ? C : never) : never,

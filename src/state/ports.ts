@@ -4,7 +4,9 @@ import type {
   BridgeResult,
   ExtractionMethod,
   ExtractionQuality,
+  ObservedModel,
   ObservedPreset,
+  RequestedModel,
   RequestedPreset,
 } from "../contracts/types.js";
 import type { ChallengeKind, NewChatFailure, SubmitFailure } from "./machine.js";
@@ -76,7 +78,13 @@ export type AuthObservation =
   | { kind: "NOT_READY"; cause: string };
 
 export type PresetResolution =
-  | { kind: "observed"; preset: ObservedPreset; label: string }
+  | {
+      kind: "observed";
+      preset: ObservedPreset;
+      label: string;
+      model: ObservedModel;
+      modelLabel: string;
+    }
   | { kind: "not_available" }
   | { kind: "not_verifiable"; cause: string }
   | { kind: "dom_unexpected"; element: string; tried: string[] }
@@ -92,6 +100,8 @@ export interface Extraction {
   markdown: string;
   method: ExtractionMethod;
   quality: ExtractionQuality;
+  /** data-message-model-slug of the extracted turn, if present. */
+  modelSlug: string | null;
 }
 
 export interface ChatGptPort {
@@ -104,7 +114,8 @@ export interface ChatGptPort {
     | { kind: "retry"; cause: string }
     | { kind: "dom_unexpected"; element: string; tried: string[] }
   >;
-  resolvePreset(requested: RequestedPreset): Promise<PresetResolution>;
+  /** Selects model (in-page radio) then effort (persisted slider); observes both; fails closed. */
+  resolvePreset(requested: RequestedPreset, model: RequestedModel): Promise<PresetResolution>;
   enterPrompt(
     text: string,
   ): Promise<
@@ -130,7 +141,14 @@ export interface ChatGptPort {
   observe(t: number): Promise<Observation>;
   currentUrl(): Promise<string>;
   extractLatest(): Promise<Extraction | { kind: "empty"; cause: "empty" | "canvas" }>;
-  inspectUiReport(artifactsDir: string): Promise<string>;
+  /**
+   * Best-effort: puts the (account-persisted) effort slider back to the level seen before this run
+   * changed it. No-op when nothing was changed. Called before CLOSE_BROWSER; failures are warnings.
+   */
+  restoreEffort(): Promise<
+    { kind: "unchanged" } | { kind: "restored" } | { kind: "failed"; cause: string }
+  >;
+  inspectUiReport(artifactsDir: string, opts?: { walkEffort?: boolean }): Promise<string>;
 }
 
 export interface Ports {

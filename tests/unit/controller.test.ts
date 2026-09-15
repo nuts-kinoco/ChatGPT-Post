@@ -58,7 +58,13 @@ function fake(
   const chatgpt: ChatGptPort = {
     navigateAndObserveAuth: async () => ({ kind: "AUTH_OK" }),
     openNewChat: async () => ({ kind: "ok" }),
-    resolvePreset: async () => ({ kind: "observed", preset: "pro", label: "Pro" }),
+    resolvePreset: async () => ({
+      kind: "observed",
+      preset: "pro",
+      label: "Pro",
+      model: "latest",
+      modelLabel: "最新",
+    }),
     enterPrompt: async () => ({ kind: "ok" }),
     snapshotBaseline: async () => ({
       kind: "ok",
@@ -74,8 +80,13 @@ function fake(
       markdown: "# Bridge Smoke Test\n\nreq",
       method: "copy",
       quality: "full",
+      modelSlug: "gpt-5-6",
     }),
     inspectUiReport: async (dir) => `${dir}/inspect-ui.json`,
+    restoreEffort: async () => {
+      calls.push("restoreEffort");
+      return { kind: "unchanged" };
+    },
     ...over,
   };
   const f: Fake = {
@@ -194,12 +205,17 @@ describe("RunController", () => {
     expect(out.exitCode).toBe(0);
     expect(out.result?.status).toBe("completed");
     expect(out.result?.observedPreset).toBe("pro");
+    expect(out.result?.requestedModel).toBe("current");
+    expect(out.result?.observedModel).toBe("latest");
+    expect(out.result?.observedModelSlug).toBe("gpt-5-6");
+    expect(out.result?.schemaVersion).toBe("1.1");
     expect(out.result?.submitted).toBe("yes");
     expect(out.result?.conversationUrl).toBe("https://chatgpt.com/c/123");
     expect(f.calls.indexOf("writeMarker")).toBeLessThan(f.calls.indexOf("writeResponse"));
     expect(f.calls.indexOf("verify")).toBeLessThan(f.calls.indexOf("writeMarker"));
     expect(f.calls.indexOf("writeResponse")).toBeLessThan(f.calls.indexOf("writeResult"));
     expect(f.calls.indexOf("close")).toBeLessThan(f.calls.indexOf("release"));
+    expect(f.calls.indexOf("restoreEffort")).toBeLessThan(f.calls.indexOf("close"));
     expect(f.calls).not.toContain("stopTrace"); // trace on success disabled
   });
 

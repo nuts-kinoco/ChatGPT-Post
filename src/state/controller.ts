@@ -4,10 +4,12 @@ import {
   judge,
   type Observation,
 } from "../chatgpt/completion.js";
+import { slugMatches } from "../chatgpt/selectors.js";
 import type {
   BridgeRequest,
   BridgeResult,
   ErrorCode,
+  ObservedModel,
   ObservedPreset,
   StateName,
 } from "../contracts/types.js";
@@ -89,6 +91,8 @@ export class RunController {
   private baseline: Baseline | null = null;
   private observedPreset: ObservedPreset | null = null;
   private observedLabel = "";
+  private observedModel: ObservedModel | null = null;
+  private observedModelSlug: string | null = null;
   private conversationUrl: string | null = null;
   private responseFile: string | null = null;
   private extraction: {
@@ -280,11 +284,15 @@ export class RunController {
         return { type: "DOM_UNEXPECTED", element: n.element, tried: n.tried };
       }
       case "RESOLVE_PRESET": {
-        const p = await this.withPhaseLimit(chatgpt.resolvePreset(this.requireRequest().preset));
+        const req = this.requireRequest();
+        const p = await this.withPhaseLimit(
+          chatgpt.resolvePreset(req.preset, req.model ?? "current"),
+        );
         switch (p.kind) {
           case "observed":
             this.observedPreset = p.preset;
             this.observedLabel = p.label;
+            this.observedModel = p.model;
             return { type: "PRESET_OBSERVED", preset: p.preset };
           case "not_available":
             return { type: "PRESET_NOT_AVAILABLE" };
@@ -361,6 +369,12 @@ export class RunController {
         const x = await chatgpt.extractLatest();
         if ("kind" in x) return { type: "EXTRACTION_EMPTY", cause: x.cause };
         this.extraction = { markdown: x.markdown, method: x.method, quality: x.quality };
+        this.observedModelSlug = x.modelSlug;
+        // Post-hoc evidence only (A-067 / 21 §1): a mismatch is a warning, never a failure.
+        if (x.modelSlug) {
+          const m = slugMatches(this.observedModel, this.observedPreset, x.modelSlug);
+          if (!m.ok) this.warnings.push(`model_slug_mismatch: ${m.cause}`);
+        }
         return { type: "EXTRACTED" };
       }
       case "WRITE_RESPONSE_MD": {
@@ -405,6 +419,19 @@ export class RunController {
       }
       case "CLOSE_BROWSER":
         if (this.browserUp) {
+          // A-073: leave the account's effort setting as we found it (best-effort, bounded).
+          if (!this.crashCause) {
+            const r = await Promise.race([
+              chatgpt
+                .restoreEffort()
+                .catch((e: Error) => ({ kind: "failed" as const, cause: e.message })),
+              this.ports.clock
+                .sleep(15_000)
+                .then(() => ({ kind: "failed" as const, cause: "timeout" })),
+            ]);
+            if (r.kind === "failed") this.warnings.push(`restore_effort_failed: ${r.cause}`);
+            else if (r.kind === "restored") this.ports.log("info", "effort slider restored");
+          }
           this.browserUp = false;
           await browser.close();
         }
@@ -476,7 +503,7 @@ export class RunController {
     const completed = term?.name === "COMPLETED" || (!term && this.state.name === "WRITING_RESULT");
     const safeCause = term?.cause == null ? null : sanitiseResultText(term.cause);
     return {
-      schemaVersion: "1.0",
+      schemaVersion: "1.1",
       bridgeVersion: this.opts.bridgeVersion,
       requestId: this.requestId,
       status: completed
@@ -486,6 +513,9 @@ export class RunController {
           : "failed",
       requestedPreset: this.request?.preset ?? null,
       observedPreset: this.observedPreset,
+      requestedModel: this.request ? (this.request.model ?? "current") : null,
+      observedModel: this.observedModel,
+      observedModelSlug: this.observedModelSlug,
       submitted: this.state.submitted,
       conversationUrl: sanitiseConversationUrl(this.conversationUrl),
       responseFile: completed ? this.responseFile : null,

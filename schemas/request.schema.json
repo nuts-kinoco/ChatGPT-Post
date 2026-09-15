@@ -16,7 +16,10 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "1.0"
+      "enum": [
+        "1.0",
+        "1.1"
+      ]
     },
     "requestId": {
       "type": "string",
@@ -37,7 +40,19 @@
         "high",
         "extra_high",
         "pro"
-      ]
+      ],
+      "description": "Effort slider level (5 levels). current = do not touch, observe and reverse-map the label."
+    },
+    "model": {
+      "type": "string",
+      "enum": [
+        "current",
+        "latest",
+        "gpt-5.6-sol",
+        "gpt-5.5"
+      ],
+      "default": "current",
+      "description": "1.1 (A-067): model radio in the picker. Optional; current = observe only. preset remains the effort slider level."
     },
     "newChat": {
       "type": "boolean",

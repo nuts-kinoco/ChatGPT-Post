@@ -17,7 +17,9 @@ commands:
   login                      専用ブラウザを開き、人間がログインする
   doctor                     環境・プロファイル・ロック・ログイン状態を診断する
   run --request <path>       request.json を 1 件処理する
-  inspect-ui [--dump-dom]    UI 要素の検出状況を出力する（送信しない）
+  inspect-ui [--dump-dom] [--walk-effort]
+                             UI 要素の検出状況を出力する（送信しない）。--walk-effort は
+                             思考量スライダーを全段階なめてラベルを記録し、元の段階に戻す
 
 options:
   --profile-dir <path>       専用プロファイル（CHATGPT_BRIDGE_PROFILE_DIR より優先）
@@ -164,6 +166,7 @@ async function cmdRun(
 async function cmdInspectUi(
   cfg: BridgeConfig,
   dumpDom: boolean,
+  walkEffort: boolean,
   verifiedOnly: boolean,
 ): Promise<number> {
   const r = await withBrowser(cfg, "inspect-ui", verifiedOnly, async (ports) => {
@@ -174,7 +177,7 @@ async function cmdInspectUi(
     await mkdir(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const reportDir = join(dir, stamp);
-    const report = await page.inspectUiReport(reportDir);
+    const report = await page.inspectUiReport(reportDir, { walkEffort });
     process.stdout.write(`report: ${report}\n`);
     if (dumpDom) {
       const html = await ports.session.currentPage.content();
@@ -196,6 +199,7 @@ export async function main(argv: string[]): Promise<number> {
       "profile-dir": { type: "string" },
       "log-level": { type: "string" },
       "dump-dom": { type: "boolean", default: false },
+      "walk-effort": { type: "boolean", default: false },
       "allow-unverified": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
@@ -222,7 +226,12 @@ export async function main(argv: string[]): Promise<number> {
       }
       return cmdRun(cfg, values.request, verifiedOnly);
     case "inspect-ui":
-      return cmdInspectUi(cfg, values["dump-dom"] ?? false, verifiedOnly);
+      return cmdInspectUi(
+        cfg,
+        values["dump-dom"] ?? false,
+        values["walk-effort"] ?? false,
+        verifiedOnly,
+      );
     default:
       process.stderr.write(`unknown command: ${command}\n${USAGE}`);
       return EXIT_CODES.invalidInput;
