@@ -86,7 +86,7 @@
 - **出口条件**: 実ブラウザで一往復成功 / `observedPreset` が非 null / response.md を Claude Code が読める / 失敗時 trace が開ける / 二重送信なし / Unit test 通過 / Live 実行ログ保存 / AC-032（OPS-010 スコープ確認を含む）/ Codex Medium レビューで Critical・High を解消または明示保留
 - **PO 操作**: 初回 `login` の手動ログイン（1 回）
 
-## Phase 5 — MVP 堅牢化
+## Phase 5 — MVP 堅牢化 【完了: 2026-09-15。実施内容は `21 §7` の再構成案。`docs/live-results/20260915-phase5.md`】
 
 - **入口条件**: PO の `続行: Phase 5`
 - **追加**: preset / effort 選択と検証 / 多言語 selector / 完了判定の複数信号化 / Markdown 抽出の多段方式 / 全エラーコード / タイムアウトと safe stop / browser crash 検出 / profile in use 検出 / request・result JSON Schema 適用 / CLI 終了コード / diagnostics（`inspect-ui`）/ ログ redaction / fixture tests / Live シナリオ拡充（AC-034 の LS-01〜LS-11）
@@ -94,7 +94,7 @@
 - **出口条件**: AC-001〜AC-031 のうち Live 以外がすべて通過、AC-032（OPS-010 スコープ確認を含む）、AC-034（LS-01〜LS-11）の結果記録、Codex 節目レビュー（AC-033）
 - **PO 操作**: Live シナリオ中の手動介入（ログアウト状態テスト等）
 
-## Phase 6 — Claude Code 連携
+## Phase 6 — Claude Code 連携 【完了: 2026-09-15。画像・キュー・追記・SKILL.md。`docs/live-results/20260915-phase6.md`】
 
 - **入口条件**: PO の `続行: Phase 6`
 - **成果物候補**: PowerShell wrapper（`scripts/ask-chatgpt.ps1`）/ Claude 向け利用手順 / 入力テンプレート / 結果待機と timeout 処理 / 失敗時の再開手順 / サンプルワークフロー
@@ -102,7 +102,7 @@
 - **未決事項の解消**: OQ-008（PowerShell 7 の扱い — PO 判断。NFR-001a の優先度を確定）
 - **出口条件**: Claude Code から人間のコピー＆ペーストなしに一往復できる証拠
 
-## Phase 7 — リリース判定と引き渡し
+## Phase 7 — リリース判定と引き渡し 【実施中: 2026-09-15】
 
 - **入口条件**: PO の `続行: Phase 7`
 - **内容**: 全受入条件の再確認 / セットアップ再現（新規環境相当の手順検証）/ Codex 最終レビュー / 残存リスク一覧（R-001 を含む）/ 運用手順 / UI 変更時の修正ガイド / リリースノート / バージョン付与

@@ -90,7 +90,10 @@ effects の定義:
 - `STOP_TRACE` = `tracing.stop` → サニタイズ → `artifacts/<id>/trace.zip` → `artifacts[]`。`(if enabled)` は `CHATGPT_BRIDGE_TRACE_ON_SUCCESS=1` のときのみ。`(best-effort)` はブラウザ切断後で失敗を許容
 - `INSPECT_UI_REPORT` = 全 `ElementKey` の候補ごとの一致数・可視性を `artifacts/<id>/inspect-ui.json` に書く → `artifacts[]`
 - `WRITE_RESULT` = `result.json` をアトミック書き出し（`artifacts` は既に確定済み）。結果は `RESULT_WRITTEN` / `WRITE_FAILED(result)`
-- `CLOSE_BROWSER` = `context.close()`（上限 15 s、超過時は子プロセス kill）
+- `CLOSE_BROWSER` = （Phase 5 追加、A-073）ブラウザが生きていてクラッシュ検出が無ければ先に `restoreEffort()`（思考量スライダーを実行前の段階へ戻す。上限 15 s、失敗は `warnings[].restore_effort_failed`）→ `context.close()`（上限 15 s、超過時は子プロセス kill）
+- `EXTRACT_LATEST` = 最新 assistant ターンの抽出（copy → dom → innerText）。（Phase 6 追加、A-091）抽出成功後に同じ effect 内で `captureImages()`（best-effort、上限 120 s、失敗は `warnings[].image_capture_failed`）を行い、`images[]` と `response.md` 末尾のリンクを確定する。本文が空で画像も保存できなければ `EXTRACTION_EMPTY`（成功にしない）
+- `ENTER_PROMPT` = 本文の入力と照合。（Phase 5 追加、A-081 / A-084）添付があれば続けて `setInputFiles` → チップ数一致 → 送信ボタンの `aria-disabled` 解除まで待つ。フェーズ上限 60 s は `uploadBudgetMs` だけ延長
+- `OPEN_NEW_CHAT` = `newChat: true` なら `https://chatgpt.com/` へ遷移、`false` なら `conversationUrl` を開いて origin / パス / 既存ターン / 非生成中 / 空入力欄を確認（A-096 / A-098）。失敗の cause に `conversation_not_found` を追加
 - `RELEASE_LOCK` = `bridge.lock` を読み、自トークンのときのみ削除
 - `STOP_OBSERVATION_LOOP` = 以後 `VERDICT_*` を配送しない
 - `UPDATE_MARKER` = marker に `dispatchedAt` / `urlAfter` を追記（best-effort）
