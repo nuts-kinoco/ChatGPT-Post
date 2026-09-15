@@ -8,6 +8,9 @@ const BOM = String.fromCharCode(0xfeff);
 export const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$/;
 const WINDOWS_RESERVED = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
 
+/** A-083: ProseMirror fill measured 10-15 s at 10-20k chars and >30 s at 57k (2026-09-15). */
+export const PROMPT_MAX_CHARS = 20_000;
+
 export function stripBom(text: string): string {
   return text.startsWith(BOM) ? text.slice(1) : text;
 }
@@ -64,6 +67,7 @@ export type ValidateOutcome =
       timeoutMs: number;
       /** Absolute attachment paths (validated). */
       attachments: string[];
+      attachmentBytes: number;
     };
 
 /** Step [3]: schema validation + prompt read + non-empty check. Never throws. */
@@ -90,6 +94,14 @@ export async function validateAndLoad(raw: unknown, requestDir: string): Promise
   if (prompt.trim().length === 0) {
     return { kind: "invalid", errors: ["prompt is empty or whitespace only"] };
   }
+  if (prompt.length > PROMPT_MAX_CHARS) {
+    return {
+      kind: "invalid",
+      errors: [
+        `prompt is ${prompt.length} chars; the composer accepts up to ${PROMPT_MAX_CHARS} reliably. Put long content into attachments and keep the prompt short`,
+      ],
+    };
+  }
   return {
     kind: "valid",
     request: req,
@@ -97,5 +109,6 @@ export async function validateAndLoad(raw: unknown, requestDir: string): Promise
     promptPath,
     timeoutMs: req.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     attachments: att.paths,
+    attachmentBytes: att.totalBytes,
   };
 }

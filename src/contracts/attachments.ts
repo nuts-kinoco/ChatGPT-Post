@@ -77,6 +77,7 @@ export interface AttachmentCheck {
   ok: boolean;
   /** Absolute paths in request order (only when ok). */
   paths: string[];
+  totalBytes: number;
   errors: string[];
 }
 
@@ -84,15 +85,21 @@ export async function checkAttachments(
   list: unknown,
   requestDir: string,
 ): Promise<AttachmentCheck> {
-  if (list === undefined) return { ok: true, paths: [], errors: [] };
+  if (list === undefined) return { ok: true, paths: [], totalBytes: 0, errors: [] };
   const errors: string[] = [];
   if (!Array.isArray(list) || !list.every((x) => typeof x === "string" && x.length > 0)) {
-    return { ok: false, paths: [], errors: ["/attachments must be an array of non-empty strings"] };
+    return {
+      ok: false,
+      paths: [],
+      totalBytes: 0,
+      errors: ["/attachments must be an array of non-empty strings"],
+    };
   }
   if (list.length > MAX_ATTACHMENTS) {
     errors.push(`/attachments: at most ${MAX_ATTACHMENTS} files`);
   }
   const paths: string[] = [];
+  let totalBytes = 0;
   const seenBase = new Set<string>();
   for (const [i, item] of (list as string[]).entries()) {
     const abs = isAbsolute(item) ? item : resolve(requestDir, item);
@@ -145,8 +152,10 @@ export async function checkAttachments(
       }
     }
     paths.push(abs);
+    totalBytes += size;
   }
-  return { ok: errors.length === 0, paths: errors.length === 0 ? paths : [], errors };
+  const ok = errors.length === 0;
+  return { ok, paths: ok ? paths : [], totalBytes: ok ? totalBytes : 0, errors };
 }
 
 /** Rough upload budget: base + per-MB allowance (3 MB took >10 s on 2026-09-15). */

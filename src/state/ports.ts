@@ -40,6 +40,8 @@ export interface ContractsPort {
         prompt: string;
         timeoutMs: number;
         attachments: string[];
+        /** Sum of attachment sizes (for the upload time budget). */
+        attachmentBytes: number;
       }
   >;
   writeResponse(requestDir: string, markdown: string): Promise<string>;

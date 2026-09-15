@@ -124,6 +124,7 @@ function fake(
           prompt: "hi",
           timeoutMs: 60_000,
           attachments: [],
+          attachmentBytes: 0,
         }),
         writeResponse: async (_d, md) => {
           calls.push("writeResponse");

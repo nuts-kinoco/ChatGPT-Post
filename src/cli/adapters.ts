@@ -60,6 +60,7 @@ export function fileContracts(): ContractsPort {
             prompt: v.prompt,
             timeoutMs: v.timeoutMs,
             attachments: v.attachments,
+            attachmentBytes: v.attachmentBytes,
           };
     },
     writeResponse: async (dir, md) => {

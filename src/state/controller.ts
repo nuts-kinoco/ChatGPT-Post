@@ -5,6 +5,7 @@ import {
   type Observation,
 } from "../chatgpt/completion.js";
 import { slugMatches } from "../chatgpt/selectors.js";
+import { uploadBudgetMs } from "../contracts/attachments.js";
 import type {
   BridgeRequest,
   BridgeResult,
@@ -84,6 +85,7 @@ export class RunController {
   private requestDir = "";
   private prompt = "";
   private attachments: string[] = [];
+  private attachmentBytes = 0;
   private timeoutMs = 0;
   private lockHeld = false;
   private browserUp = false;
@@ -183,11 +185,12 @@ export class RunController {
     }
   }
 
-  private async withPhaseLimit<T>(p: Promise<T>): Promise<T> {
+  private async withPhaseLimit<T>(p: Promise<T>, extraMs = 0): Promise<T> {
     const limits = this.opts.phaseLimitsMs ?? DEFAULT_PHASE_LIMITS_MS;
     const name = this.state.name as StateName;
-    const limit = limits[name];
-    if (!limit) return p;
+    const base = limits[name];
+    if (!base) return p;
+    const limit = base + extraMs;
     const elapsed = this.ports.clock.monotonic() - this.phaseEnteredAt;
     const remaining = limit - elapsed;
     if (remaining <= 0) throw new PhaseTimeout(name);
@@ -227,6 +230,7 @@ export class RunController {
         this.prompt = v.prompt;
         this.timeoutMs = v.timeoutMs;
         this.attachments = v.attachments;
+        this.attachmentBytes = v.attachmentBytes;
         const profile = await browser.checkProfilePath();
         if (!profile.ok) return { type: "PROFILE_PATH_REJECTED", cause: profile.cause };
         return { type: "VALID" };
@@ -308,7 +312,11 @@ export class RunController {
         break;
       }
       case "ENTER_PROMPT": {
-        const e = await this.withPhaseLimit(chatgpt.enterPrompt(this.prompt, this.attachments));
+        // A-084: the 60 s pre-submit limit is extended by the upload budget when files are attached
+        const e = await this.withPhaseLimit(
+          chatgpt.enterPrompt(this.prompt, this.attachments),
+          this.attachments.length > 0 ? uploadBudgetMs(this.attachmentBytes) : 0,
+        );
         if (e.kind === "ok") return { type: "PROMPT_OK" };
         if (e.kind === "mismatch") return { type: "PROMPT_MISMATCH", cause: e.cause };
         if (e.kind === "retry")
