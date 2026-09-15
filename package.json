@@ -1,0 +1,42 @@
+{
+  "name": "chatgpt-web-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local, serial CLI bridge that submits one prompt to the ChatGPT web UI via a dedicated Playwright profile and returns the reply as Markdown + result.json.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "chatgpt-bridge": "./dist/cli/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:fixture": "vitest run tests/fixture",
+    "test:live": "vitest run tests/live",
+    "bridge": "node ./dist/cli/main.js"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "playwright": "1.63.0",
+    "turndown": "^7.2.4",
+    "turndown-plugin-gfm": "^1.0.2",
+    "yauzl": "^3.4.0",
+    "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.13",
+    "@types/node": "^26.5.1",
+    "@types/turndown": "^5.0.6",
+    "@types/yauzl": "^3.4.0",
+    "@types/yazl": "^3.3.1",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.0"
+  }
+}

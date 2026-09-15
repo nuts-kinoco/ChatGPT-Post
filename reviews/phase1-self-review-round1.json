@@ -1,0 +1,234 @@
+{
+  "round": "1",
+  "summary": "Verify Phase 1 requirement docs for ID consistency, coverage gaps, and contradictions with the master prompt",
+  "dimensions": [
+    {
+      "dimension": "id-consistency",
+      "summary": "ID 整合性・トレーサビリティの機械照合結果。【問題なし】02 の全 FR/NFR/SEC/OPS Must は AC 列を持ち、参照先 AC-001〜AC-033 はすべて 04 に存在。04 が参照する要件 ID はすべて 02 に存在し、AC 見出しと 02 の AC 列は（FR-007/008 の対応表行を除き）一致。FR-001〜042 / FR-090〜096 / NFR-001〜011 / SEC-001〜009 / OPS-001〜009 / CON-001〜014 / OQ-001〜007 / AC-001〜033 / R-001〜015 / A-001〜010 / D-01〜08 に重複・欠番なし。03 の重要度別サマリは各リスクの評価と一致し 15 件を網羅。03・05・DECISION-LOG・README・00 が参照する R/OQ/A/AC/FR/SEC/OPS ID はすべて対応する原文書に存在し、内容も整合（01 の D-06 を除く）。PROJECT_STATUS の件数（CON 14 / FR 42+7 / NFR 11 / SEC 9 / OPS 9 / OQ 7 / R-001〜R-015 Critical 2 件 / AC-001〜AC-033 / A-001〜A-010）はすべて実文書と一致。【問題あり】(1) 01 の D-06 が完了検出の根拠として FR-016（送信前確認）を参照しており、正しくは FR-026/027（高）。(2) Must である CON-001/002/003/012/013/014 に対応 AC が無く、CON-009 の紐づけ先 AC にも OCR 禁止の検証が無い。02・04 双方の「Must には必ず AC」宣言に反する（中）。(3) 05 Phase 5 の出口条件「Live 10 シナリオ」の一覧がリポジトリ内に存在せず、「12.3」節も存在しない（中）。(4) 04 対応表の FR-007/008 行が AC-010 を含み、02 の行・AC-010 見出しと不整合（低）。(5) 05 が存在しない節番号「13.」「14.」を参照（低）。",
+      "findings": [
+        {
+          "severity": "high",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\01-RESEARCH-AND-DECISION.md",
+          "location": "D-06 却下案（97 行目）「完了検出は DOM 信号で行う（FR-016）」",
+          "issue": "誤った要件 ID を参照している。02-REQUIREMENTS.md の FR-016 は「送信前に (a)〜(h) を確認する」送信前チェックの要件であり、生成完了検出ではない。完了検出は FR-026（多信号の完了判定）/ FR-027（生成中 UI 未観測時の代替経路）で定義されている。内部 SSE 監視案を却下した根拠（「代わりに DOM 信号で完了検出する」）が別の要件に紐づいており、トレーサビリティが壊れている。",
+          "fix": "「（FR-016）」を「（FR-026, FR-027）」に修正する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md / docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "02 §1 CON-001〜CON-014（18〜33 行目、AC 列なし）と 04 §11 対応表の CON 行（198 行目）",
+          "issue": "02 §0 は「対応が無い Must は存在してはならない」、04 §0 は「全 Must 要件は少なくとも 1 つの AC に対応する」と宣言しているが、Must である CON-001/002/003/012/013/014 は 04 の対応表で個別 AC に紐づいていない（対応表は CON-004/005/006/007/008/009/010/011 のみ具体 AC を挙げ、残りは「設計・実装全体に適用」で済ませている）。また CON-009（OCR・座標ベース回収の禁止）は AC-029/AC-013 に紐づけられているが、AC-029 の grep 対象（storageState/cookies/recordHar/extraHTTPHeaders/外部 fetch/stealth/UA）にも AC-013 にも OCR・座標系ライブラリの不在確認は含まれておらず、実質的に検証 AC が無い。両文書の自己宣言に反する。",
+          "fix": "CON 表に AC 列を追加するか、04 §11 の CON 行を CON-001〜014 それぞれについて個別 AC を明記する形に展開する（例: CON-001→AC-029 に「OpenAI SDK / api.openai.com への依存・通信が無いこと」を追記、CON-003→AC-003、CON-012→AC-032、CON-013/014→AC-027、CON-009→AC-029 に OCR/座標系パッケージ不在の grep を追記）。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\05-PHASE-PLAN.md",
+          "location": "Phase 5 追加項目（87 行目）「Live シナリオ拡充（12.3 の 10 シナリオ）」および出口条件（89 行目）「Live 10 シナリオの結果記録」",
+          "issue": "Phase 5 の出口条件が「10 シナリオ」に依存しているが、その一覧はリポジトリ内のどの文書（02/04/05）にも存在しない。「12.3」は 05 にも他の docs にも無い節番号で、マスタープロンプト側の節を指していると推測されるが、リポジトリ内から辿れないためゲート判定の根拠が追跡不能。",
+          "fix": "10 シナリオを 04-ACCEPTANCE-CRITERIA.md（または 05 の付録）に列挙して AC-ID もしくはシナリオ ID を付与し、05 からはその ID を参照する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "§11 要件 → AC 対応表（204 行目）「FR-007, FR-008, FR-009 | AC-006, AC-010」",
+          "issue": "対応表では FR-007・FR-008 も AC-010 に対応するように読めるが、02-REQUIREMENTS.md の FR-007 行・FR-008 行の AC 列は AC-006 のみであり、04 の AC-010 見出しも「（FR-016, FR-009）」で FR-007/008 を含まない。対応表・02 の行・AC 見出しの三者で不整合。",
+          "fix": "対応表を「FR-007, FR-008 | AC-006」「FR-009 | AC-006, AC-010」に分割する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\05-PHASE-PLAN.md",
+          "location": "§0 運用ルール（13 行目）「`14. Claude Code と Codex の役割分担` に従う」、Phase 7 出口条件（103 行目）「`13. 全体 Definition of Done` をすべて満たす」",
+          "issue": "「14.」「13.」はリポジトリ内のどの文書にも存在しない節番号（マスタープロンプトの節番号と推測される）。05 内には「全体 Definition of Done（再掲）」節はあるが番号は無く、「Claude Code と Codex の役割分担」に相当する節はリポジトリ内に存在しない。文書単体で参照先を辿れない。",
+          "fix": "05 内の該当節（DoD は 106 行目の節）への相対参照に書き換え、役割分担は 05 §0 の表または 02 OPS-004〜006 を参照先とする。"
+        }
+      ]
+    },
+    {
+      "dimension": "master-prompt-fidelity",
+      "summary": "PO の絶対条件 12 項目は 02-REQUIREMENTS.md の CON-001〜CON-012 に Must で網羅され、MVP 必須項目・Won't 項目も FR/NFR/SEC/FR-090〜096 に対応付けられている。規約・アカウントリスクは README・00・03 R-001 の三か所に「削除禁止」付きで記載され、Phase 1 で求められる決定事項（Sengpt/G4F 不採用、TS+Playwright、専用プロファイル、可視、直列、内部 API/HAR/Cookie 不使用、規約リスク、MVP 境界、成功/失敗定義、PO 介入点）は 00・01 で説明されている。headless 優先・ネットワーク傍受による完了検出・API フォールバック・「規約上問題ない」の断定はいずれの文書にも見当たらない。\n\n一方で受入条件と要件の細部に忠実性の穴がある。最重要は AC-029 の grep 条件が「chatgpt.com 以外への fetch」のみを禁じており、chatgpt.com 内部エンドポイントへの直接呼び出しやネットワーク傍受 API が受入を通過し得る点（CON-008 の唯一の検証手段）。次いで、CON-001/CON-009 に検証可能な AC が無いこと、`preset: \"current\"` 経路で UI 表示が読めない場合の fail-closed 規定が無いこと、`RATE_LIMITED` の最終 status が manual_intervention_required と一意に定まっていないこと、trace 成果物が Cookie を含み得ると認めつつ CON-010 との整合を取る要件が無いこと。低優先として、「規約上問題ない」と断定しない旨や過剰抽象化禁止が 02 の要件として未記載、FR-014 が Critical リスクの緩和策なのに Should、01 の Playwright 機能一覧に禁止手段（認証状態の再利用）が含まれる、クリップボード抽出経路の内容検証が無い点を挙げた。",
+      "findings": [
+        {
+          "severity": "high",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-029（174 行目）および要件→AC 対応表の CON-008 行（198 行目）",
+          "issue": "CON-008（内部/非公開 API を呼ばない）と FR-095/D-06 の唯一の検証手段が AC-029 だが、その grep 条件は「外部 URL への fetch（chatgpt.com 以外）が無い」となっており、chatgpt.com 配下（例: /backend-api/ 等の内部エンドポイント）への直接 fetch/POST は合格してしまう。また D-06 で明示的に却下した `page.route` / `waitForResponse` 等のネットワーク傍受による完了検出も AC では検査対象になっていない。PO 禁止事項「private API への投稿」「内部通信の解析」が受入条件レベルでは担保されていない。",
+          "fix": "AC-029 の検査項目を「chatgpt.com を含むあらゆる URL への直接 fetch / `context.request` / `page.request` が無い」「`page.route(`、`waitForResponse(`、`waitForRequest(`、`page.on('response'|'request')` 等のネットワーク傍受 API が無い」に改め、CON-008 の対応 AC として明記する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "要件→AC 対応表 198 行目（CON-001〜014 の一括行）と AC-029（174 行目）",
+          "issue": "02-REQUIREMENTS.md §0（13 行目）は「対応が無い Must は存在してはならない」と定めているが、CON-001（OpenAI API 不使用）と CON-009（OCR 不使用）は「設計・実装全体に適用」という包括記述のみで、検証可能な AC が無い。AC-029 の grep 一覧にも `openai` npm 依存・`api.openai.com` への通信・OCR 系パッケージ（tesseract 等）の不在チェックは含まれていない。PO 絶対条件 1・9 が受入で検証されない。",
+          "fix": "AC-029 に「依存一覧に `openai` 系 SDK・OCR 系パッケージが無い」「`api.openai.com` / `platform.openai.com` への参照が無い」を追加し、対応表で CON-001 / CON-009 → AC-029 を明示する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-020（75 行目）、FR-016(e)（66 行目）、および 04-ACCEPTANCE-CRITERIA.md AC-015（105 行目）",
+          "issue": "`preset: \"current\"` の経路は「UI を変更せず観測値を observedPreset に記録する」とだけ定義され、UI 上のモデル/effort 表示が読めなかった場合に送信を止める規定が無い。FR-016(e) は「要求 preset と UI 表示が一致」であり `current` には適用されないため、表示が読めなくても送信し得る。PO 絶対条件 7「モデル/effort が確認できない場合は fail closed」に対する抜け穴であり、Phase 4 の縦切り（AC-003, 05-PHASE-PLAN Phase 4）は `current` のみを使うため実装初期から影響する。",
+          "fix": "FR-020 に「`current` でも UI 表示から preset を観測できない場合は `MODEL_NOT_VERIFIABLE` で送信せず失敗する」を追記し、FR-016(e) と AC-015 に `current` 時の fail-closed ケースを追加する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-029（89 行目）、FR-017（67 行目）、04-ACCEPTANCE-CRITERIA.md AC-021（134 行目）、03-RISK-REGISTER.md R-012（149 行目）",
+          "issue": "利用上限の扱いが 2 系統に分かれ、最終 status が一意でない。FR-017/AC-013 は「利用上限バナー → `manual_intervention_required`」とする一方、FR-029 は生成中のレート制限表示を `CHAT_ERROR` と並べて `RATE_LIMITED` に分類し、AC-021 と R-012 は `RATE_LIMITED` の status（`failed` か `manual_intervention_required` か）を規定していない。PO 絶対条件 11 は「利用上限は手動介入ステータスで停止」であり、`RATE_LIMITED` が `failed`（終了コード 1）となる余地が残っている。",
+          "fix": "FR-029 / AC-021 / R-012 に「`RATE_LIMITED` は status `manual_intervention_required`（終了コード 3）とし、`CHAT_ERROR` とは status を分ける」と明記する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "CON-010（29 行目）と FR-039（114 行目）、03-RISK-REGISTER.md R-009（115 行目）",
+          "issue": "CON-010 は「秘密情報（Cookie、トークン、認証状態）を…成果物に残さない」と絶対条件として定めるが、FR-039 は失敗時に Playwright trace を `runtime/artifacts/` へ保存し、R-009 は「trace はネットワークヘッダー・Cookie を含み得る」と自ら認めている。緩和策は gitignore と README 注意書きのみで、trace 記録内容から Cookie/Authorization ヘッダーを除外する要件（記録オプションの制限やヘッダーの redaction）は無い。絶対条件 10 が成果物（trace）に関して事実上緩和されている。",
+          "fix": "CON-010 の「成果物」の範囲を定義し（response.md / result.json は必須、trace/screenshot は診断用）、SEC に「trace はネットワークヘッダー/Cookie を含まない設定で記録する、または保存前に redaction する」要件を追加して Phase 2 の 15-SECURITY-AND-PRIVACY.md で扱うことを明記する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "SEC-009（159 行目）",
+          "issue": "PO 禁止事項「『規約上問題ない』と断定しない」は 03-RISK-REGISTER.md R-001（28 行目）と 05-PHASE-PLAN.md Phase 7（104 行目）にはあるが、要件文書 02 では SEC-009 が「明記し削除しない」までしか規定しておらず、要件としては存在しない。",
+          "fix": "SEC-009 に「本プロジェクトのいかなる文書・報告でも『規約上問題ない』『リスクは解消した』と表現しない」を追記する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-014（59 行目）と 03-RISK-REGISTER.md R-003 緩和策 (5)（52 行目）",
+          "issue": "R-003（二重送信、重要度 Critical、扱い Avoid）の緩和策に FR-014（処理済み requestId の冪等拒否）が列挙されているが、FR-014 の優先度は Should（PO 合意で落とせる）であり、PO の MVP 必須項目「二重送信防止」の一部が落とし得る優先度になっている。",
+          "fix": "FR-014 を Must に上げるか、R-003 の緩和策から外して Must の FR-025/FR-035/FR-036/FR-038 のみで担保する旨を明記する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\01-RESEARCH-AND-DECISION.md",
+          "location": "§1.3 の Playwright 関連機能一覧（46 行目「認証済み状態の再利用」）",
+          "issue": "Playwright の「認証済み状態の再利用」は一般に `storageState` の書き出し・読み込みを指すが、同文書 D-03（79 行目）と SEC-002、AC-012 はこれを禁止している。採用根拠の一覧に禁止手段を含めており、Phase 2 以降で storageState 利用を正当化する読み方を許す。",
+          "fix": "該当行を「永続コンテキスト経由でのログイン状態の保持（storageState の書き出しは行わない）」のように限定するか削除する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "§5 OPS（161〜173 行目）および FR-093（126 行目）",
+          "issue": "PO 禁止事項「サーバー/DB/MVP を超える抽象化の構築」のうち、サーバー・REST・DB は FR-093 で Won't だが、「MVP を超える抽象化・先回り実装をしない」は 00-PRODUCT-BRIEF.md（77 行目）と R-013 に記述があるのみで、02 の要件（OPS）として存在しない。",
+          "fix": "OPS に「FR-090〜096 の Won't に該当する機能や、それらを見越した抽象化・拡張点を MVP に入れない」を Must で追加する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-031 (1)（96 行目）と 03-RISK-REGISTER.md R-008（105 行目）、04-ACCEPTANCE-CRITERIA.md AC-022（140 行目）",
+          "issue": "抽出の第 1 経路（コピー操作→クリップボード）について、R-008 は「クリップボードが他アプリに上書きされる」リスクを認めているが、取得したクリップボード内容が最新 assistant メッセージに対応することを検証する要件・AC が無い。無関係な内容や古い内容を回答として `completed` で返し得るため、PO 禁止事項「失敗を成功と報告する」に抵触する余地がある。",
+          "fix": "FR-031 (1) に「クリップボード取得内容を DOM の innerText と照合（正規化後の包含・長さ比較等）し、一致しない場合は経路 (2) へフォールバックする」を追加し、AC-022 に不一致 fixture を加える。"
+        }
+      ]
+    },
+    {
+      "dimension": "verifiability-and-logic",
+      "summary": "Phase 1 文書（00〜05、DECISION-LOG、PROJECT_STATUS、README、.gitignore）を検証可能性・内部論理・文書間矛盾の観点で全文確認した。終了コード（FR-006 / AC-005 / A-008）、既定 timeout（NFR-003 / AC-020）、preset 一覧、status 値、Phase 2 成果物リスト（docs/10〜17、adr 001〜005、schemas 2 件）、Must→AC 対応表、.gitignore と SEC-004/AC-031、Git 状態の主張（初期化済み・ブランチ phase-1/requirements・未コミット・.gitkeep 骨格）は実リポジトリと一致しており矛盾なし。一方で、(1) AC-025 が「任意の失敗終了」で screenshot/trace を要求するが AC-006/AC-011/AC-024 はブラウザ非起動を要求しており同時に満たせない、(2) AC-006 が requestId 欠落時にも result.json 書き出しを要求するが FR-010 は requestId を必須フィールドとし出力先も requestId 依存、(3) FR-010 の result.json フィールド列挙に FR-031/FR-032/AC-022 が要求する extractionQuality/extractionMethod が無い、(4) AC-013 が期待 error.code を fixture ごとに名指ししておらず CAPTCHA_OR_CHALLENGE / MANUAL_INTERVENTION_REQUIRED は 02/04 のどこにも登場しない、(5) 05 の Phase 5 出口条件がリポジトリ内に存在しない「12.3 の 10 シナリオ」を参照している、(6) Critical リスク R-003 の緩和策が Should 要件 FR-014 に依存、など 14 件を検出した。高 1・中 6・低 7。",
+      "findings": [
+        {
+          "severity": "high",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-025（L154-156）vs AC-006（L58）、AC-011（L84）、AC-024（L150）",
+          "issue": "AC-025 は「任意の失敗終了で runtime/artifacts/<requestId>/ に screenshot.png と trace.zip が存在し result.json.artifacts に列挙される」と要求する。しかし AC-006 は INVALID_REQUEST を「送信前」に返し、AC-011 は冪等拒否時に「ブラウザを起動せず」、AC-024 は ALREADY_RUNNING 時に「ブラウザを起動しない」と規定している。ブラウザを起動しない失敗では screenshot/trace は物理的に作れないため、AC-025 は AC-006/011/024 と同時には合格できない。BROWSER_CRASHED（AC-014）についてもクラッシュ後の screenshot 取得可否が未定義。",
+          "fix": "AC-025 を「ブラウザ起動後の失敗（AUTH_REQUIRED 以降 / PROMPT_* / GENERATION_TIMEOUT / CHAT_ERROR / DOM_CHANGED / EXTRACTION_FAILED 等）」に限定し、ブラウザ非起動の失敗（INVALID_REQUEST, ALREADY_RUNNING, PROFILE_IN_USE, 冪等拒否）では artifacts が空配列であることを合否条件に明記する。BROWSER_CRASHED は trace のみ（screenshot は best-effort）等、期待値を分けて書く。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-006（L58）vs 02-REQUIREMENTS.md FR-010（L55）、03-RISK-REGISTER.md R-011 緩和策(2)（L139）",
+          "issue": "AC-006 は「必須フィールド欠落」（requestId を含む）でも「result.json が書かれる」ことを合否条件にしている。しかし FR-010 は result.json に requestId を必須フィールドとして持つことを要求し、R-011 は「requestId ごとのディレクトリ分離」を前提にしている。requestId が欠落・不正（あるいは request.json 自体が JSON として壊れている）場合にどこへ何を書くかが定義されておらず、AC-006 の合否が判定できない。",
+          "fix": "AC-006 に「requestId が欠落/不正な場合の result.json の出力先（例: request.json と同じディレクトリ、requestId は null）」を明記するか、その場合は result.json を書かず終了コード 2 のみで判定すると明記し、FR-010 の「常に書き出す」を「requestId が確定した後は常に」に修正して整合させる。Phase 2 の 12-IO-CONTRACT で確定する旨を両方に付記する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-010（L55）vs FR-031（L96）、FR-032（L97）、04-ACCEPTANCE-CRITERIA.md AC-022（L140）",
+          "issue": "FR-010 は result.json のフィールドを schemaVersion, requestId, status, requestedPreset, observedPreset, responseFile, conversationUrl, startedAt, completedAt, durationMs, artifacts, error と列挙している。一方 FR-031 は `extractionQuality: degraded` を記録すると述べ、FR-032 は「result.json に採用した抽出方式と品質を記録」、AC-022 は `extractionMethod == \"copy\"/\"dom\"/\"innerText\"` と `extractionQuality == \"degraded\"` を合否条件にしている。FR-010 の列挙にこれらが無く、要件同士が矛盾している。また `extractionMethod` というフィールド名は AC-022 でのみ登場し、02 側に定義が無い。",
+          "fix": "FR-010 のフィールド列挙に `extractionMethod` と `extractionQuality` を追加する（FR-032 が Should なので optional と明記）か、FR-010 を「最低限含むフィールド」と表現し直し、抽出関連フィールドは FR-032 で定義すると書く。フィールド名は 02 側で一元定義し、AC-022 はそれを参照する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-013（L92-95）、AC-021（L132-134）、AC-007（L63）",
+          "issue": "AC-013 は「ログイン画面 / CAPTCHA / Cloudflare チャレンジ / 同意ダイアログ / 利用上限バナーの各 fixture で status == manual_intervention_required、対応する error.code」とだけ書き、fixture ごとの期待 error.code を名指ししていない（Live 部分の AUTH_REQUIRED のみ）。マスターの失敗状態にある CAPTCHA_OR_CHALLENGE と MANUAL_INTERVENTION_REQUIRED は 02/04 のどこにも登場せず、同意ダイアログに対応するコードも未定義。さらに「利用上限バナー」fixture は AC-013（status=manual_intervention_required、code 未指定）と AC-021（code=RATE_LIMITED、status 未指定）の両方に現れ、両 AC を合わせて初めて (manual_intervention_required, RATE_LIMITED) の組が推定できる状態。AC-007 は「status と error.code の組が一意に対応する表」をテストで検証すると要求しているが、その表の暫定版がどの文書にも無い。",
+          "fix": "AC-013 に fixture→期待 code の対応（ログイン→AUTH_REQUIRED、CAPTCHA/Cloudflare→CAPTCHA_OR_CHALLENGE、同意→(暫定)CAPTCHA_OR_CHALLENGE または MANUAL_INTERVENTION_REQUIRED、利用上限→RATE_LIMITED）を暫定として明記し、AC-021 に status を明記する。02 に「暫定エラーコード一覧（Phase 2 13-ERROR-MODEL で確定）」の表を 1 つ置き、status との対応の暫定版を示す。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\05-PHASE-PLAN.md",
+          "location": "Phase 5 追加項目・出口条件（L87, L89）、§0 運用ルール（L13）",
+          "issue": "Phase 5 の追加項目は「Live シナリオ拡充（12.3 の 10 シナリオ）」、出口条件は「Live 10 シナリオの結果記録」と書かれているが、「12.3」はマスタープロンプトの節番号であり、リポジトリ内のどの文書にもその 10 シナリオの一覧が存在しない。同様に §0 の「`14. Claude Code と Codex の役割分担` に従う」もリポジトリ外の節を参照している。ゲート条件がリポジトリ内で検証できない。",
+          "fix": "10 個の Live シナリオを 04-ACCEPTANCE-CRITERIA.md（または 05 の付録）に列挙し、Phase 5 出口条件はその ID を参照する。「14.」への参照は 05 §0 の表（既に役割分担を再掲済み）を指すよう書き換える。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\03-RISK-REGISTER.md",
+          "location": "R-003 緩和策 (5)（L52）vs 02-REQUIREMENTS.md FR-014（L59）",
+          "issue": "Critical リスク R-003（二重送信）の緩和策 (5)「処理済み requestId の冪等拒否（FR-014）」が参照する FR-014 は優先度 Should（「落とす場合は PO 合意」で削除可能）。Critical リスクの緩和策が MVP から落とし得る要件に依存しており、FR-014 を落とした場合に R-003 の残存リスク評価が変わることがどこにも記載されていない。",
+          "fix": "FR-014 を Must に昇格するか、R-003 の緩和策 (5) に「FR-014 は Should。落とす場合は R-003 の残存リスクを再評価する」と明記する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-014（L99）vs AC-024（L150）、02-REQUIREMENTS.md FR-035（L105）、FR-037（L107）",
+          "issue": "AC-014 は「専用プロファイルを別プロセス（login 等）で開いた状態で run すると PROFILE_IN_USE」を期待する。一方 FR-035 は single-flight ロックを取得できなければ ALREADY_RUNNING で「即終了」、AC-024 は「2 プロセスを同時起動すると一方が ALREADY_RUNNING」を期待する。`login`/`doctor` が process ロックを取るかどうかが未定義のため、同じ状況（別のブリッジプロセスがプロファイルを掴んでいる）で期待コードが PROFILE_IN_USE か ALREADY_RUNNING かが決まらない。FR-037 も「PROFILE_IN_USE / ALREADY_RUNNING 側に倒す」と両者を区別せず扱っており、2 つのコードの判定基準が文書内で一意でない。",
+          "fix": "02 に「process ロックの対象コマンド（run のみ / login・doctor も含む）」と「ALREADY_RUNNING = ブリッジ自身のロック取得失敗、PROFILE_IN_USE = Chromium 側のプロファイルロック検出」という判定基準を暫定で明記し、AC-014 / AC-024 の期待値をそれに合わせる。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\03-RISK-REGISTER.md",
+          "location": "R-004（L55-64）、R-009（L110-119）、R-007〜R-015",
+          "issue": "§0 評価基準で「扱い（Mitigate/Accept/Avoid/Transfer）」を定義しているが、High リスク R-004 と R-009 の表に「扱い」行が無い。また R-007, R-008, R-010, R-011, R-012, R-013, R-014, R-015 には「扱い」「残存リスク」の両方が無く、同一文書内で記載項目が統一されていない。",
+          "fix": "R-004 / R-009 に「扱い」行を追加し、Medium/Low リスクにも最低限「扱い」と「残存リスク」（無ければ「緩和後 Low、受容」等）を 1 行ずつ追加する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\03-RISK-REGISTER.md",
+          "location": "R-012 緩和策 (2)（L149）vs 02-REQUIREMENTS.md FR-021（L76）",
+          "issue": "R-012 の内容は「利用上限到達で UI が警告やモデル切替を行う」だが、緩和策 (2)「モデル自動切替は FR-021 の一致確認で検出」が参照する FR-021 は送信前（選択直後）の一致確認のみ。送信後・生成中に発生するモデル切替は FR-021 では検出できず、FR-010 の observedPreset をいつ観測するか（送信前のみか、生成完了後にも再読するか）も未定義。緩和策がリスク内容を部分的にしか扱っていない。",
+          "fix": "R-012 の緩和策を「送信前の切替は FR-021 で検出。生成中/後の切替は検出対象外（R-005 残存リスクと同様に受容）」と正確に書き直すか、FR-010 に「observedPreset は生成完了後にも再読し、送信前と異なれば result.json に記録する」旨を追加する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-008（L68）vs 02-REQUIREMENTS.md FR-012（L57）",
+          "issue": "AC-008 は「BOM 無し、末尾改行あり」を合否条件にしているが、対応要件 FR-012 は「UTF-8 で書き出す」としか言っておらず、BOM 無し・末尾改行は要件に無い項目をテストしている。",
+          "fix": "FR-012 に「UTF-8（BOM 無し）、末尾改行 1 つ」を追記して AC-008 と整合させる。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-009（L72）、AC-016（L110）、AC-028（L170）、AC-029（L174）、AC-025（L156）",
+          "issue": "以下は Phase 2 の設計事項（12-IO-CONTRACT / 14-SELECTOR-STRATEGY / 15-SECURITY / 16-TEST-STRATEGY）で決めるべき具体値が AC に暫定と断らずに固定されている: AC-009「fsync 後に rename」（FR-013 に fsync の要求無し）、AC-016 の selector エントリのフィールド名 `purpose` / `candidates[]` / `verify`、AC-028 の環境変数名 `BRIDGE_LIVE=1 等`、AC-029「先頭 200 文字」（SEC-005 は「先頭 N 文字」）、AC-025 のファイル名 `screenshot.png` / `trace.zip`。AC-005 / AC-010 / AC-011 には「Phase 2 で確定」の注記があるのに対し、これらには無く扱いが不統一。",
+          "fix": "各 AC に「（具体値は Phase 2 の docs/1x で確定、変更時は本 AC を更新）」の注記を付けるか、SEC-005 の N を 200 と 02 側で決める等、02 と 04 のどちらが値の出典かを一方に揃える。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-014（L59）",
+          "issue": "FR-014 は `ALREADY_PROCESSED 相当` というコードを使っているが、これはマスターの失敗状態一覧に無い。AC-011 側には「コードは Phase 2 で確定」とあるが、02 側には暫定の注記が無い。また冪等拒否時の status（failed か、別の新 status か）と終了コード（FR-006 の 0〜4 のどれか）も未定義で、AC-011 の「非ゼロ終了」以上の判定ができない。",
+          "fix": "FR-014 に「コード名・status・終了コードは Phase 2 13-ERROR-MODEL で確定（暫定: failed / 終了コード 1 または 4）」と注記する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\05-PHASE-PLAN.md",
+          "location": "Phase 3 出口条件（L72）vs 03-RISK-REGISTER.md R-001（L25-28）",
+          "issue": "Phase 3 の出口条件「未解決 Critical・High なし」は、対象が Codex レビュー指摘なのかリスク登録簿の重要度なのかが書かれていない。後者と読むと、R-001 は Critical かつ扱い Accept（解消不能、削除禁止）なのでゲートを永久に通過できない。",
+          "fix": "「Codex レビュー指摘のうち Critical・High が未解決でないこと（リスク登録簿の R-001 等 Accept 扱いは対象外）」と明記する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-033（L192）vs 05-PHASE-PLAN.md Phase 5 出口条件（L89）、§0 表（L22）",
+          "issue": "05 は Phase 5 の出口条件に「Codex 節目レビュー」を含め、§0 の表でも Phase 5 に Codex「節目レビュー Medium/High」を割り当てているが、AC-033 は reviews/ の証拠を「Phase 3 / 4 / 7」に限定しており、Phase 5 のレビュー証拠は AC で検証されない。",
+          "fix": "AC-033 の対象フェーズを「Phase 3 / 4 / 5 / 7」に修正するか、05 の Phase 5 出口条件から Codex レビューを外して整合させる。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-027（L166）vs 01-RESEARCH-AND-DECISION.md §4 環境調査（L132）",
+          "issue": "AC-027 は「PowerShell 5.1 と 7 の双方から npx chatgpt-bridge doctor が動く」を Live 検証条件にしているが、01 §4 の環境調査は「PowerShell 5.1 / Git Bash 利用可」のみで PowerShell 7 の有無を記録していない。検証環境の存在が確認されていない条件が AC に含まれている。",
+          "fix": "01 §4 に PowerShell 7 のインストール有無（`pwsh --version`）を追記し、無い場合は AC-027 の PS7 部分を「Phase 6 で PS7 を導入して検証」等、実施条件を明記する。"
+        }
+      ]
+    }
+  ]
+}

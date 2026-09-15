@@ -1,0 +1,43 @@
+# Runtime state: browser profile, requests, responses, locks, artifacts
+# Contains cookies, auth state, prompts, answers, traces, screenshots. Never commit.
+runtime/
+
+# Any Playwright storage state / auth state / traces / screenshots anywhere in the tree
+**/storageState*.json
+**/auth-state*.json
+**/*.trace.zip
+**/trace*.zip
+**/test-results/
+**/playwright-report/
+**/screenshots/
+**/*.har
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Node
+node_modules/
+dist/
+coverage/
+.npm/
+npm-debug.log*
+
+# Codex / Claude local session data (keep reviews/ output, drop scratch)
+.codex/
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Build output
+dist/

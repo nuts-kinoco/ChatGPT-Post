@@ -1,0 +1,199 @@
+{
+  "round": "2",
+  "summary": "Re-verify Phase 1 docs after applying 30 review fixes: confirm fixes landed and no new inconsistencies",
+  "dimensions": [
+    {
+      "dimension": "id-consistency",
+      "summary": "ID 整合性の観点で全 10 ファイルを精査した。前回指摘 28 項目はすべて反映済みであることを確認した（D-06→FR-026/027、CON の AC 列、Phase 5 の AC-034/LS-01〜10、FR-007/008→AC-006、AC-029 の chatgpt.com 配下・page.route 禁止、current の fail-closed、RATE_LIMITED、SEC-010、SEC-009、FR-014 Must、01 §1.3、OPS-010、FR-031(1)、AC-025、AC-006、FR-010 フィールド、AC-013 コード、ALREADY_RUNNING/PROFILE_IN_USE、R-004/009 と R-007〜015 の扱い、R-012、FR-012、暫定表記、Phase 3 出口、AC-033、AC-027/OQ-008）。PROJECT_STATUS の件数（CON 14 / FR 42+7 / NFR 11 / SEC 10 / OPS 10 / OQ 8 / AC-001〜034 / LS-01〜10 / A-001〜015 / R-001〜015 / Critical 2）は実体と一致し、重複・欠番は無い。参照されている全 ID（CON/FR/NFR/SEC/OPS/AC/R/OQ/A/D/LS）はホーム文書に存在する。FR/NFR/SEC/OPS については 02 の AC 列・04 対応表・AC 見出しがすべて一致した。修正が持ち込んだ新規問題として、(1) ALREADY_PROCESSED の終了コード 4 が FR-006/AC-005/A-008 の終了コード定義と矛盾、(2) CON-003 の対応が 02（AC-003）と 04 対応表（AC-003, AC-010）で不一致、(3) AC 見出しに CON-ID が 10 件未記載、のほか、AC-010 の INVALID_STATE が §7 表に無い、02 §7 のマスタープロンプト §8 参照、05 の Phase 4/5 出口条件に AC-032 が無い、OQ-002/003/008 の解消先フェーズが 05 に無い、を検出した（中 2・低 5）。",
+      "findings": [
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "§2.1 FR-006 / §2.2 FR-014 / §7 ALREADY_PROCESSED 行、および docs/04-ACCEPTANCE-CRITERIA.md AC-005、docs/DECISION-LOG.md A-008",
+          "issue": "前回指摘「FR-014 の status/終了コード未定義」の修正で FR-014・§7 表・AC-011 が `ALREADY_PROCESSED` の終了コードを 4 と定めたが、終了コードの定義側が更新されていない。FR-006 は「4=既に実行中/ロック取得失敗」、AC-005 は「`ALREADY_RUNNING`/`PROFILE_IN_USE`=4、その他失敗=1」、A-008 は「4=ALREADY_RUNNING/PROFILE_IN_USE」とあり、これらに従うと `ALREADY_PROCESSED` は 1 になる。§7 表・AC-011（=4）と FR-006・AC-005・A-008（=1 に該当）が矛盾する。",
+          "fix": "FR-006 の 4 の説明を「既に実行中/ロック取得失敗/処理済み requestId」に、AC-005 の列挙を「`ALREADY_RUNNING`/`PROFILE_IN_USE`/`ALREADY_PROCESSED`=4」に更新し、A-008 に追記または新規 A 行で 4 の範囲拡張を記録する（いずれも暫定と明記）。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "§11 要件 → AC 対応表「CON-002, CON-003 | AC-003, AC-010」行",
+          "issue": "02 §1 の CON-003 行の AC 列は「AC-003」のみだが、04 の対応表は CON-002 とまとめて「AC-003, AC-010」としており、CON-003 → AC-010 の対応が 02 側に存在しない。02 行と 04 対応表が一致していない。",
+          "fix": "CON-002 と CON-003 を別行に分け、CON-003 は「AC-003」のみとする（または 02 CON-003 の AC 列に AC-010 を追加して両者を揃える）。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-001, AC-003, AC-010, AC-012, AC-013, AC-015, AC-021, AC-024, AC-027, AC-031 の見出し括弧",
+          "issue": "前回修正で CON-001〜014 に AC 列が追加され 04 §11 の対応表にも CON 行が入ったが、AC 見出しの括弧内要件リストには AC-029（CON-001/005/008/009/010）と AC-032（CON-012）にしか CON が記載されていない。対応表では AC-001(CON-005)、AC-003(CON-002, CON-003)、AC-010(CON-002)、AC-012(CON-004)、AC-013(CON-011)、AC-015(CON-007)、AC-021(CON-011)、AC-024(CON-006)、AC-027(CON-013, CON-014)、AC-031(CON-010) に紐付くが、各見出しにはこれらの CON が無く、見出し・02 行・対応表の三者が一致していない。",
+          "fix": "上記 10 件の AC 見出しの括弧内に対応する CON-ID を追加し、AC-029/AC-032 と同じ書式に揃える。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-010 (a) 「非 chatgpt.com → `INVALID_STATE`相当」、および docs/02-REQUIREMENTS.md §7 表",
+          "issue": "04 §0 は「エラーコード名は 02 §7 の暫定エラーコード表を出典とする」と定めるが、AC-010 (a) が用いる `INVALID_STATE` は §7 表に存在しない。また §7 表の `PROMPT_SUBMIT_FAILED` 発生箇所は「FR-016 (d)(f)」のみで、FR-016 (a)（ドメイン確認失敗）に対応するコードが §7 に一切定義されていない。",
+          "fix": "§7 表に FR-016 (a) 用の暫定コード（例: `INVALID_STATE` / failed / 1 / 後）を追加するか、AC-010 (a) を §7 既存コード（例: `DOM_CHANGED`）に揃える。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "§7 冒頭「状態遷移（マスタープロンプト §8）とエラーコードは別物である」",
+          "issue": "前回、05 の「マスタープロンプト 13. / 14.」参照がリポジトリ内で検証不能として修正されたが、新設された 02 §7 に同種の「マスタープロンプト §8」参照が入っている。マスタープロンプトはリポジトリに無く、節番号の参照先を検証できない。",
+          "fix": "「状態遷移（Phase 2 `11-STATE-MACHINE.md` で定義）」のようにリポジトリ内文書への参照に置き換える。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\05-PHASE-PLAN.md",
+          "location": "Phase 4 出口条件 / Phase 5 出口条件「AC-001〜AC-031 のうち Live 以外がすべて通過、AC-034…、Codex 節目レビュー（AC-033）」",
+          "issue": "04 AC-032 第 2 項は「Phase 4 / 5 のコードレビューで FR-090〜096 該当機能・抽象化・設定項目が無いことを確認項目に含める」（OPS-010）と定めるが、05 の Phase 4・Phase 5 の出口条件はどちらも AC-032 に触れておらず、Phase 5 は AC-001〜AC-031・AC-033・AC-034 のみを列挙して AC-032 を除外している。AC 側の要求とフェーズゲートが一致していない。",
+          "fix": "Phase 4・Phase 5 の出口条件に「AC-032（OPS-010 スコープ確認を含む）」を追加する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\05-PHASE-PLAN.md",
+          "location": "Phase 4 / Phase 6 の記述（未決事項の解消先）",
+          "issue": "02 §6 の OQ-002・OQ-003 は期限 Phase 4、OQ-008 は期限 Phase 6 だが、05 で未決事項の解消を明記しているのは Phase 2（OQ-004〜007）と Phase 3（OQ-001）のみで、Phase 4 に OQ-002/OQ-003、Phase 6 に OQ-008 の解消が入っていない。OQ 表の期限と Phase Plan の作業定義が対応していない。",
+          "fix": "Phase 4 に「未決事項の解消: OQ-002（preset 表示名の実画面確認）、OQ-003（コピー操作の Markdown 可否）」、Phase 6 に「OQ-008（PowerShell 7 の扱い、PO 判断）」を追加する。"
+        }
+      ]
+    },
+    {
+      "dimension": "fidelity",
+      "summary": "前回指摘 30 件はすべて反映済みであることを確認した（D-06→FR-026/027、CON の AC 列、AC-029 の chatgpt.com 内部エンドポイント・page.route/waitForResponse・openai パッケージ・OCR・headless 既定の網羅、current の fail closed、RATE_LIMITED の一意化、SEC-010、SEC-009 の「規約上問題ないと言わない」、FR-014 Must、01 §1.3 の storageState 否定、OPS-010、FR-031(1) 照合、AC-025/AC-006/FR-010 の起動前失敗の扱い、§7 暫定コード表、ALREADY_RUNNING/PROFILE_IN_USE、R-004〜R-015 の扱い/残存リスク、FR-012 BOM、暫定表記、Phase 3 出口条件、AC-033 の Phase 5、AC-027/OQ-008）。PO の 12 絶対条件は各々 CON-001〜012 の Must として存在し、04 §11 の対応表・02 の AC 列とも一致し、規約リスクは README / 00 §9 / 03 R-001 に「削除禁止」付きで存在する。PROJECT_STATUS の件数（CON 14 / FR 42+7 / NFR 11 / SEC 10 / OPS 10 / OQ 8 / R-015 / AC-034 / A-015）も実体と一致する。\n残る問題は 6 件: (1) 修正で FR-014 に終了コード 4 を付けた結果、FR-006 / AC-005 / A-008 の「4=ALREADY_RUNNING/PROFILE_IN_USE、その他失敗=1」と矛盾（新規）。(2) 00 §5.2 が内部通信解析・CAPTCHA 回避・bot 検知回避・自動ログインを「Won't for MVP」に置き、絶対条件 8・11 と FR-094/095「恒久的禁止」・D-06「再考トリガー: なし」を軟化。(3) 05 Phase 4 の必須実装に `current` の preset 観測と MODEL_NOT_VERIFIABLE が無く、A-013 が「Phase 4 から影響」と記した CON-007 が Phase 4 ゲートで担保されない。(4) AC-010(a) の `INVALID_STATE` が出典と宣言した 02 §7 表に無い。(5) 02 §7 が「マスタープロンプト §8」を参照し、AC-007/018 の状態名がリポジトリ内で未定義（05 の「13./14.」と同種の残存）。(6) CON に対応する AC の見出しに CON-ID が無い（AC-029/032 以外）。",
+      "findings": [
+        {
+          "severity": "medium",
+          "file": "docs/02-REQUIREMENTS.md",
+          "location": "FR-006（L46）、§7 表 ALREADY_PROCESSED 行（L197）、FR-014（L59）／docs/04-ACCEPTANCE-CRITERIA.md AC-005（L53）、AC-011（L86）／docs/DECISION-LOG.md A-008（L15）",
+          "issue": "前回修正で FR-014 の暫定終了コードを 4 にし、§7 表と AC-011 も 4 としたが、FR-006 は「4=既に実行中/ロック取得失敗」、AC-005 は「`ALREADY_RUNNING`/`PROFILE_IN_USE`=4、その他失敗=1」、A-008 も「4=ALREADY_RUNNING/PROFILE_IN_USE」のまま。ALREADY_PROCESSED は「既に実行中」でも「ロック取得失敗」でもなく、AC-005 の判定文に従えば 1 になる。AC-005 と AC-011 は同一ケースで異なる終了コードを要求しており、両方を満たす実装は存在しない（修正により新規発生した矛盾）。",
+          "fix": "FR-006 を「4=既に実行中/ロック取得失敗/処理済み requestId」に、AC-005 を「`ALREADY_RUNNING`/`PROFILE_IN_USE`/`ALREADY_PROCESSED`=4」に、A-008 も同様に更新する（または ALREADY_PROCESSED を 1 に統一して §7 / FR-014 / AC-011 を直す）。いずれの場合も 4 文書を同時に揃える。"
+        },
+        {
+          "severity": "medium",
+          "file": "docs/00-PRODUCT-BRIEF.md",
+          "location": "§5.2「MVP に含めない（Won't for MVP）」（L69-71）",
+          "issue": "「ChatGPT 内部通信の解析・再送、自動ログイン、CAPTCHA 回避、bot 検知回避」が「Won't for MVP」の見出し下に列挙されており、MVP 後には検討し得ると読める。これは同文書 §6 の絶対条件 8（内部 API を再現しない）・11（CAPTCHA 等は手動介入で停止）、02 FR-094/095 の「Won't（恒久的禁止）」、01 D-06「再考トリガー: なし（絶対条件）」と整合せず、絶対条件を軟化している。",
+          "fix": "§5.2 から恒久的禁止事項（内部通信の解析・再送、自動ログイン、CAPTCHA 回避、bot 検知回避）を分離し、「恒久的に行わない（絶対条件 8・11、FR-094/095）」として §5.2 とは別に明記するか、各項目に「恒久的禁止」と注記する。"
+        },
+        {
+          "severity": "medium",
+          "file": "docs/05-PHASE-PLAN.md",
+          "location": "Phase 4「通す一本」（L79）・「必須実装」（L80）・「入れないもの」（L81）／docs/04-ACCEPTANCE-CRITERIA.md AC-003（L33-44）",
+          "issue": "Phase 4 は `preset: current` のまま送信する縦切りだが、必須実装に「UI 表示からの preset 観測（`observedPreset`）と観測不能時の `MODEL_NOT_VERIFIABLE` fail closed」が無く、preset 関連は Phase 5「preset / effort 選択と検証」に丸ごと送られている。FR-020（Must）と A-013 は「`current` でも観測できなければ送信しない。Phase 4 縦切りは current を使うため初期から影響」と明記しており、現状の Phase 4 計画では CON-007 / 絶対条件 7 が Phase 4 ゲートで担保されず、D-07 が却下した「見つからなければ current で送る」実装がそのまま Phase 4 出口を通過し得る。Phase 4 の受入 AC-003 も `observedPreset` が非 null であることを判定していない。",
+          "fix": "05 Phase 4「必須実装」に「preset 観測（`current`）と `MODEL_NOT_VERIFIABLE` による fail closed（FR-020 / A-013）」を追加し、「入れないもの」を「preset の切替（観測は行う）」に限定する。AC-003 の Then に「`result.json.observedPreset` が非 null」を追加する。"
+        },
+        {
+          "severity": "low",
+          "file": "docs/04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-010 (a)（L79）／docs/02-REQUIREMENTS.md §7 表（L194-213）",
+          "issue": "AC-010 (a)「非 chatgpt.com → `INVALID_STATE`相当」のコード名は、04 §0 が出典と宣言した 02 §7 の暫定エラーコード表に存在しない。§7 表には FR-016 (a)（chatgpt.com ドメイン確認、CON-002 の担保）に対応するコードが無く、PROMPT_SUBMIT_FAILED の発生箇所は「FR-016 (d)(f)」のみ。修正で §7 表を追加した際に AC-010 側が追随していない。",
+          "fix": "§7 表に FR-016 (a) 用の暫定コード（例: `INVALID_STATE` / failed / 1 / 後）を追加するか、AC-010 (a) を §7 表にある既存コード（`DOM_CHANGED` 等）に合わせる。"
+        },
+        {
+          "severity": "low",
+          "file": "docs/02-REQUIREMENTS.md",
+          "location": "§7 冒頭（L192）／docs/04-ACCEPTANCE-CRITERIA.md AC-007（L65）、AC-018（L124）",
+          "issue": "02 §7 が「状態遷移（マスタープロンプト §8）」とリポジトリに存在しないマスタープロンプトの節番号を参照している。前回修正した 05 の「13.」「14.」参照と同種の残存。加えて AC-007 の「状態機械の全終端状態（COMPLETED と全失敗状態）」、AC-018 の「`PROMPT_SUBMITTING` 以降」は状態名を前提にしているが、状態一覧はリポジトリ内のどの文書にも定義されておらず（Phase 2 `11-STATE-MACHINE.md` 予定）、04 §0 の暫定値一覧にも状態名は含まれていない。",
+          "fix": "02 §7 の「マスタープロンプト §8」を「Phase 2 `11-STATE-MACHINE.md` で定義する状態遷移」に置き換える。04 §0 の暫定値一覧に「状態名（`PROMPT_SUBMITTING` 等）」を追加し、AC-007 / AC-018 に「状態名は暫定」と注記する。"
+        },
+        {
+          "severity": "low",
+          "file": "docs/04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-001（L20）、AC-003（L33）、AC-010（L76）、AC-012（L90）、AC-013（L94）、AC-015（L107）、AC-021（L136）、AC-024（L153）、AC-027（L172）、AC-031（L196）の見出し",
+          "issue": "02 の CON 表と 04 §11 対応表では CON-002〜007・010・011・013・014 がこれらの AC に対応付けられているが、AC 側の見出し（対応要件）には FR/NFR/SEC の ID しか無く、CON-ID を挙げているのは AC-029 と AC-032 のみ。AC から絶対条件へ逆引きできず、AC 本文を編集する際に CON の担保が落ちても気付きにくい。",
+          "fix": "各 AC 見出しに対応する CON-ID を追記する（例: AC-012「FR-015, SEC-001, CON-004」、AC-015「FR-020, FR-021, CON-007」、AC-024「FR-035, FR-036, FR-037, CON-006」等）。"
+        }
+      ]
+    },
+    {
+      "dimension": "logic",
+      "summary": "前回指摘の修正状況: 依頼で列挙された全項目（D-06→FR-026/027、CON の AC 列、AC-034 LS-01〜10、FR-007/008→AC-006、AC-029 の chatgpt.com 内部/page.route 禁止、current の fail-closed、RATE_LIMITED の一意化、SEC-010、SEC-009 文言、FR-014 Must、01 §1.3、OPS-010、FR-031(1) 照合、AC-025 起動前/後の区別、AC-006 requestId null、FR-010 フィールド、AC-013 コード名、ALREADY_RUNNING/PROFILE_IN_USE、R-004〜R-015 の扱い/残存、R-012 (2)、FR-012 BOM、暫定値の明示、FR-014 暫定コード、Phase 3 出口、AC-033 Phase 5、AC-027/01 §4 PS7）は文書上すべて反映済みであることを確認した。PROJECT_STATUS の件数（CON 14 / FR 42+7 / NFR 11 / SEC 10 / OPS 10 / OQ 8 / R-015 / AC-034 / A-015）も実ファイルと一致する。\n\n一方、修正によって新たに生じた、または修正後も残る内部矛盾を 12 件検出した。特に (1) ALREADY_PROCESSED の終了コードが FR-006/AC-005/A-008（4 は実行中・ロック失敗のみ、その他 1）と FR-014/§7/AC-011（4）で食い違い、同一入力に対して AC-005 と AC-011 が異なる期待値を持つ、(2) FR-010「request.json 読取後は常に result.json を書く」/AC-007「全終端状態で result.json 生成」と AC-011「既存 result.json を上書きしない」が ALREADY_PROCESSED で両立しない、の 2 件は AC 同士の直接矛盾でありテストが同時に通らない。ほか、result.json 自身の WRITE_FAILED の扱い未定義、AC-010(a) の INVALID_STATE が §7 表に無い、同一 requestId の ALREADY_RUNNING 敗者が進行中リクエストの result.json を書く問題、NFR-001 Must と AC-027/OQ-008 の条件付き検証の不一致、A-015「30 件すべて反映」の根拠がリポジトリに無い点などを指摘した。",
+      "findings": [
+        {
+          "severity": "high",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-005（L53）、AC-011（L86）／02 FR-006（L46）・FR-014（L59）・§7 表 ALREADY_PROCESSED 行（L197）／DECISION-LOG A-008（L15）",
+          "issue": "ALREADY_PROCESSED の終了コードが文書間で矛盾する。FR-006 は「4=既に実行中/ロック取得失敗」、AC-005 は「ALREADY_RUNNING/PROFILE_IN_USE=4、その他失敗=1」、A-008 も「4=ALREADY_RUNNING/PROFILE_IN_USE」としており、ALREADY_PROCESSED は「その他失敗=1」に該当する。一方 FR-014・§7 表・AC-011 は ALREADY_PROCESSED=4 と定義している。同一入力（処理済み requestId で run）に対し AC-005 は 1、AC-011 は 4 を期待するため、両 AC を同時に満たすテストは書けない。前回の「FR-014 の status/終了コード未定義」修正で導入された不整合。",
+          "fix": "ALREADY_PROCESSED の終了コードを 1 か 4 のどちらかに決め、FR-006・AC-005・A-008 の終了コード定義（4 の意味）と FR-014・§7・AC-011 を同じ値に揃える。A-008 の根拠（呼び出し元が「再送してよいか」を終了コードで判別）に照らすと、再送不要な ALREADY_PROCESSED を 4（ロック競合＝後で再試行可）に混ぜるのは意図に反するため、専用コードか 1 にする方が整合的。"
+        },
+        {
+          "severity": "high",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-011（L86）／AC-007（L65）／02 FR-010（L55）・§7 表 ALREADY_PROCESSED 行（L197）",
+          "issue": "ALREADY_PROCESSED 時の result.json の扱いが矛盾する。FR-010 は「request.json を読み取れた後は常に result.json を書き出す」、AC-007 は「全終端状態（COMPLETED と全失敗状態）で result.json が生成され、status と error.code の組が §7 表と一致」、§7 表は ALREADY_PROCESSED を status=failed の result.json コードとして列挙している。一方 AC-011 は「既存 result.json を上書きせず、error.code == \"ALREADY_PROCESSED\" で終了」と要求する。既存 result.json（前回の completed）を上書きしないなら error.code == ALREADY_PROCESSED を持つ result.json はどこにも存在せず、AC-011 の判定文と AC-007/FR-010 の判定文が両立しない。",
+          "fix": "ALREADY_PROCESSED は result.json を書かず（既存を保持）、終了コードと標準エラーのみで通知すると FR-010 に明記し（request.json 不読の場合と同じ扱い）、AC-007 の「全終端状態」から ALREADY_PROCESSED を除外し、AC-011 の「error.code == ALREADY_PROCESSED」を「標準エラーに ALREADY_PROCESSED が出力される」に改める。§7 表にも「result.json に書かれない」旨の注記を追加する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-010（L55）・FR-013（L58）・§7 表 WRITE_FAILED 行（L213）／04 AC-007（L65）・AC-025（L161）",
+          "issue": "result.json 自身の書き出しが失敗した場合の挙動が未定義で、既存の記述と矛盾する。§7 は WRITE_FAILED を「ブラウザ起動後・status failed」の result.json エラーコードとして扱い、AC-025 は WRITE_FAILED で result.json.artifacts に列挙されることを要求し、FR-010/AC-007 は常に result.json が生成されるとする。しかし FR-013 の「リネーム失敗は WRITE_FAILED」が result.json 自体に起きた場合、WRITE_FAILED を記録した result.json は存在し得ない。response.md の書き出し失敗と result.json の書き出し失敗が区別されておらず、後者の終了コード・通知経路が定義されていない。",
+          "fix": "FR-010/FR-013 に「result.json 自身の書き出し失敗は終了コード 1 と標準エラーで通知し、result.json は存在しない可能性がある」と明記し、AC-007「全終端状態」と AC-025 の WRITE_FAILED 行から result.json 書き出し失敗ケースを除外するか、別扱いとして記述する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-010 (a)（L79）／02 §7 表（L194〜L213）・FR-016 (a)（L66）",
+          "issue": "AC-010 (a)「非 chatgpt.com → INVALID_STATE 相当」で参照されるコード INVALID_STATE が、AC §0 で「出典」と定めた 02 §7 の暫定エラーコード表に存在しない。§7 の発生箇所列も FR-016 (d)(f) を PROMPT_SUBMIT_FAILED に割り当てるのみで、FR-016 (a) の失敗に対応するコードが無い。AC-007 は「status と error.code の組が §7 表と一致すること」をテストで検証するため、(a) の失敗は AC-007 に反するか、AC-010 の期待値が検証不能になる。",
+          "fix": "§7 表に FR-016 (a) 用の行（例: INVALID_STATE または DOM_CHANGED への統合）を追加し、AC-010 (a) をその名称に合わせる。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-036（L106）・FR-010（L55）・§7 表 ALREADY_RUNNING 行（L198）／04 AC-024（L155）／03 R-011（L144）",
+          "issue": "同一 requestId で run が二重起動された場合の result.json の扱いが未定義で、既存要件と衝突する。FR-036 は同一 requestId の同時実行を防ぎ、FR-010/§7 は ALREADY_RUNNING を result.json に書くとしている。すると敗者プロセスは進行中リクエストと同じディレクトリに status=failed/ALREADY_RUNNING の result.json を書き、後で勝者が上書きする。その間に呼び出し元が読むと「失敗」と誤読し（R-011 の内容そのもの）、さらに勝者側で FR-014 の「同じ requestId の result.json が既に存在」判定と競合し得る。AC-024 はこのケースの result.json の有無・場所を規定していない。",
+          "fix": "FR-036 に「同一 requestId の同時実行拒否では進行中リクエストの result.json を書き換えず、終了コードと標準エラーのみで通知する」等の規則を追加し、FR-010 の「常に」に例外として明記、AC-024 に検証項目を追加する。"
+        },
+        {
+          "severity": "medium",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "NFR-001（L135）／04 AC-027（L174）・02 OQ-008（L188）",
+          "issue": "NFR-001 は Must で「PowerShell 5.1 / 7 から起動できる」と無条件に要求するが、対応 AC-027 は前回修正で「PowerShell 7 は未インストールのため OQ-008 の PO 判断に従い Phase 6 で導入して検証するか対象外とする」と条件付きに変更された。OQ-008 で「5.1 のみ」と決まった場合、NFR-001 の Must 要件「7 から起動できる」は検証されないまま残り、「対応が無い Must は存在してはならない」（02 §0）に反する。",
+          "fix": "NFR-001 を「PowerShell 5.1 から起動できる（Must）。PowerShell 7 は OQ-008 の判断に従う（Could または条件付き）」に分割するか、OQ-008 の決定後に NFR-001 を更新する旨を明記する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-016 (g)（L66）／§7 表 ALREADY_RUNNING 行「前」（L198）・FR-039（L114）／04 AC-010 (g)（L79）",
+          "issue": "FR-016 は (g)「既存ロック無し」を「送信前に確認する」条件としてブラウザ上の条件 (a)〜(f) と並べており、AC-010 (g) は「ロック有 → ALREADY_RUNNING」を fixture/状況で検証するとしている。しかし FR-035/A-014 ではロックはコマンド開始時（ブラウザ起動前）に取得され、§7 と FR-039 は ALREADY_RUNNING を「ブラウザ起動前・artifacts 空」と分類している。送信前チェック (g) が失敗し得る（起動後にロック失敗する）なら artifacts 空の規則と矛盾し、失敗し得ないなら (g) と AC-010 (g) は検証不能な条件である。",
+          "fix": "FR-016 から (g) を削除して FR-035 に一本化するか、(g) を「起動前に取得済みのロックが失われていないことの再確認」と定義し、その失敗時のコード・artifacts の扱いを §7/FR-039 に追記する。AC-010 (g) は AC-024 を参照する形に改める。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\DECISION-LOG.md",
+          "location": "A-015（L22）／PROJECT_STATUS.md 検証記録（L41）",
+          "issue": "「3 視点の独立検証で 30 件（高 3・中 10・低 17）を検出、すべて反映」と記載されているが、30 件の指摘一覧・各件の反映箇所はリポジトリ内のどこにも記録されておらず（A-015 は「本行と PO 報告に残す」とするのみ）、件数と「すべて反映」を第三者が検証できない。OPS-009「完成・解決は証拠を伴う」に自らが反していない。",
+          "fix": "reviews/ 配下に指摘一覧（ID・内容・反映先ファイルと ID）を保存し、A-015 と PROJECT_STATUS からそのパスを参照する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-006（L59）・AC-011（L86）／02 FR-008（L53）・FR-014（L59）",
+          "issue": "スキーマ検証（FR-008 → INVALID_REQUEST で result.json を書く）と冪等性チェック（FR-014 → 既存 result.json を上書きしない）の実行順序が未定義。完了済み requestId のディレクトリで request.json が後から不正になった場合、AC-006 は result.json（INVALID_REQUEST）を書くことを、AC-011 は既存 result.json を上書きしないことを要求し、どちらが優先するか判定できない。",
+          "fix": "FR-014 を FR-008 より前に評価する（既存 result.json があれば内容に関わらず ALREADY_PROCESSED）と明記するか、INVALID_REQUEST 時も既存 result.json を上書きしない規則を AC-006 に追加する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\04-ACCEPTANCE-CRITERIA.md",
+          "location": "AC-026（L168）／02 FR-041（L116）・FR-039（L114）",
+          "issue": "AC-026 は「inspect-ui 相当の診断情報が artifacts に含まれる」ことを合否条件にしているが、対応要件 FR-041 にはその要求が無く、FR-039 は artifacts をスクリーンショットと trace に限定している。AC が要件に無い成果物を要求しており、対応表（FR-041 → AC-026）と要件本文が一致しない。",
+          "fix": "FR-041 または FR-039 に「DOM_CHANGED 時は selector 一致状況の診断出力を artifacts に含める」を追加するか、AC-026 からその条件を外す。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "§7 冒頭（L192）「状態遷移（マスタープロンプト §8）」／05-PHASE-PLAN.md Phase 3 手順 1（L66）「マスタープロンプトのテンプレート」",
+          "issue": "前回「05 がマスタープロンプトの節番号 13./14. を参照」を修正したが、02 §7 に新たに追加された文が「マスタープロンプト §8」というリポジトリ外文書の節番号を参照している（05 L66 のテンプレート参照も同様に残存）。マスタープロンプトはリポジトリに含まれないため、Codex レビュアーや将来の読者は参照先を検証できない。",
+          "fix": "「状態遷移は Phase 2 の 11-STATE-MACHINE.md で定義する」のようにリポジトリ内文書への参照に置き換える。05 L66 も reviews/ に置くテンプレートのパスへ変更する。"
+        },
+        {
+          "severity": "low",
+          "file": "S:\\Projects\\chatgpt-web-bridge\\docs\\02-REQUIREMENTS.md",
+          "location": "FR-002（L42）／04 AC-002（L30）／03 R-007 緩和策 (4)・残存リスク（L100〜L101）",
+          "issue": "FR-002/AC-002 の診断項目「プロファイルのロック状態」が、ブリッジ自身の single-flight ロック（runtime/locks/、ALREADY_RUNNING 系）と Chromium 側のプロファイルロック（PROFILE_IN_USE 系）のどちらを指すか明示されていない。R-007 の残存リスクは「PID 再利用で stale lock を誤判定した場合は doctor で表示し手動削除を案内」としており、doctor がブリッジロックの所有 PID・stale 判定を表示することを前提にしているが、FR-002 の項目列挙からはそれが読み取れない。前回の ALREADY_RUNNING/PROFILE_IN_USE 区別の修正が doctor の診断項目まで及んでいない。",
+          "fix": "FR-002 と AC-002 の診断項目を「ブリッジロック（runtime/locks/ の有無・所有 PID・生存判定）」と「専用プロファイルの他プロセス占有」の 2 項目に分けて列挙する。"
+        }
+      ]
+    }
+  ]
+}

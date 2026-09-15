@@ -1,0 +1,241 @@
+===  traceability 20
+
+[tra-1] HIGH docs/10-ARCHITECTURE.md :: §6 判定規則 5〜6（および 11-STATE-MACHINE §4 EXTRACTING 行、16 §2 chatgpt/completion 行）
+  ISSUE: FR-034（Must）「回答が空 … の場合は EXTRACTION_FAILED」、AC-019 Fixture (5)「空回答系 → EXTRACTION_FAILED」、AC-022「回答が空の fixture では EXTRACTION_FAILED」に対し、10 §6 の判定規則 5 は「lastAssistantText.trim() !== '' → 完了候補」と回答非空を完了条件にしているため、空回答は VERDICT_COMPLETE に到達せず規則 6「t >= timeoutMs → GENERATION_TIMEOUT」に落ちる。11 §4 で EXTRACTION_EMPTY→FAILED(EXTRACTION_FAILED) は EXTRACTING からのみ、EXTRACTING は VERDICT_COMPLETE からのみ入れるため、空回答で EXTRACTION_FAILED になる経路が設計上存在しない。さらに 10 §7 で innerText は「常に採用可」のため、非空で完了した後に EXTRACTION_EMPTY が出る経路も事実上無く、コードが到達不能になっている。16 §2 `chatgpt/completion` の「空回答」ケースと §3 `completed` fixture「本文除去で EXTRACTION_FAILED」は現設計では GENERATION_TIMEOUT を返す。
+  FIX: 10 §6 の規則を修正し、「streaming が消え、本文が stabilizationMs 以上不変」なら本文が空でも VERDICT_COMPLETE を出して EXTRACTING へ進め、抽出層で空を EXTRACTION_EMPTY と判定させる（FR-034 の「空 → EXTRACTION_FAILED」に一致）。または FR-034 / AC-019(5) / AC-022 を改訂して空回答を GENERATION_TIMEOUT と定義し直す。いずれにせよ 16 §2/§3 の期待値を合わせる。
+
+[tra-2] HIGH docs/11-STATE-MACHINE.md :: §4 「起動後の任意の非終端状態 | BROWSER_CRASHED」行および「LOCK_ACQUIRED | BROWSER_LAUNCH_FAILED(other)」行
+  ISSUE: FR-039（Must）「BROWSER_CRASHED では trace は保存し、スクリーンショットは best-effort」、AC-014「BROWSER_CRASHED で終了し … trace が artifacts に含まれる」、AC-025「BROWSER_CRASHED では trace.zip は存在し」に対し、11 §4 の BROWSER_CRASHED 行の effects は `CAPTURE(best-effort), WRITE_RESULT, RELEASE_LOCK, EXIT(1)` であり、trace 停止＋サニタイズ＋保存を含む `CLEANUP`（§4 末尾定義: 「trace 停止＋サニタイズ … → context.close() → RELEASE_LOCK」）が含まれていない。つまり設計上 BROWSER_CRASHED では trace.zip が生成されない。また LOCK_ACQUIRED からの `BROWSER_LAUNCH_FAILED(other) → FAILED(BROWSER_CRASHED)` は tracing.start 前（10 §5「trace: 起動直後に start」）なので trace が原理的に存在せず、13 §2 の BROWSER_CRASHED「ブラウザ: 後」とも一致しない。
+  FIX: BROWSER_CRASHED 行の effects に `SAVE_TRACE(best-effort)` 相当（クラッシュ後の tracing.stop→サニタイズ→保存）を明記し、Playwright で context 切断後に tracing.stop が可能かを Phase 4 で確認する条件を書く。起動失敗由来の BROWSER_CRASHED は artifacts 空である旨を 13 §2 / AC-025 に明記するか、別コード（例: BROWSER_LAUNCH_FAILED）に分ける。
+
+[tra-3] MEDIUM docs/11-STATE-MACHINE.md :: §2 NEW_CHAT_READY 定義 / §4 AUTH_CHECKED 行（および 14 §5 openNewChat、16 §3・§7 AC-010 行）
+  ISSUE: FR-016（Must）(f)「生成中でない」および AC-010 (f)「生成中 → PROMPT_SUBMIT_FAILED」に対し、送信前にそれを確認する設計が無い。11 §2 NEW_CHAT_READY は「入力欄が一意・空であることを確認した」のみ、14 §5 `openNewChat` は「URL に /c/ が無く composer が空になるまで待つ」のみで、`stopButton` 不在（14 §3「存在 = streaming」）の確認が送信前チェックに含まれていない。またテスト側でも 16 §3 の fixture 一覧に AC-010 (a)「非 chatgpt.com → INVALID_STATE」と (f)「生成中 → PROMPT_SUBMIT_FAILED」の fixture が無く、§7 AC-010 行は dup-composer / existing-conversation / login / no-picker のみ。AC-010 は「(a)〜(g) の各条件を 1 つだけ不成立にした fixture / 状況」を要求している。
+  FIX: 11 §2 NEW_CHAT_READY（または PROMPT_ENTERED 直前）に「stopButton 不在」を確認条件として追加し、14 §5 openNewChat / enterPrompt の検証項目に `stopButton` zero を加える。16 §3 に `wrong-domain`（→INVALID_STATE）と `new-chat-generating`（→PROMPT_SUBMIT_FAILED、送信なし）の fixture を追加し §7 AC-010 行に反映する。
+
+[tra-4] MEDIUM docs/16-TEST-STRATEGY.md :: §3 `new-chat-no-picker` 行（および 14 §1 `onMissing` / 14 §3 modelPicker 行、04 AC-026）
+  ISSUE: AC-026（FR-041）は「入力欄・送信ボタン・モデル選択のいずれかを除去または重複させた fixture で … DOM_CHANGED で終了」とするが、16 §3 `new-chat-no-picker` は「modelPicker を除去 → current でも MODEL_NOT_VERIFIABLE。pro で MODEL_NOT_AVAILABLE」と、同じ状況で別コードを期待している（AC-015「preset を観測できない fixture では MODEL_NOT_VERIFIABLE」由来）。14 §1 では `resolve` が候補未一致時に `DOM_UNEXPECTED` を投げ `onMissing` 既定が `DOM_CHANGED` であり、14 §3 の `modelPicker`（exactly-one）/ `modelPickerCurrentLabel`（exactly-one）に `onMissing: 'ignore'` の指定が無いため、設計どおり実装すると modelPicker 除去は DOM_CHANGED になり、16 §3 の期待（MODEL_NOT_VERIFIABLE）と矛盾する。FR-040「最終状態と原因コードを必ず一意に返す」に反する。
+  FIX: 「モデル選択 UI が見つからない」= DOM_CHANGED、「見つかるが表示ラベルが presetLabels に逆引きできない」= MODEL_NOT_VERIFIABLE、「メニューは開くが要求 preset の選択肢が無い」= MODEL_NOT_AVAILABLE と 13 §4 に判定規則を追加し、14 §3 の該当要素の `onMissing` を明記、16 §3 の no-picker fixture を「ラベルを未知文字列に置換」型に変更するか AC-026 側の「モデル選択」を除外する。
+
+[tra-5] MEDIUM schemas/request.schema.json :: `required` 配列（および 12 §2 timeoutMs 行）
+  ISSUE: FR-007（Must）「必須フィールド: schemaVersion, requestId, promptFile, preset, newChat, timeoutMs, responseFormat」および AC-006「必須フィールド欠落 → INVALID_REQUEST」に対し、schema の `required` は `["schemaVersion", "requestId", "promptFile", "preset", "newChat", "responseFormat"]` で `timeoutMs` を含まず、12 §2 も「既定 900000（呼び出し元が省略した場合ブリッジが補う）」と任意扱いにしている。NFR-003「request.json で上書き可能」は任意を示唆するため 02 内でも揺れているが、FR-007 の明文と schema が食い違ったまま Freeze に進むと AC-006 の「必須フィールド欠落」テストの期待が一意に決まらない。
+  FIX: FR-007 の必須リストから timeoutMs を外し「省略時 900000」と明記して DECISION-LOG に記録する（設計側の意図に合わせる）か、schema の required に timeoutMs を加えて 12 §2 の既定補完を削る。
+
+[tra-6] MEDIUM docs/15-SECURITY-AND-PRIVACY.md :: §5 「INVALID_REQUEST 相当で拒否」（および 11 §4 遷移表、13 §2）
+  ISSUE: FR-015 / SEC-001 / AC-012（Must）「通常 User Data を指す場合、doctor と run は起動前に拒否する」の実現方法が設計で不完全。15 §5 は「INVALID_REQUEST 相当で拒否」とするが、プロファイルパスは request.json ではなく環境変数 / `--profile-dir` 由来で、INVALID_REQUEST の案内（13 §2「request.json / prompt.md を修正」、12 §6 終了コード 2「request.json / prompt.md を直す」）は誤誘導になる。11 §4 の遷移表にはプロファイルパス検証に対応するイベント・遷移が無く（VALIDATED → LOCK_OK → LOCK_ACQUIRED → LAUNCH_BROWSER と直結）、13 §2 にも該当コードの発生状態が無い。10 §3 は `src/browser/` の責務に「プロファイルパス検証」を置いているが、状態機械上いつ・どのイベントで失敗するかが未定義。
+  FIX: 11 §4 に VALIDATED（または LOCK_ACQUIRED の LAUNCH_BROWSER 前）で `PROFILE_PATH_REJECTED` イベント → FAILED(<code>) の行を追加し、13 §2 に発生状態と案内（「CHATGPT_BRIDGE_PROFILE_DIR を修正」）を追記する。コードは INVALID_REQUEST を流用するなら案内文を分けるか、専用コード（例: INVALID_PROFILE_DIR、終了コード 4 群）を追加して 02 §7 / schema enum も更新する。
+
+[tra-7] MEDIUM docs/adr/005-single-flight.md :: 決定 3「requestId 単位の排他: 別ファイルのロックは持たず」および却下案「requestId ごとのロックファイル」
+  ISSUE: FR-036（Must）は「リクエスト ID 単位のロックを持ち、同一 requestId の同時実行を防ぐ」と明記し、02 §7 の ALREADY_RUNNING 発生箇所も「FR-035, FR-036」、R-003 緩和策 (4) も「requestId ロック + process ロック」と 2 種類のロックを前提にしている。一方 ADR-005 は「別ファイルのロックは持たず、(a) プロセスロック … (b) result.json の存在 … (c) submit.marker の存在で担保する」と requestId ロックを明示的に不採用にしている。AC-024 の検証内容（敗者が result.json を書き換えない）は process ロックで満たせるが、Must 要件文との差異が DECISION-LOG（A-001〜A-028）に記録されておらず、OPS-007「仕様変更は ADR または DECISION-LOG に記録する」の観点で 02 側の要件文が更新されていない。
+  FIX: FR-036 を「同一 requestId の同時実行はプロセスロック（FR-035）と result.json / submit.marker の存在判定で防ぐ」に改訂して DECISION-LOG に A-0xx として記録するか、ADR-005 に「FR-036 の『ロック』はプロセスロックで実現する」旨を明記し 02 §7・R-003 の記述を揃える。
+
+[tra-8] MEDIUM docs/11-STATE-MACHINE.md :: §6 不変条件 3（および 04 AC-018 第 2 Then、12 §3.3 submitted、schemas/result.schema.json submitted）
+  ISSUE: 11 §6 (3) は「PROMPT_SUBMITTING 以降の失敗で result.json.submitted は `true`（SUBMIT_FAILED のみ "unknown"）」と boolean で書かれているが、12 §3.3 と schema は `submitted: enum ["yes","no","unknown"]` で、AC-018 も `"yes"` を期待している。また AC-018「それ以前では "no"」は、REQUEST_RECEIVED で終端する SUBMIT_STATE_UNKNOWN（13 §2 submitted: unknown、AC-011 `submitted: "unknown"`）と矛盾し、AC-018 の「全状態 × 全イベントの総当たり」テストで REQUEST_RECEIVED + PRIOR_MARKER_FOUND が不変条件違反になる。
+  FIX: 11 §6 (3) を `"yes"` に修正。AC-018 の第 2 Then を「PROMPT_SUBMITTING より前の終端では "no"（ただし SUBMIT_STATE_UNKNOWN は "unknown"）」に改訂し、16 §2 state/machine の不変条件テストにも例外を明記する。
+
+[tra-9] MEDIUM docs/16-TEST-STRATEGY.md :: §7 AC-017 行「LS-05 長文」（および §3 fixture 一覧）
+  ISSUE: AC-017（FR-023, FR-024、Must）は「長文（10,000 文字以上）、複数の改行、コードブロック、絵文字、日本語を含む prompt を投入したとき … 一致することが確認され、不一致なら PROMPT_INPUT_FAILED」を求めるが、16 §7 が対応付けた LS-05 は AC-034 で「日本語と Unicode（絵文字・結合文字）」であり長文シナリオではない。LS-01〜10 に 10,000 文字以上のプロンプトを投入するシナリオが無く、PROMPT_INPUT_FAILED（入力欄内容不一致）を発生させる fixture / Live シナリオも 16 §3・§4 のどこにも無い。13 §2 の PROMPT_INPUT_FAILED はテスト未対応のエラーコードになっている。
+  FIX: AC-034 に LS-11「10,000 文字以上・複数改行・コードブロック混在の長文」を追加するか LS-05 の定義を拡張し、16 §3 に `composer` を改変して不一致を起こす fixture（→PROMPT_INPUT_FAILED、送信なし）を追加して §7 AC-017 行に反映する。
+
+[tra-10] MEDIUM docs/16-TEST-STRATEGY.md :: §2 Unit テスト表（AC-002 / AC-025 の欠落。10 §3 モジュール責務表も参照）
+  ISSUE: 16 §7 は AC-002 に Unit「doctor 各項目」を割り当てているが、§2 の Unit テスト表に doctor の行が無い。AC-002 Unit「各診断項目は個別関数としてモック入力で OK/NG を返せる」に対応するテスト定義が存在しない。また 10 §3 のモジュール責務表に doctor の診断項目（FR-002: Node / Playwright / ブラウザ実行ファイル / プロファイル存在 / ロックと所有 PID 生存判定 / 他プロセス占有 / ログイン状態 / 書き込み権限）を実装するモジュールが無く、`src/cli/` は「コマンド解析、RunController 起動、終了コード変換」のみ。同様に AC-025 第 3 Then「成功時は trace を既定で保存しない（設定で有効化可）」を検証するテストが §2 / §7 に無い。
+  FIX: 10 §3 に `src/diagnostics/doctor.ts`（各診断項目を純関数＋ポートで実装）を追加し、16 §2 に `diagnostics/doctor` 行（各項目のモック入力→OK/NG、stale lock 案内文）を追加する。16 §2 `state/controller` に「COMPLETED で CHATGPT_BRIDGE_TRACE_ON_SUCCESS 未設定なら trace を保存しない／=1 なら保存」のケースを追記する。
+
+[tra-11] LOW docs/15-SECURITY-AND-PRIVACY.md :: §2 禁止 API / パッケージ一覧
+  ISSUE: AC-022 は Unit で「navigator.clipboard.readText 不使用を grep」、AC-029 は「Cookie DB（Cookies ファイル）の読み取り」「extraHTTPHeaders で Authorization を設定する箇所」の不在確認を求めるが、16 §2「禁止 API grep」は「15-SECURITY §2 の禁止トークン」を検査対象と定義しており、その一覧に `readText(`、`Cookies`（プロファイル内ファイル名）、`extraHTTPHeaders`（launch/newContext オプション。一覧にあるのは `setExtraHTTPHeaders(` のみ）が無い。AC の grep 項目が設計の機械検査から漏れる。
+  FIX: 15 §2 の一覧に `clipboard.readText(` / `readText(`、`'Cookies'` / `Login Data` 等のプロファイル内ファイル名、`extraHTTPHeaders:` を追加し、16 §2 の grep テストがその一覧を単一の定数から読む旨を明記する。
+
+[tra-12] LOW docs/10-ARCHITECTURE.md :: §8 submit.marker のフィールド定義（12 §5 と不一致）、FR-025「直後の状態」
+  ISSUE: 10 §8 は `submit.marker` を `{ requestId, at, conversationUrlBefore }` と記述し、12 §5 は `{ requestId, writtenAt, urlBefore, baselineAssistantCount }` と記述しており、フィールド名と項目数が一致しない。また FR-025（Must）「直前・直後の状態（時刻、assistant メッセージ数、URL）を記録する」のうち「直後」（送信後の URL・時刻）をどこに記録するかが設計に無い（marker は write-ahead で直前のみ、result.json の conversationUrl は終端時）。
+  FIX: 12 §5 を正として 10 §8 の記述を揃える。FR-025 の「直後」については、SUBMIT_DISPATCHED 後に marker へ `dispatchedAt` / `urlAfter` を追記する effect を 11 §4 に加えるか、FR-025 を「直前の状態を marker に、直後の状態は result.json に記録」に改訂して DECISION-LOG に記す。
+
+[tra-13] LOW docs/12-IO-CONTRACT.md :: §6 終了コード 3 の説明「送信されていない（RATE_LIMITED を除く。submitted を確認）」
+  ISSUE: 13 §2 では `CAPTCHA_OR_CHALLENGE` も submitted「no / yes*」・発生状態「BROWSER_STARTED, 生成中」であり、11 §4 でも WAITING/GENERATING/STABILIZING から `VERDICT_CHALLENGE → MI(CAPTCHA_OR_CHALLENGE)` が定義されている。12 §6 の「RATE_LIMITED を除く」は CAPTCHA_OR_CHALLENGE の送信後発生を見落としており、呼び出し元がこの文言に従うと送信済みのケースを「送信されていない」と誤読する（R-011）。
+  FIX: 12 §6 終了コード 3 の説明を「submitted を確認する（RATE_LIMITED / CAPTCHA_OR_CHALLENGE は送信後にも起こり得る）」に修正する。
+
+[tra-14] LOW docs/13-ERROR-MODEL.md :: §3 終了コード 4 の群名「起動前停止（何も送信されておらず、新しい結果も無い）」
+  ISSUE: 同じ 13 §2 で `PROFILE_IN_USE` は「result.json: 書く」であり、AC-025 も「ブラウザ起動前の失敗のうち result.json を書くもの（INVALID_REQUEST, PROFILE_IN_USE, SUBMIT_STATE_UNKNOWN）」としているため、終了コード 4 群に PROFILE_IN_USE を含めつつ「新しい結果も無い」と説明するのは自己矛盾（FR-006 の同文言も同様）。呼び出し元が「4 なら result.json を読まなくてよい」と解釈すると PROFILE_IN_USE の result.json を見落とす。
+  FIX: 13 §3 と FR-006 / 12 §6 の群説明を「起動前停止（何も送信されていない。ALREADY_PROCESSED / ALREADY_RUNNING は result.json を書かず、PROFILE_IN_USE は書く）」に修正する。
+
+[tra-15] LOW docs/17-OPERATIONS.md :: §4 コマンド一覧（共通オプション、login / inspect-ui の終了コード）
+  ISSUE: (1) 10 §9 は「環境変数のみ。設定ファイルは作らない」として設定手段を環境変数に限定しているが、17 §4 は「共通オプション: `--profile-dir <path>`（環境変数より優先）、`--log-level debug`」と CLI フラグを追加しており、10 §9 と一致しない。(2) FR-035 / ADR-005 は `login` / `inspect-ui` もプロセスロックを取得し「取得できなければ ALREADY_RUNNING で即終了（終了コード 4）」とするが、17 §4 は login / inspect-ui の終了コードを「0 / 1」としており、13 §3 の終了コード 4 と食い違う。
+  FIX: 10 §9 に CLI フラグ（--profile-dir, --log-level）を併記して優先順位を明記するか 17 §4 から削除する。17 §4 の login / inspect-ui の終了コードを「0 / 1 / 4（ALREADY_RUNNING）」に修正する。
+
+[tra-16] LOW docs/12-IO-CONTRACT.md :: §4 アトミック書き出し（FR-012 の末尾改行）
+  ISSUE: FR-012（Must）「回答本文を response.md へ UTF-8（BOM 無し）、末尾改行 1 つで書き出す」および AC-008「末尾改行あり」に対し、12 §4 は「UTF-8、BOM 無し」までしか規定しておらず、末尾改行の正規化（抽出結果の末尾改行を 1 つに揃える）が 10 §7 / 12 §4 のどこにも書かれていない。16 §3 `completed` fixture の検証項目にも BOM / 末尾改行の確認が無い。
+  FIX: 12 §4 または 10 §7 に「response.md は末尾の空白・改行を除去した後に LF を 1 つ付与して書く」を明記し、16 §3 `completed` 行または §2 atomic-write に BOM 無し・末尾 LF 1 つの検証を追加する。
+
+[tra-17] LOW docs/10-ARCHITECTURE.md :: §6 Observation.challenge（「CAPTCHA / Cloudflare / ログイン画面」）と 11 §4 VERDICT_CHALLENGE → MI(CAPTCHA_OR_CHALLENGE)
+  ISSUE: 10 §6 の `challenge` は「CAPTCHA / Cloudflare / ログイン画面」を一括で真にするが、11 §4 の送信後状態からの `VERDICT_CHALLENGE` は `MI(CAPTCHA_OR_CHALLENGE)` にのみ遷移する。13 §4 の分類ルールは「ログインボタン … 可視 → AUTH_REQUIRED」であり、13 §2 は AUTH_REQUIRED の発生状態を BROWSER_STARTED のみとしている。生成中にセッション失効でログイン画面が出た場合、設計上は CAPTCHA_OR_CHALLENGE として報告され、FR-017「ログイン画面 → AUTH_REQUIRED」および FR-040「原因コードを一意に返す」と整合しない。
+  FIX: Observation を `challenge: 'none' | 'captcha' | 'login' | 'dialog'` のように種別付きにし、11 §4 の送信後状態に `VERDICT_CHALLENGE(kind)` → MI(AUTH_REQUIRED | CAPTCHA_OR_CHALLENGE | MANUAL_INTERVENTION_REQUIRED) を定義、13 §2 の AUTH_REQUIRED 発生状態に「生成中」を追加する。
+
+[tra-18] LOW docs/13-ERROR-MODEL.md :: §4 分類ルール「firstResponseTimeoutMs 内に新 assistant が出ない → CHAT_ERROR」（10 §6 規則 3、A-027）
+  ISSUE: FR-029 は CHAT_ERROR を「生成中のネットワーク切断・ChatGPT 側エラーバナー」、FR-028 は「timeoutMs 経過で GENERATION_TIMEOUT」と定義しており、「送信後 120 s（固定値 firstResponseTimeoutMs）で新 assistant が出なければ CHAT_ERROR(no_response)」という分類は 02 のどの要件にも根拠が無い設計追加である。timeoutMs（10 s〜3600 s、呼び出し元指定）より短い固定 120 s が優先されるため、呼び出し元が長い timeoutMs を指定しても初回応答が 120 s を超えると GENERATION_TIMEOUT ではなく CHAT_ERROR で終了し、FR-028 の期待と異なる。AC-019 / AC-021 の fixture 一覧にもこのケースは無い（16 §2 completion の「firstResponseTimeout」のみ）。
+  FIX: FR-029 に「送信後一定時間（既定 120 s、Live で調整）内に assistant メッセージが出現しない場合も CHAT_ERROR」を追記して DECISION-LOG A-027 と紐付けるか、no_response を GENERATION_TIMEOUT に統合して規則 3 の固定 120 s を廃止する。
+
+[tra-19] LOW docs/11-STATE-MACHINE.md :: §3 イベント REQUEST_READ / REQUEST_UNREADABLE、§4 REQUEST_RECEIVED 行
+  ISSUE: AC-006 は「requestId が欠落・不正な場合は requestId: null で result.json が書かれ、終了コード 2」を求め、12 §3.3 も requestId を `string | null` としているが、11 は REQUEST_RECEIVED を「request.json を読み、requestId を取り出した」状態と定義し、REQUEST_READ のペイロードを `requestId, rawJson` としている。requestId が欠落した JSON をどのイベント（REQUEST_UNREADABLE = result.json 無し・exit 2 か、NO_PRIOR_STATE → INVALID = result.json あり・exit 2）に分類するかが未定義で、AC-006 の期待（result.json あり、requestId null）が設計から導けない。
+  FIX: 11 §3 の REQUEST_READ を `requestId: string | null` とし、requestId が無い／パターン不一致の場合は冪等判定をスキップして IDEMPOTENCY_CHECKED → INVALID（result.json を requestId: null で書く）へ進む旨を §4 に明記する。REQUEST_UNREADABLE は「ファイル不在・JSON 構文エラー」に限定する。
+
+[tra-20] LOW docs/14-SELECTOR-STRATEGY.md :: §8 `inspect-ui --dump-dom`（および 12 §3.3 `error.cause`、10 §9 `CHATGPT_BRIDGE_LOG_LEVEL`）
+  ISSUE: 要件に直接の裏付けが無い設計要素（逆方向トレース）: (1) `inspect-ui --dump-dom` フラグ（14 §8）は FR-004 の出力定義に無く、サニタイズ前の `document.documentElement.outerHTML`（アカウント名・会話タイトルを含む）をファイルに書く操作であるにもかかわらず、出力先・扱い（`runtime/` 配下か、.gitignore 対象か）が 15 §2 / §7 に記載されていない。(2) `error.cause`（12 §3.3、schema で required）は FR-011 の `code, message, retryable, phase` に無い追加フィールド。(3) `CHATGPT_BRIDGE_LOG_LEVEL` は SEC-005 のログ方針の範囲内だが要件 ID の参照が無い。いずれも FR-090〜096 の Won't には該当せず OPS-010 違反ではないが、Freeze 前に要件側へ ID を付けて対応付けるべき。
+  FIX: FR-004 に `--dump-dom`（出力先 `runtime/artifacts/inspect-ui/`、gitignore 対象、共有禁止）を追記し 15 §7 のデータ表に加える。FR-011 に `cause` を追加。10 §9 の各環境変数に対応要件 ID（SEC-005 / A-010 / A-020 / NFR-008）を列として付ける。
+===  consistency 20
+
+[con-1] HIGH docs/10-ARCHITECTURE.md :: §6 完了検出アルゴリズム 判定規則 3・4・6（および docs/11-STATE-MACHINE.md §3 `TIMEOUT` イベント、docs/04-ACCEPTANCE-CRITERIA.md AC-020）
+  ISSUE: 規則は「上から順に評価」と明記されているが、規則 4「`streaming === true` → 未完了」と規則 3「`assistantCount <= baseline` → 未完了（`t > firstResponseTimeoutMs`（既定 120 s）で … `CHAT_ERROR`）」が規則 6「`t >= timeoutMs` → `GENERATION_TIMEOUT`」より先に return するため、(a) 生成中 UI が出続けている限り timeoutMs を過ぎても GENERATION_TIMEOUT が出ず、(b) 新 assistant が出ない場合は timeoutMs（schema 最小 10000、AC-020 は 20000）ではなく 120 s 後に CHAT_ERROR になる。AC-020「`timeoutMs: 20000` で長い回答を要求すると、約 20 秒後に `GENERATION_TIMEOUT`」と LS-09 が満たせない。11 §3 に controller 発の `TIMEOUT | controller | phase` イベントがあるが、§4 遷移表にこれを消費する行が一つも無い（catch-all で INTERNAL_ERROR になる）。送信前フェーズ（ページロード等）のタイムアウト値もどこにも定義されていない。
+  FIX: 規則 6（`t >= timeoutMs`）を規則 1〜2 の直後、規則 3〜5 より前に評価する。規則 3 の初回応答待ちは `min(firstResponseTimeoutMs, timeoutMs)` とする。11 §4 に `TIMEOUT(phase)` を消費する行（送信前は該当状態の非再試行コード、送信後は GENERATION_TIMEOUT）を追加し、送信前フェーズの上限値を 10 §9 または A-027 に定義する。
+
+[con-2] HIGH docs/11-STATE-MACHINE.md :: §4 遷移表 `REQUEST_RECEIVED | PRIOR_MARKER_FOUND | FAILED(SUBMIT_STATE_UNKNOWN) | WRITE_RESULT, EXIT(1)`（docs/10-ARCHITECTURE.md §4 [2]→[4]、docs/02-REQUIREMENTS.md FR-010 処理順序 / FR-036、docs/adr/005-single-flight.md 決定 3）
+  ISSUE: 処理順序が「読取 → 冪等判定 → 検証 → ロック取得」であり、marker 判定がロック取得より前にある。プロセス A が requestId X を処理中で `submit.marker` を書き終えた後（WAITING/GENERATING 中）にプロセス B が同じ X で `run` すると、B は result.json 無し・marker 有りを見て **ロックを確認せずに** `SUBMIT_STATE_UNKNOWN` の result.json を書いて exit 1 する。これは FR-036「拒否された側は進行中リクエストの `result.json` を書き換えない（FR-010 例外 (3)）」、AC-024「同一 requestId で二重起動した場合 … `ALREADY_RUNNING`（終了コード 4）… `result.json` を書かない」、ADR-005 決定 3「(a) プロセスロック … (c) `submit.marker` の存在で担保」と矛盾する。12 §4 で呼び出し元は「`result.json` の出現を待ってから」読むため、B の偽の result.json を A の完了前に読んでしまう。
+  FIX: marker 判定を「result.json 判定 → ロック取得 → marker 判定」の順に変更する（ロックが取れなければ ALREADY_RUNNING、取れた上で marker のみ残存なら SUBMIT_STATE_UNKNOWN）。FR-010/A-017/10 §4/11 §2 の状態順序を合わせて更新する。
+
+[con-3] HIGH docs/11-STATE-MACHINE.md :: §4 遷移表 `STABILIZING` 行群、§3 `OBSERVATION` / `VERDICT_*` イベント（docs/10-ARCHITECTURE.md §6 判定規則 3〜5）
+  ISSUE: (1) `GENERATING | VERDICT_GENERATING | ⟲` はあるが `STABILIZING | VERDICT_STABILIZING` の行が無い。安定化窓 1500 ms（250 ms 周期で約 6 ティック）の間 judge は毎回「未完了（安定化中）」を返すため、「任意の非終端状態 | 未定義イベント → `FAILED(INTERNAL_ERROR)`」に落ち、正常系が必ず失敗する。(2) §3 の `OBSERVATION | chatgpt（250 ms 周期）` を消費する行が無い（controller が completion.ts に流して VERDICT_* に変換すると読めるが未記載）。(3) 10 §6 の「未完了」は 3 種類（規則 3: 新 assistant 未出現、規則 4: streaming 中、規則 5 未達: 安定化中）あるが、イベントは `VERDICT_GENERATING` / `VERDICT_STABILIZING` の 2 つで、規則 3 の「未完了」をどちらに写すか未定義。`GENERATING` の定義は「新 assistant が出現し」なので規則 3 には当てはまらない。(4) 規則 5 が `WAITING_FOR_RESPONSE` または `GENERATING` の状態で `VERDICT_COMPLETE` を返した場合の行が無い（`STABILIZING` からのみ）。
+  FIX: `STABILIZING | VERDICT_STABILIZING | ⟲` を追加。`VERDICT_WAITING`（または「イベント無し」）を定義して規則 3 の未完了に割り当て、`WAITING_FOR_RESPONSE | VERDICT_WAITING | ⟲` を追加。`OBSERVATION` は状態機械イベントではなく controller→completion の入力であることを §3 に明記し、10 §6 の各 return 値と VERDICT_* の対応表を書く。
+
+[con-4] MEDIUM docs/11-STATE-MACHINE.md :: §4 失敗行の effects 順 `CAPTURE, WRITE_RESULT, CLEANUP` と `CLEANUP` 定義（docs/10-ARCHITECTURE.md §4 末尾・[15]、docs/04-ACCEPTANCE-CRITERIA.md AC-025）
+  ISSUE: 10 §4 は「[5] 以降ならスクリーンショット＋サニタイズ済み trace を … 保存してから `result.json` を書く」と言うが、11 §4 の全失敗行は `WRITE_RESULT` の後に `CLEANUP`（= trace 停止＋サニタイズ）を実行する。結果 `result.json.artifacts` に列挙する `trace.zip` は result.json 出現時点で存在せず、サニタイズ失敗時は存在しないパスが残る（AC-025「`artifacts` に列挙され、`npx playwright show-trace` で開ける」、12 §3.4「`artifacts` の各パスは存在するファイル」）。成功時も `CHATGPT_BRIDGE_TRACE_ON_SUCCESS=1` の trace は `WRITING_RESULT | RESULT_WRITTEN → CLEANUP` の順なので artifacts に載せられない。さらに 10 §4 [15] は「ロック解放 → ブラウザ終了」、11 `CLEANUP` は「`context.close()` → `RELEASE_LOCK`」で順序が逆（前者だとロック解放後にブラウザがまだプロファイルを掴んでおり、直後の `run` が PROFILE_IN_USE になる）。
+  FIX: 失敗行の effects を `CAPTURE, STOP_TRACE(sanitize), WRITE_RESULT, CLOSE_BROWSER, RELEASE_LOCK` に分解し、trace の書き出しを WRITE_RESULT より前に置く。10 §4 [15] の順序を 11 に合わせ「ブラウザ終了 → ロック解放」に修正する。
+
+[con-5] MEDIUM docs/11-STATE-MACHINE.md :: §4 `起動後の任意の非終端状態 | BROWSER_CRASHED | … | CAPTURE(best-effort), WRITE_RESULT, RELEASE_LOCK, EXIT(1)` および `LOCK_ACQUIRED | BROWSER_LAUNCH_FAILED(other) | FAILED(BROWSER_CRASHED)`（docs/02-REQUIREMENTS.md FR-039、docs/04-ACCEPTANCE-CRITERIA.md AC-025、docs/13-ERROR-MODEL.md §2/§3）
+  ISSUE: (a) BROWSER_CRASHED 行の effects に `CLEANUP`（trace 停止＋サニタイズ）が無く、trace が保存されない設計になっているが、FR-039「`BROWSER_CRASHED` では trace は保存し」、AC-025「`BROWSER_CRASHED` では `trace.zip` は存在し」、LS-10「`BROWSER_CRASHED`、result.json あり」（trace が `artifacts` に含まれる: AC-014）と矛盾する。(b) `BROWSER_LAUNCH_FAILED(other)` を `BROWSER_CRASHED` に分類しているが、13 §2 の BROWSER_CRASHED は「ブラウザ: 後」「発生状態: 起動後の任意」で `LOCK_ACQUIRED` を含まず、13 §3 の終了コード 1 群は「ブラウザ起動後の失敗」。起動失敗時は trace 開始前なので AC-025 の trace.zip 要件も満たせない。
+  FIX: BROWSER_CRASHED 行に trace 停止（best-effort、`context` が閉じていれば tracing.stop の失敗を許容）を明記し、AC-025 の「trace.zip は存在し」を「best-effort」に揃えるか設計で担保する。起動失敗（other）は別コード（例: `BROWSER_LAUNCH_FAILED`、終了コード 4、artifacts []）にするか、13 §2 の BROWSER_CRASHED に `LOCK_ACQUIRED`（trace 無し）を追記する。
+
+[con-6] MEDIUM docs/13-ERROR-MODEL.md :: §3 終了コード表 「4 | 起動前停止（何も送信されておらず、新しい結果も無い）| `ALREADY_PROCESSED`, `ALREADY_RUNNING`, `PROFILE_IN_USE`」 vs §2 `PROFILE_IN_USE | … | result.json: 書く`（docs/02-REQUIREMENTS.md FR-006、docs/04-ACCEPTANCE-CRITERIA.md AC-025）
+  ISSUE: 終了コード 4 は「新しい結果も無い」群と定義され、FR-006 も「呼び出し元は 4 を『何も送信されておらず、新しい結果も無い』と解釈できる」とするが、同群の `PROFILE_IN_USE` は 13 §2 で「書く」、AC-025 でも「ブラウザ起動前の失敗のうち `result.json` を書くもの（`INVALID_REQUEST`, `PROFILE_IN_USE`, `SUBMIT_STATE_UNKNOWN`）」と result.json を書く。呼び出し元が終了コード 4 で result.json を読まない実装をすると PROFILE_IN_USE の情報を落とし、逆に読む実装だと ALREADY_PROCESSED で古い result.json を新結果と誤読する。
+  FIX: 13 §3 / FR-006 / 12 §6 の群 4 の説明を「何も送信されていない。`PROFILE_IN_USE` のみ新しい result.json を書く」に修正するか、PROFILE_IN_USE を result.json を書かない扱い（stderr のみ）に統一する。
+
+[con-7] MEDIUM docs/12-IO-CONTRACT.md :: §6 終了コード表 「3 | 手動介入必要 | … 送信されていない（`RATE_LIMITED` を除く。`submitted` を確認）」（docs/13-ERROR-MODEL.md §2 `CAPTCHA_OR_CHALLENGE | … | submitted: no / yes*`、docs/11-STATE-MACHINE.md §4 `VERDICT_CHALLENGE → MI(CAPTCHA_OR_CHALLENGE)`）
+  ISSUE: 12 §6 は終了コード 3 で送信済みの可能性があるのは `RATE_LIMITED` のみと読めるが、13 §2 は `CAPTCHA_OR_CHALLENGE` を「no / yes*」「発生状態: BROWSER_STARTED, 生成中」とし、11 §4 でも `WAITING_FOR_RESPONSE / GENERATING / STABILIZING | VERDICT_CHALLENGE | MI(CAPTCHA_OR_CHALLENGE)` が存在する（送信後）。呼び出し元向けの解釈表が二重送信防止上の重要情報を誤って伝える。
+  FIX: 12 §6 の 3 の説明を「`submitted` を必ず確認。`RATE_LIMITED` / `CAPTCHA_OR_CHALLENGE` は送信後にも発生し得る」に修正する。
+
+[con-8] MEDIUM docs/11-STATE-MACHINE.md :: §6 不変条件 1・3（schemas/result.schema.json `submitted` enum、docs/04-ACCEPTANCE-CRITERIA.md AC-018、docs/16-TEST-STRATEGY.md §2 `state/machine`）
+  ISSUE: (1) §6.3「`result.json.submitted` は `true`」だが、12 §3.3 と schema では `submitted` は `"yes" | "no" | "unknown"` の文字列で boolean ではない。(2) §6.1「`DISPATCH_SUBMIT` effect は `PROMPT_SUBMITTING` からのみ … 発火する」に対し、§4 の該当行は `PROMPT_ENTERED | MARKER_WRITTEN | PROMPT_SUBMITTING | DISPATCH_SUBMIT`、すなわち `transition(PROMPT_ENTERED, MARKER_WRITTEN)` の effects として発火する（入力状態は `PROMPT_ENTERED`）。AC-018/16 §2 の「全状態 × 全イベントを総当たり」で `effects ∋ DISPATCH_SUBMIT ⇒ state == PROMPT_SUBMITTING` を検査すると表どおりの実装は不合格になる。実装者は「入力状態」か「次状態」かを推測しなければならない。(3) `PROMPT_SUBMITTING` で `BROWSER_CRASHED` / `DOM_UNEXPECTED` が起きた場合（sendButton クリック前）も §6.3 では `yes` になるが、12 §3.3 の定義は「送信操作が dispatch されたか」で、実際には dispatch されていない。
+  FIX: §6.3 を `"yes"` に修正。§6.1 を「`PROMPT_ENTERED → PROMPT_SUBMITTING` の遷移（`MARKER_WRITTEN` 受領時）でのみ発火し、次状態が `PROMPT_SUBMITTING` である」と書き直し、AC-018 の文言も合わせる。`PROMPT_SUBMITTING` での SUBMIT_FAILED 以外の失敗も `unknown` とするか、`yes` を「送信された可能性あり」と再定義する。
+
+[con-9] MEDIUM docs/16-TEST-STRATEGY.md :: §1 表 Fixture 行「vitest + Playwright（headless Chromium …）」「`npm test` = Unit + Fixture」 vs §7 AC-028 行「`npm test` がブラウザ無しで通る」（docs/04-ACCEPTANCE-CRITERIA.md AC-028、docs/17-OPERATIONS.md §1）
+  ISSUE: 16 §1 では `npm test` が Fixture 層を含み、Fixture は headless Chromium を起動する。一方 16 §7 の AC-028 行は「`npm test` がブラウザ無しで通る」、AC-028 本文も「Playwright ブラウザを起動せずに `npm test` で通る」。さらに 17 §1 のセットアップは `npx playwright install chromium` を「Playwright 同梱 Chromium を使う場合のみ」としており、既定（`channel: 'chrome'`）環境で Fixture 層がどのブラウザ実行ファイルで動くか（インストール済み Chrome を headless で使うのか、同梱 Chromium を別途インストールするのか）が未定義。新規環境で `npm test` が失敗する。
+  FIX: AC-028 / 16 §7 を「Unit 層はブラウザ無し、Fixture 層は headless ブラウザを使う」に修正し、Fixture 層のブラウザ入手手順（`npx playwright install chromium` を必須にするか、`channel: 'chrome'` の headless を使うか）を 16 §1 と 17 §1 に明記する。
+
+[con-10] MEDIUM docs/16-TEST-STRATEGY.md :: §1 Fixture 行「`page.setContent` / `file://`」「`route` は使わず」、§3 `login` / `challenge` / `existing-conversation`（「URL `/c/...` を模擬」）（docs/14-SELECTOR-STRATEGY.md §5 `observeAuth`、docs/13-ERROR-MODEL.md §4 「URL が `https://chatgpt.com/` 配下でない → `AUTH_REQUIRED` / `INVALID_STATE`」、docs/02-REQUIREMENTS.md FR-016 (a)(d)）
+  ISSUE: `observeAuth` は URL ドメインを最初に判定し、chatgpt.com 配下でなければ `WRONG_PAGE`（INVALID_STATE）を返す。`page.setContent`（about:blank）や `file://` で開いた fixture は必ずこの判定に落ちるため、16 §3 の `login → AUTH_REQUIRED`、`challenge → CAPTCHA_OR_CHALLENGE`、`consent-dialog`、`new-chat → AUTH_OK` は fixture では到達できない。`existing-conversation`「URL `/c/...` を模擬」も `page.route` 無しで `https://chatgpt.com/c/...` を再現する手段が無い（15 §2 / 16 §1 で route 禁止）。実装者は URL を関数引数として注入する設計等を推測しなければならない。
+  FIX: 14 §5 の `observeAuth` / `openNewChat` を「URL は引数（または `PagePort.currentUrl()`）で受け取り、fixture テストでは差し替え可能」と定義し、16 §3 に「URL 判定は Unit で、DOM 判定は fixture で」の分担を明記する。
+
+[con-11] MEDIUM docs/12-IO-CONTRACT.md :: §5 `submit.marker` 例 `{ "requestId", "writtenAt", "urlBefore", "baselineAssistantCount" }` vs docs/10-ARCHITECTURE.md §8 `submit.marker { requestId, at, conversationUrlBefore }`（docs/02-REQUIREMENTS.md FR-025）
+  ISSUE: 同じファイルのフィールド名が 2 文書で異なる（`writtenAt` vs `at`、`urlBefore` vs `conversationUrlBefore`）。10 §8 には FR-025 が要求する「assistant メッセージ数」に相当する `baselineAssistantCount` が無い。
+  FIX: 12 §5 を正とし、10 §8 のフィールド名を `{ requestId, writtenAt, urlBefore, baselineAssistantCount }` に揃える。
+
+[con-12] LOW docs/11-STATE-MACHINE.md :: §5 末尾「再試行上限超過は各状態の非再試行イベント（`DOM_UNEXPECTED` 等）に変換される」、§1「`attempt < maxAttempts` のときだけ同じ状態に留まる」
+  ISSUE: どの状態の上限超過がどのイベント／エラーコードになるかが「等」で済まされている。例: `BROWSER_STARTED` のページロード失敗 3 回超過は `INVALID_STATE` か `CHAT_ERROR` か `DOM_CHANGED` か、`PRESET_VERIFIED` の入力不一致 2 回超過は `PROMPT_MISMATCH`（PROMPT_INPUT_FAILED）か `DOM_UNEXPECTED` か、が決まらない。また `transition(state, event)` は純関数と定義されているが、`attempt` カウンタをどこに持つか（state を `{ name, attempts }` にするか、controller が数えるか）が未定義で、16 §2「再試行上限」テストの形が決められない。
+  FIX: §5 の表に「上限超過時のイベント／コード」列を追加し、状態型に `attempts` を含めることを §1 に明記する。
+
+[con-13] LOW docs/11-STATE-MACHINE.md :: §4 `BROWSER_STARTED | CHALLENGE(kind) | MI(CAPTCHA_OR_CHALLENGE \| MANUAL_INTERVENTION_REQUIRED \| RATE_LIMITED)`（docs/14-SELECTOR-STRATEGY.md §5 `observeAuth`、docs/10-ARCHITECTURE.md §6 規則 1 / `Observation.challenge: boolean`）
+  ISSUE: `kind` の値集合と 3 コードへの対応が定義されていない。14 §5 の `observeAuth` は `loginCta` / `challengeFrame` / `blockingDialog` / `composer` を見るだけで `phrases.rateLimited` を検査しないため、13 §2 が `RATE_LIMITED` の発生状態に挙げる `BROWSER_STARTED` で RATE_LIMITED を出す経路が無い。10 §6 規則 1 は「`challenge` → `MANUAL_INTERVENTION`（該当コード）」だが `Observation.challenge` は boolean で、コメントに「ログイン画面」も含むにもかかわらず 11 §4 では `VERDICT_CHALLENGE → MI(CAPTCHA_OR_CHALLENGE)` に固定される。
+  FIX: `kind ∈ { captcha, consent, rate_limited }` と各コードの対応を §3 に定義し、`observeAuth` の検査対象に `phrases.rateLimited` を追加。`Observation.challenge` を `'none' | 'captcha' | 'login'` 等の enum にして送信後のログイン画面を `AUTH_REQUIRED` にするか、boolean のまま CAPTCHA_OR_CHALLENGE 固定であることを 13 §2 に明記する。
+
+[con-14] LOW docs/14-SELECTOR-STRATEGY.md :: §3 `assistantMessage | … | at-least-one（送信後）`、§5 関数表、§3 `errorBanner`（docs/10-ARCHITECTURE.md §6 `Observation`、§7 抽出、docs/11-STATE-MACHINE.md `SNAPSHOT_BASELINE`）
+  ISSUE: (1) 送信前の `SNAPSHOT_BASELINE`（assistant 数 = 0 の新規チャット）で `assistantMessage` を `resolve` すると verify `at-least-one` に失敗し `DOM_UNEXPECTED` になる。`onMissing: 'ignore'` の指定や count 専用 API が無い。(2) §5 に抽出用の「最新 assistant の `innerHTML` / `innerText` を取る」関数が無い（10 §3 page.ts の「最新 assistant 取得」に対応する関数名・戻り値が未定義）。(3) `Observation.errorBanner` は `'chat_error' | 'rate_limited' | 'network'` を区別するが、§3 `errorBanner` の候補は「role `alert` → text in phrases.chatError」のみで、`rateLimited` / `networkError` 文言をどの要素から読むかが未定義。(4) `Observation.streaming` は「停止ボタン or 生成中インジケータ」だが ElementKey に生成中インジケータのキーが無い。
+  FIX: `countMatches(page, key)` を追加して baseline/observe で使う。`readLatestAssistant(page): { html, innerText }` を §5 に追加。`errorBanner` の候補と `phrases` の 3 分類の対応を §3 に記述。`streamingIndicator` キーを追加するか「stopButton のみ」に統一する。
+
+[con-15] LOW docs/15-SECURITY-AND-PRIVACY.md :: §5 「以下に一致・包含される場合は `INVALID_REQUEST` 相当で拒否」（docs/11-STATE-MACHINE.md §3/§4、docs/13-ERROR-MODEL.md §2、docs/02-REQUIREMENTS.md FR-015）
+  ISSUE: プロファイルパス（環境変数 / `--profile-dir` 由来で `request.json` の内容ではない）の拒否がどの状態・イベントで起き、終了コード・result.json 出力・`error.phase` が何になるかが 11/13 のどこにも無い。「相当」では実装者が推測することになる。
+  FIX: 11 §4 に `VALIDATED | PROFILE_PATH_REJECTED | FAILED(INVALID_REQUEST) | WRITE_RESULT, EXIT(2)` 相当の行（またはロック取得前の専用行）を追加し、13 §2 の INVALID_REQUEST 発生状態に追記する。
+
+[con-16] LOW schemas/request.schema.json :: `required` 配列（`timeoutMs` を含まない）と `timeoutMs.default: 900000`（docs/12-IO-CONTRACT.md §2 「呼び出し元が省略した場合ブリッジが補う」 vs docs/02-REQUIREMENTS.md FR-007 「必須フィールド: … `timeoutMs`」）
+  ISSUE: FR-007 は `timeoutMs` を必須とし、AC-006 は「必須フィールド欠落」で INVALID_REQUEST を要求するが、schema と 12 §2 は任意（既定補完）。どちらが正かで AC-006 のテストケースが変わる。
+  FIX: FR-007 を「`timeoutMs` は任意（既定 900000）」に改訂して DECISION-LOG に記録するか、schema の `required` に `timeoutMs` を加える。
+
+[con-17] LOW docs/17-OPERATIONS.md :: §4 「共通オプション: `--profile-dir <path>`（環境変数より優先）、`--log-level debug`」 vs docs/10-ARCHITECTURE.md §9 「環境変数のみ。設定ファイルは作らない」
+  ISSUE: 10 §9 は設定を環境変数のみとするが、17 §4 は CLI オプション `--profile-dir` / `--log-level` を定義し優先順位まで規定している。Phase 4 の CLI 引数解析（16 §2 `cli/args`）でどちらを実装するか決まらない。
+  FIX: 10 §9 に「CLI オプション `--profile-dir` / `--log-level` は環境変数より優先」を追記するか、17 §4 からオプションを削除する。
+
+[con-18] LOW docs/16-TEST-STRATEGY.md :: §3 `completed-{ja,en}` 「`copyButton` シムで `copy` 経路」（docs/14-SELECTOR-STRATEGY.md §8 「`script` タグ・インライン JS … を除去」、§3 末尾「ページ内スクリプトは fixture 専用」）
+  ISSUE: sanitized fixture は JS を除去するため、`copyButton` をクリックしても `navigator.clipboard.writeText` は呼ばれず、`__bridgeCopyCapture` は常に空で `copy` 経路は fixture で通らない。§3 の「小さなスクリプト」は `generating` の動的再生についてのみ記述されている。
+  FIX: `completed-*` fixture に「copyButton クリック時に本文 Markdown を `navigator.clipboard.writeText` に渡すテスト専用スクリプトを `page.evaluate` で注入する」と明記する。
+
+[con-19] LOW docs/11-STATE-MACHINE.md :: §4 `REQUEST_RECEIVED | REQUEST_READ | （判定へ） | CHECK_PRIOR_STATE(requestId)`
+  ISSUE: 次状態「（判定へ）」は §2 の状態一覧に無い。後続行が `REQUEST_RECEIVED` からの遷移なので同状態に留まる意図と推測できるが、表駆動テスト（16 §2「遷移表を表駆動で全件検証」）ではセルに状態名が必要。
+  FIX: 次状態を `REQUEST_RECEIVED`（⟲）と明記する。
+
+[con-20] LOW schemas/result.schema.json :: `$defs.error.properties.cause.maxLength: 2000`、`phase: { type: string, minLength: 1 }`（docs/13-ERROR-MODEL.md §1 「`cause` … 先頭 200 文字」「`phase: StateName`」、docs/12-IO-CONTRACT.md §3.4 「`error.phase` が `PROMPT_SUBMITTING` 以降 ⇒ `submitted ∈ {yes, unknown}`」、docs/16-TEST-STRATEGY.md §2 `contracts/validate`）
+  ISSUE: 12 は「schema が正」とするが、13 §1 の `cause` 上限 200 文字に対し schema は 2000、`phase` は状態名 enum ではなく任意文字列。そのため 12 §3.4 の phase→submitted 不変条件と `submitted: unknown` の限定（`SUBMIT_FAILED` / `SUBMIT_STATE_UNKNOWN` のみ）は schema では検証されず、16 §2 が `contracts/validate` で「不変条件を全 status × code で検証」と書く内容はスキーマ検証ではなくコード側の追加検査になる（その関数の置き場が未定義）。
+  FIX: `phase` を 11 §2 の状態名 enum にし、`cause.maxLength` を 200 に合わせる。phase/submitted の条件は allOf に追加するか、「schema 外の追加検証（`contracts/invariants.ts`）」として 12 §3.4 と 16 §2 に明記する。
+===  adversarial 19
+
+[adv-1] CRITICAL docs/11-STATE-MACHINE.md :: §4 遷移表 `REQUEST_RECEIVED | PRIOR_MARKER_FOUND | FAILED(SUBMIT_STATE_UNKNOWN) | WRITE_RESULT, EXIT(1)` と `VALIDATED | LOCK_BUSY`（ロック確認はその後）
+  ISSUE: 同一 requestId の二重起動で敗者が result.json を書き、呼び出し元経由の二重送信を誘発する。シナリオ: プロセス A が requestId X を GENERATING 中（submit.marker 済み、result.json 未）。プロセス B が同じ X で起動 → 11 §4 の順序ではロック確認（VALIDATED）より前の REQUEST_RECEIVED で marker を発見し、`WRITE_RESULT` で `status: failed / SUBMIT_STATE_UNKNOWN / submitted: unknown` の result.json を書いて exit 1。呼び出し元は 12 §3.3 の規約「`"no"` 以外を送信された可能性ありと扱い…新しい requestId を使う」と 17 §6「新しい requestId で再送」に従い再送 → A の生成と合わせて同一質問が 2 回送られる。さらに A 完了時に result.json を上書きするため、呼び出し元が読んだ結果と最終ファイルが食い違う。これは `02-REQUIREMENTS.md` FR-036「拒否された側は進行中リクエストの result.json を書き換えない（FR-010 例外 (3)）」および ADR-005 §3「(a) プロセスロック…(c) submit.marker の存在で担保」と矛盾する（marker 判定にロック状態が一切参照されていない）。AC-024 は「最終的に書く result.json が敗者によって書き換えられていない」としか言っておらず、この一時的誤読を検出しない。
+  FIX: PRIOR_MARKER_FOUND の処理を「bridge.lock を読み、所有 PID が生存かつ lock.requestId == 自分の requestId なら ALREADY_RUNNING（result.json を書かず exit 4）」とし、SUBMIT_STATE_UNKNOWN の書き出しはロックが無い／stale の場合に限定する（順序を marker 判定 → ロック確認 → SUBMIT_STATE_UNKNOWN 書出に変更、FR-010 の処理順序と A-017 を改訂）。AC-024 に「敗者が result.json を一度も書かない」を追加し controller Unit で検証する。
+
+[adv-2] HIGH docs/adr/005-single-flight.md :: §3「requestId 単位の排他…(b) result.json の存在 (c) submit.marker の存在で担保」および §影響「同一 requestId の再実行は必ず拒否される」／12-IO-CONTRACT §1「場所は任意」
+  ISSUE: 冪等判定は requestId ではなく requestDir に閉じているため「必ず拒否」は成立しない。12 §1 は requestDir を「場所は任意（推奨 runtime/requests/<requestId>/）」としており、result.json / submit.marker はその requestDir にのみ書かれる。呼び出し元（Claude Code）が同じ requestId で別ディレクトリに request.json を用意した（コピー・作り直し・別作業ツリー）場合、11 §4 の CHECK_PRIOR_STATE は何も見つけず送信に進み、同一 requestId が二重送信される。一方 artifacts は `runtime/artifacts/<requestId>/` と requestId でグローバルに配置されており、requestId 単位の記録場所は既に存在する。
+  FIX: marker と終端記録を requestDir とは別に requestId でグローバルな場所（例 `runtime/state/<requestId>.marker` または `runtime/artifacts/<requestId>/submit.marker`）にも write-ahead で書き、CHECK_PRIOR_STATE は両方を見る。ADR-005 の「必ず拒否」を「同一 profile/runtime 配下では必ず拒否」に限定する形でもよいが、その場合は 12 §1 の「場所は任意」と R-003 緩和策 (5) の記述を整合させる。
+
+[adv-3] HIGH docs/adr/005-single-flight.md :: §2「lock 内の PID が生存していなければ回収する」／16-TEST-STRATEGY §2 `state/lock`「stale 回収」／10-ARCHITECTURE §8 `bridge.lock { pid, ... }（O_EXCL 作成）`
+  ISSUE: stale lock 回収の原子性が未定義で TOCTOU により 2 プロセスが同時にロックを保持できる。シナリオ: 前回のブリッジが kill され PID 1234 の lock が残存。B と C がほぼ同時に起動。B: O_EXCL 失敗 → 読取 → 1234 不在 → unlink → O_EXCL 成功。C: （B の unlink 前に）読取 → 1234 不在 → unlink（**B が作ったばかりの新 lock を消す**）→ O_EXCL 成功。B と C の両方が LOCK_OK となり同じ profile でブラウザ起動に進む。Chrome 側の singleton で片方は起動失敗するが、その分類は PROFILE_IN_USE/BROWSER_CRASHED であり ALREADY_RUNNING ではない。加えて、O_EXCL 作成後に JSON を書く 2 段階のため、作成直後にクラッシュすると空の lock が残り「判定不能 → ALREADY_RUNNING」で恒久的に手動削除が必要になる（R-007 の PID 再利用とは別の経路）。
+  FIX: 回収は unlink ではなく `fs.rename(bridge.lock, bridge.lock.stale-<自PID>-<random>)`（同一ボリュームで原子的、rename に負けた側は EBUSY/ENOENT で ALREADY_RUNNING 側に倒す）→ 改めて O_EXCL 作成、とする。内容書込は tmp に書いてから `fs.link(tmp, bridge.lock)`（NTFS ハードリンク、既存なら EEXIST）で内容付き原子作成にするか、O_EXCL 後に自 PID を書き戻して再読取で自分の PID であることを確認する。16 §2 の Unit に「2 プロセス同時 stale 回収」を追加する。
+
+[adv-4] HIGH docs/14-SELECTOR-STRATEGY.md :: §1 `verify.count: 'zero-or-one'` と「`resolve(page, key, locale?)` は候補を順に評価し、`verify` を満たす最初の Locator を返す」／§3 `errorBanner`「role alert → text in phrases.chatError」「zero-or-one」、`challengeFrame`「iframe … → text in phrases.challenge」、`loginCta`
+  ISSUE: `zero-or-one` 要素では「一致 0 件」も verify に合格するため、第 1 候補が 0 件ならそれが採用され、第 2 候補以降は永久に評価されない。結果として errorBanner の「text in phrases.chatError」、challengeFrame の「text in phrases.challenge」、loginCta の `link` 候補などのフォールバックは設計上デッドコードになる。失敗→成功の具体経路: ChatGPT は生成失敗時に role=alert のバナーではなく assistant ターン内に「Something went wrong」「問題が発生しました」と再生成ボタンを描画することがある。`errorBanner` は候補 1（role alert）が 0 件で確定 → `errorBanner: 'none'` → 停止ボタン無し・本文（エラー文言）非空・1.5 s 不変 → 10 §6 規則 5 で完了 → エラー文言が response.md に書かれ `completed`。同様に Turnstile が iframe でなくインラインで出た場合も challengeFrame 候補 2 が評価されず、13 §4「既知文言」の判定が働かない。
+  FIX: `zero-or-one` / `at-least-one` の要素は「全候補を評価し、いずれかが 1 件以上なら存在」と定義を変える（存在検出は OR、操作対象の一意性は exactly-one の要素にのみ適用）。errorBanner は「assistant メッセージ内の phrases.chatError 部分一致」も観測に含め、10 §6 規則 2 の前に評価する。fixture に `error-in-message`（role=alert 無し）を追加し EXTRACTION/completed にならないことを固定する。
+
+[adv-5] HIGH docs/10-ARCHITECTURE.md :: §6 完了検出アルゴリズム 規則 4・5（`streaming === false` かつ hash 不変 ≥ 1500 ms かつ本文非空 → 完了）／14 §1 ElementKey 一覧
+  ISSUE: 出力長上限で打ち切られた「Continue generating（生成を続ける）」状態が completed になる。ChatGPT は最大出力長に達すると生成を停止し、停止ボタンを消して「Continue generating」ボタンを表示する。このとき本文は不変・非空、copy 操作も可視のため、10 §6 の主経路（streamingSeen=true → 1.5 s 不変で完了）でも代替経路（5 s + copyAvailable）でも「完了」と判定され、途中で切れた回答が `completed` / `extractionQuality: full` として返る。14 §1 の ElementKey にこの状態を表す要素が無く、13 §4 の分類ルールにも該当行が無い。AC-019「途中の回答を保存する」を Fail とする要求に反する。
+  FIX: ElementKey に `continueButton`（role button name /続け|Continue generating/）を追加し Observation に `truncated: boolean` を持たせる。judge は `truncated === true` を完了より先に評価し、`CHAT_ERROR(cause: output_truncated)` などで fail closed（自動クリックしない＝再送に相当し得るため）。fixture `completed-truncated` を追加。
+
+[adv-6] HIGH docs/14-SELECTOR-STRATEGY.md :: §3 `copyButton`「最新 `assistantMessage` 内 role button name /コピー\|Copy/ … zero-or-one」／§1「どれも満たさなければ DOM_UNEXPECTED を投げる」／11 §4「起動後の任意の非終端状態 | DOM_UNEXPECTED → FAILED(DOM_CHANGED)」／10 §6 `copyAvailable`
+  ISSUE: copyButton の走査範囲と正規表現がコードブロックの「Copy code / コードをコピーする」に一致し、3 つの具体的な不具合を生む。(a) `assistantMessage` = `[data-message-author-role="assistant"]` は本文ラッパで、メッセージ全体のコピー操作（ターン下部のアクションバー）はその外側の兄弟要素にあるのが通例。よって候補 1 はコードブロック内の Copy ボタンだけに一致する。(b) コードブロックが 2 個以上ある回答（このプロダクトの主用途）では `zero-or-one` 違反 → `DOM_UNEXPECTED` → 11 §4 により EXTRACTING で `FAILED(DOM_CHANGED)`。生成済みの回答が `submitted: yes` の失敗として返り、呼び出し元は手動取得を強いられる。(c) 代替経路（10 §6 規則 5、生成中 UI 未観測時）の唯一の追加ガード `copyAvailable` は、生成途中でコードブロックが描画された時点で true になる（コードブロックの Copy ボタンは streaming 中も可視）。停止ボタンの selector が外れた UI 変更後に、思考や長考で本文が 5 s 不変になれば途中回答が `completed` になる。また `window.__bridgeCopyCapture` をクリック前にリセットする規定が無く、同一ページ内での前回捕捉が残っていれば verify() の長さ比 0.5〜3.0 を偶然満たし得る。
+  FIX: copyButton の name 正規表現をコードコピーを除外する形（否定先読み、または testid `copy-turn-action-button` を第 1 候補に昇格）にし、走査範囲を「ターン（article）内のアクションバー」に変更する。送信境界後の EXTRACTING では `DOM_UNEXPECTED` を DOM_CHANGED にせず次の抽出方式へ降格するルールを 11 §4 に明記する。`copyAvailable` は「メッセージ単位のコピー操作」のみを対象とし、代替経路には `sendButton` が再び有効になったこと（composer が送信可能状態）も要求する。`captureCopy` はクリック直前に `__bridgeCopyCapture = null` へリセットする。
+
+[adv-7] MEDIUM docs/10-ARCHITECTURE.md :: §6 規則 5「`streaming === false` かつ `lastAssistantHash` が stabilizationMs（1500 ms）以上不変」／11 §4 `STABILIZING | VERDICT_GENERATING → GENERATING（安定化タイマーはリセット）`
+  ISSUE: 安定化ウィンドウの起点が曖昧で、実質ほぼ 0 ms で完了し得る。規則 5 は「hash が 1500 ms 以上不変」を streaming の真偽と独立に数えている。長考 preset では停止ボタン表示中に本文が数秒〜数十秒不変になるのが普通なので、停止ボタンが消えた瞬間に「hash 不変 ≥ 1500 ms」は既に成立しており、次の 250 ms 観測で完了になる。11 §4 の「安定化タイマーはリセット」は STABILIZING 入場を起点とする読み方を示唆し、10 §6 と整合しない。停止ボタンが思考フェーズと回答フェーズの切替時に一瞬外れる（selector 不一致・再描画）だけで、思考要約や冒頭数トークンで `completed` になる。主経路には copy 操作可用や sendButton 復帰といった「生成終了後にのみ現れる UI」の確認が無い（FR-026 は「（必要なら）コピー操作の可用化」を列挙している）。
+  FIX: 規則 5 を「streaming が false に転じた時刻を起点として 1500 ms 以上、その間 hash 不変かつ streaming が再び true にならない」と明記し、`completion.ts` の Unit に「停止ボタンが 1 観測だけ消えて戻る」ケースを追加する。主経路にも「メッセージ単位の copy 操作が可視」または「sendButton が有効」を必須信号として加える。
+
+[adv-8] MEDIUM docs/10-ARCHITECTURE.md :: §7「対象は送信後に出現した最新の assistant メッセージ（`assistantCount > baseline` の最後の要素）」／§6 Observation
+  ISSUE: ChatGPT が 1 プロンプトに対して複数の assistant 要素を出す既知の UI に対する fail closed が無い。(a) A/B 比較（「どちらの回答が良いですか」で 2 つの回答が並列に生成される）: `assistantCount - baseline == 2` となり「最後の要素」は DOM 順で決まる任意の片方。両方の生成完了は停止ボタンで見えるが、どちらを採用したかは result.json に残らず、`completed` で返る。(b) Canvas 等のサイドパネルに本文が生成される場合: メッセージ本文は「ドキュメントを作成しました」等の短文になり、それが `completed` / `full` として返る。いずれも設計文書に言及が無い。
+  FIX: judge に `assistantCount - baseline > 1` を検出したら `CHAT_ERROR(cause: multiple_responses)` 等で fail closed する規則を追加（送信済みなので再送はしない）。Canvas 相当のパネル（role=dialog/complementary の編集領域）を `blockingDialog` とは別に観測し、存在時は `EXTRACTION_FAILED(cause: canvas)` で response.md を書かない。fixture `two-responses` を追加。
+
+[adv-9] MEDIUM docs/15-SECURITY-AND-PRIVACY.md :: §3 手順 2「`resources/*` のうち Content-Type が text/event-stream / application/json のレスポンス本体を削除」と手順 4「`cookie` / `authorization` / `set-cookie` / `bearer` で検索」／§4 redact() のパターン一覧
+  ISSUE: trace サニタイザの除去対象と検査パターンが redact() より狭く、秘密が残る経路がある。(a) `text/html` の文書リソース（chatgpt.com のトップ HTML）は残される。この HTML はクライアント bootstrap 用の JSON をインラインで埋め込んでおり、ユーザーのメール・名前・ID、版によってはセッション用の `accessToken`（JWT）を含む。DOM スナップショットは script を落とすが、`resources/` の生 HTML は落とさない。(b) 手順 4 の 4 語には redact() が持つ `eyJ[A-Za-z0-9._-]{20,}`（JWT）・`__Secure-`・`sk-` が無く、`"accessToken":"eyJ..."` は検出されない。(c) 逆に手順 4 は単語一致のため、Cookie 同意文言（"We use cookies"）を含むページのスナップショットが丸ごと削除され、診断用 trace が無言で空になる。(d) `.network` を削除してから `resources/*` の Content-Type を判定することはできない（Content-Type は `.network` にしか無い）ため手順の順序も実装不能。
+  FIX: `resources/*` は CSS / フォント / 画像の許可リスト方式で残し、text/html・application/javascript・JSON・event-stream は削除する。検査パターンは redact() と同一の正規表現群を共有し、単語一致ではなく「`cookie:` / `authorization:` 等のヘッダ形」「JWT 形」「`__Secure-`」で判定する。手順を「`.network` を読んで削除対象を決定 → 対象削除 → `.network` 削除」に書き直す。Unit（16 §2 trace-sanitizer）に text/html 内の JWT が残らないケースを追加。
+
+[adv-10] MEDIUM docs/17-OPERATIONS.md :: §3 リクエストの実行 `… | Set-Content -Encoding utf8 "$dir\request.json"` および `Set-Content -Encoding utf8 "$dir\prompt.md"`、`Get-Content "$dir\result.json"`／12-IO-CONTRACT §2「prompt.md: UTF-8（BOM は除去して扱う）」
+  ISSUE: PowerShell 5.1 の `-Encoding utf8` は BOM 付き UTF-8 を書く。12 §2 は BOM 除去を prompt.md にしか規定しておらず、request.json は BOM 付きのまま `JSON.parse` に渡ると `Unexpected token ﻿` で失敗 → 11 §4 `REQUEST_UNREADABLE → FAILED(INVALID_REQUEST)` で exit 2・result.json 無し。つまり 17 §3 に書かれた正規の手順が Windows 既定環境でそのまま失敗する（NFR-001 / AC-027 の Must）。また 5.1 の `Get-Content` は BOM 無し UTF-8 を ANSI として読むため、ブリッジが BOM 無しで書く result.json の日本語 `error.message` が文字化けする。
+  FIX: 12 §2 と 11 §4 の `READ_REQUEST` に「request.json は先頭 BOM を除去してから parse」を明記し、AC-006 の Unit に BOM 付き request.json を追加する。17 §3 の例は `[IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))` か `-Encoding utf8` の注記付きにし、読み取りは `Get-Content -Encoding UTF8` にする。
+
+[adv-11] MEDIUM docs/10-ARCHITECTURE.md :: §4 [15]「response.md（atomic）→ result.json（atomic）→ ロック解放 → ブラウザ終了 → exit 0」／11-STATE-MACHINE §4 末尾「`CLEANUP` = trace 停止＋サニタイズ → `context.close()` → `RELEASE_LOCK`」／§5「close 失敗はログのみ」
+  ISSUE: ロック解放とブラウザ終了の順序が 10 §4 と 11 §4 で逆になっている。10 §4 の順序（ロック解放 → ブラウザ終了）だと、result.json を見た呼び出し元が即座に次の `run` を起動したとき、前の Chrome がまだ専用プロファイルを保持しているためロックは取れるが起動が失敗し、正常運用で PROFILE_IN_USE（または後述の BROWSER_CRASHED）が出る。11 §4 の順序（close → 解放）では、`context.close()` がハングした場合（Windows で永続プロファイルのフラッシュや Chrome 側ダイアログで長時間終了しない事例がある）にタイムアウト規定が無く、PID は生存しているため以後すべての `run` が ALREADY_RUNNING になる。10 §5 は「close 失敗」しか扱っておらず「close が返らない」ケースが無い。
+  FIX: 順序を 11 §4（close → 解放）に統一し、`context.close()` に上限（例 15 s）を設けて超過時は `browser.process().kill()` 相当で強制終了してからロックを解放する。`doctor` の profile 占有診断で「ブリッジ自身が起動した chrome.exe の残骸」も報告する。10 §4 [15] の記述を修正。
+
+[adv-12] MEDIUM docs/13-ERROR-MODEL.md :: §4「起動例外で、profileDir に `lockfile` が存在し他プロセスが使用中と推定 → PROFILE_IN_USE」「Playwright が `Target closed` / `Browser has been closed` → BROWSER_CRASHED」／10 §5「プロファイル占有の兆候（`lockfile` 存在＋他プロセス）」／AC-014
+  ISSUE: Windows での PROFILE_IN_USE 判定が成立しない。(a) Windows の Chrome はユーザーデータディレクトリ直下の `lockfile` を実行中は排他オープンで保持するが、ファイル自体は終了後も残るため「存在」は使用中の指標にならない。「他プロセスが使用中と推定」の手段が `run` では規定されていない（WMI は `doctor` のみ）。(b) 同一 user-data-dir で 2 つ目の chrome.exe を起動すると、新プロセスは既存インスタンスへコマンドラインを引き渡して終了コード 0 で終わるため、Playwright の例外は「browser process exited」「Target closed」系になり、同じ §4 表の BROWSER_CRASHED 行に一致する。結果、AC-014 が期待する `PROFILE_IN_USE`・終了コード 4 ではなく `BROWSER_CRASHED`・終了コード 1 になる（送信はされないので安全側だが、12 §6 の呼び出し元向け解釈「1 = ブラウザ起動後の失敗」が誤りになる）。
+  FIX: 起動前に `profileDir/lockfile` を `fs.open(path, 'r+')` で開き EBUSY/EPERM なら PROFILE_IN_USE と確定する（読取専用の存在確認であり Cookie 等は触らない）プリチェックを LOCK_ACQUIRED の効果に追加し、起動例外の分類ではなく起動前判定にする。§4 の該当行を「排他オープン失敗」に書き換え、Live 手順（AC-014）で確認する。
+
+[adv-13] MEDIUM docs/14-SELECTOR-STRATEGY.md :: §8 fixture の作り方「`inspect-ui --dump-dom` で `document.documentElement.outerHTML` を保存する … サニタイズ … 保存先 `tests/fixtures/chatgpt/...`」／16 §2「禁止 API grep: `src/` に…無いこと」
+  ISSUE: 生の outerHTML はアカウントのメール・名前・ユーザー ID・全会話タイトル、ページ埋め込みの bootstrap JSON（script を除去しても `data-*` 属性や hidden input、meta には残る）を含むが、(a) `--dump-dom` の生出力の書き出し先が未規定（`runtime/` 外に書けば `.gitignore` の保護外）、(b) サニタイズ対象一覧に「インライン JSON・hidden input・data 属性・ユーザー ID・メール」が無い、(c) コミット対象 `tests/fixtures/` に対する秘密情報の機械検査が無い（16 §2 の grep は `src/` のみ）。sanitized fixture はリポジトリにコミットされ Codex にも渡るため、漏洩経路として trace より広い。
+  FIX: `--dump-dom` は `runtime/artifacts/inspect-ui/<timestamp>.raw.html` にのみ書くと規定し、`tests/fixtures/` への配置はサニタイズスクリプト（メール形式・`eyJ` JWT・`user-` ID・`__Secure-`・会話 ID `/c/[0-9a-f-]{36}` を検査し、ヒットで失敗）を通した出力に限定する。16 §2 の禁止 grep を `tests/fixtures/**` にも適用する。
+
+[adv-14] MEDIUM docs/14-SELECTOR-STRATEGY.md :: §4「`current` … `modelPickerCurrentLabel` を読み、上記いずれかに逆引きできればその値」／§1 `PresetLabels = Record<Exclude<Preset,'current'>, Record<Locale, string[]>>`／12 §2 preset enum
+  ISSUE: `current` の逆引きに一意性の要求が無く、また UI の既定選択に対応する enum 値が無い。(a) `presetLabels` は preset ごとの文字列配列だが、モデル名と effort が別コントロールの UI では `modelPickerCurrentLabel`（単一ラベル）が `medium` / `high` / `extra_high` の複数 preset のラベルに同時一致し得る。「逆引きできればその値」は最初の一致を返す実装を許し、要求と異なる effort を `observedPreset` として `completed` を返す（CON-007 の暗黙フォールバックに相当）。(b) ChatGPT の既定選択が自動ルーティング（Auto 系）の場合、enum `instant | medium | high | extra_high | pro` のどれにも逆引きできず、`current` は常に MODEL_NOT_VERIFIABLE になる。AC-003（Phase 4 縦切りは `current` で `observedPreset` 非 null）が成立せず、実装時に「Auto → medium」のような緩い対応を入れる圧力が生じる。
+  FIX: §4 に「逆引きは一意でなければならず、2 つ以上の preset に一致した場合は MODEL_NOT_VERIFIABLE」と明記し、`chatgpt/selectors` の Unit に「全 preset のラベル集合が互いに素」を追加する。既定選択（Auto 系）の扱いを Phase 3 で決定する（enum に `auto` を追加して `current` の観測値として許容するか、`current` は人間が非 Auto を選択済みであることを前提とすると README に明記するか）。
+
+[adv-15] LOW docs/11-STATE-MACHINE.md :: §4 `PRESET_VERIFIED | PROMPT_OK | PROMPT_ENTERED | SNAPSHOT_BASELINE, WRITE_SUBMIT_MARKER`／10 §4 [10]「送信前スナップショット（assistant 数、URL、時刻）」／12 §5 marker の内容
+  ISSUE: preset の検証は NEW_CHAT_READY → PRESET_VERIFIED の 1 回だけで、その後 prompt 投入（10,000 文字超の insertText、最大 3 回の全消去・再入力）を挟んで送信に至る。送信直前の SNAPSHOT_BASELINE はプリセット表示を再読取せず、marker にも記録しない。この区間で UI がモデル選択をリセットした場合（例: 上限到達モーダル後の自動切替、composer 内容に応じた表示変更）は検出されずに送信される。FR-021 が受容しているのは「送信後・生成中」の切替であり、送信前区間はカバー対象（「送信前に UI 表示を読み取って」）。
+  FIX: SNAPSHOT_BASELINE で `observePreset` を再実行し `observedPreset` と一致しなければ `PRESET_NOT_VERIFIABLE`（marker 未書込のため `submitted: no`）にする。marker に `presetLabelBefore` を記録し、result.json の `observedPreset` はこの最終観測値を使う。
+
+[adv-16] LOW docs/12-IO-CONTRACT.md :: §5 `submit.marker`（書き方の規定無し）と §4 アトミック書き出し（fsync は response.md / result.json のみ）
+  ISSUE: write-ahead マーカーの耐久性が規定されていない。§4 は結果ファイルに fsync + rename を要求するが、§5 の marker は「送信操作の直前に書く」だけで fsync が無い。OS クラッシュ・電源断・ブルースクリーンがクリック後・キャッシュフラッシュ前に起きると、marker はディスク上に存在せず（または 0 バイト）、result.json も無いため次回 `run` は NO_PRIOR_STATE と判定して再送する。これは ADR-005 が「クラッシュ耐性のある二重送信防止」として却下案（マーカーを成功時に削除）を退けた根拠と同じ経路。
+  FIX: §5 に「marker は tmp → fsync → rename で書き、rename 完了後にのみ MARKER_WRITTEN を発火する」と明記する。0 バイトや JSON 不正の marker も「存在」として SUBMIT_STATE_UNKNOWN に倒す旨を CHECK_PRIOR_STATE に記載する。
+
+[adv-17] LOW docs/15-SECURITY-AND-PRIVACY.md :: §4 redact()「URL のクエリ文字列を `?…` に置換」／13 §6「`cause` は redact() を通した後に 200 文字で切る」
+  ISSUE: redact() はクエリのみを潰し、URL フラグメント（`#access_token=…`, `#id_token=…`, `#state=…`）を扱わない。AUTH_REQUIRED / INVALID_STATE の分類で `auth.openai.com` や SSO プロバイダの URL を観測した際、`page.goto` / `waitForURL` 系の Playwright 例外メッセージは遷移先 URL を含み、そのまま `error.cause` に 200 文字入る。OAuth の implicit / hybrid フローはトークンをフラグメントに載せるため、JWT 形以外の不透明トークンはマスクされない。
+  FIX: redact() に「`#` 以降を `#…` に置換」を追加し、13 §6 に「`cause` には URL のパス（`/c/<id>` を除く）も含めない」と明記する。Unit に `https://host/cb#access_token=abc` → マスク済みのケースを追加。
+
+[adv-18] LOW docs/adr/004-response-extraction.md :: §決定 2 `copy`「`context.addInitScript` で … フックし … システムクリップボードへは書かず、読まない」／15 §6／10 §5（`login` は同じ専用プロファイルで headed 起動）
+  ISSUE: フックの適用範囲が `run` に限定されていない。`login` / `doctor` / `inspect-ui` が同じ `src/browser/` の起動経路で `addInitScript` を付けると、人間が `login` ウィンドウ内で行うコピー操作（パスワードマネージャ経由の貼付け前のコピー、2FA コード、ChatGPT 上の手動コピー）がシムに飲み込まれてクリップボードへ届かず、原因が分からない。「システムクリップボードへは書かない」は `run` の要件であり、人間操作用ウィンドウで同じ挙動にする理由は無い。
+  FIX: ADR-004 と 15 §6 に「シムは `run` のコンテキストにのみ登録する。`login` / `doctor` / `inspect-ui` は登録しない」を明記し、`BrowserPort.launch({ copyCaptureShim: boolean })` のように明示引数にする。
+
+[adv-19] LOW docs/adr/005-single-flight.md :: §却下した代替案「プロセス起動時刻を lock に含めて PID 再利用を厳密判定 — Windows で堅牢に取るには WMI が必要。MVP では doctor の案内で代替」／10-ARCHITECTURE §5「`doctor` は `Win32_Process` のコマンドラインに profileDir を含む chrome.exe … の有無を報告する」
+  ISSUE: ADR-005 は WMI 依存を理由に PID 再利用の厳密判定を却下しているが、10 §5 では `doctor` が同じ WMI（`Win32_Process`）を使う設計になっており根拠が矛盾する。R-007 残存リスク「PID 再利用により stale lock を生存と誤判定し ALREADY_RUNNING になる」は、`Win32_Process.CreationDate` を lock の `startedAt` と突き合わせるだけで閉じられる。
+  FIX: どちらかに揃える。WMI を許容するなら lock に `startedAt` を書き、stale 判定で `CreationDate` が `startedAt` より新しい PID を「再利用」とみなして回収する（判定不能時は現行どおり ALREADY_RUNNING）。WMI を避けるなら 10 §5 の doctor 診断を `lockfile` 排他オープン方式に置き換える。
+
+TOTAL 59

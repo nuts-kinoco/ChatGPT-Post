@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chatgpt-web-bridge.local/schemas/request.schema.json",
+  "title": "ChatGPT Web Bridge request",
+  "description": "Single-request input contract. See docs/12-IO-CONTRACT.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "promptFile",
+    "preset",
+    "newChat",
+    "responseFormat"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "requestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$",
+      "description": "Caller-generated unique id, safe for directory names (last char alphanumeric; Windows reserved device names are rejected by the bridge). Recommended: <yyyyMMddTHHmmssZ>-<8 hex>."
+    },
+    "promptFile": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the UTF-8 Markdown prompt. Relative paths resolve against the request.json directory."
+    },
+    "preset": {
+      "type": "string",
+      "enum": [
+        "current",
+        "instant",
+        "medium",
+        "high",
+        "extra_high",
+        "pro"
+      ]
+    },
+    "newChat": {
+      "type": "boolean",
+      "const": true,
+      "description": "MVP supports new chats only."
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 10000,
+      "maximum": 3600000,
+      "default": 900000,
+      "description": "Upper bound from submit to completion. Optional; the bridge applies 900000 when omitted (A-030)."
+    },
+    "responseFormat": {
+      "type": "string",
+      "const": "markdown"
+    }
+  }
+}
