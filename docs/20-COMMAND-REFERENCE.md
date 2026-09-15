@@ -1,6 +1,6 @@
 # ChatGPT Web Bridge — コマンドリファレンス（貼り付け用）
 
-対象バージョン: 0.1.0（Phase 5 時点、2026-09-15、契約 1.1）。このファイルは単体で他の文書やチャットに貼り付けられるよう、前提を含めて自己完結させている。
+対象バージョン: 0.1.0（Phase 6 時点、2026-09-15、契約 1.2）。このファイルは単体で他の文書やチャットに貼り付けられるよう、前提を含めて自己完結させている。
 
 ## 0. 前提
 
@@ -101,7 +101,8 @@ chatgpt-bridge usage --json
 | `attachments` | パスの配列（任意、最大 20） | composer に添付するファイル。相対は `request.json` 基準。1 ファイル 100 MB まで。`.env` / 鍵 / `node_modules` 配下 / 秘密らしい内容 / 空 / 同名重複は送信前に exit 2 |
 | `preset` | `current` / `instant` / `medium` / `high` / `extra_high` / `pro` | **思考量**（画面の Instant / 中程度 / 高 / 極高 / Pro）。`current` は現在値をそのまま使う。`pro` は「最新」モデルでは GPT-6 Pro になり週次上限（目安 50 件）を消費する |
 | `model` | `current` / `latest` / `gpt-5.6-sol` / `gpt-5.5`（任意、既定 `current`） | 画面のモデル選択（最新 / GPT-5.6 Sol / GPT-5.5）。`current` は観測のみ（ページ読込ごとに「最新」に戻るので実質 `latest`） |
-| `newChat` | `true` 固定 | 既存チャットへの追記は未対応 |
+| `newChat` | `true` / `false` | `false` のときは `conversationUrl` が必須（1.2）。既存の会話に追記し、送信後の最新ターンを取る |
+| `conversationUrl` | `https://chatgpt.com/c/<id>` | `newChat: false` のときだけ。前回の `result.json` からコピーする。存在しない会話は送信前に停止 |
 | `timeoutMs` | 10000〜3600000 | 省略時 900000（15 分） |
 | `responseFormat` | `"markdown"` 固定 | |
 
@@ -160,7 +161,8 @@ chatgpt-bridge run --request .\runtime\requests\<requestId>\request.json --json
 | `extractionMethod` | `copy`（「回答をコピーする」経由の Markdown）/ `dom`（HTML→Markdown 変換）/ `innerText` |
 | `extractionQuality` | `full` / `degraded`（`innerText` にしか落とせなかった） |
 | `artifacts` | screenshot / trace の相対パス（失敗時に自動保存） |
-| `warnings` | 処理は続行したが記録すべき事象（`restore_effort_failed`: 思考量を元に戻せなかった → 画面で手動で戻す） |
+| `images` | 生成画像の相対パス（`images/1.png` …）。`response.md` 末尾にも `![image n](images/n.png)` が付く。無ければ `[]` |
+| `warnings` | 処理は続行したが記録すべき事象（`restore_effort_failed`: 思考量を元に戻せなかった → 画面で手動で戻す。`image_capture_failed`: 画像を保存できなかった） |
 | `error` | `{ code, message, cause }` または `null` |
 
 ### 4d. 終了コード
@@ -189,6 +191,31 @@ chatgpt-bridge bundle --root . --include "src/**/*.ts" --diff HEAD~1 --out conte
 
 ファイルツリー + 各ファイルの fence 付き本文 [+ `git diff <ref>`] を 1 つの Markdown にする。ブラウザは使わない。`.git` / `node_modules` / `dist` / 画像 / ロックファイル等は既定で除外。**秘密パターン（Bearer / Cookie / sk- / JWT 等）に当たるファイルが 1 つでもあれば生成を拒否**する（ファイル名のみ表示。`--exclude` で外す）。`--max-bytes` を超えた分は省略され、省略一覧が先頭に載る。出来た `context.md` は `attachments` に入れて渡す（本文に貼るのは 20,000 文字まで）。
 
+### 4f. 複数件をキューで流す（`worker`）
+
+```
+<queue>\
+  pending\<requestId>\request.json + prompt.md + 添付   ← 置く
+  running\<requestId>\                                   ← 処理中（1 件だけ）
+  done\<requestId>\result.json + response.md [+ images\] ← 成功
+  failed\<requestId>\                                    ← exit 1 / 2（3 回 busy でも）
+  blocked\<requestId>\                                   ← exit 3。**ここで止まる**
+```
+
+```powershell
+chatgpt-bridge worker --queue S:\work\bridge-queue --drain      # 空になるまで
+chatgpt-bridge worker --queue S:\work\bridge-queue --once       # 1 件だけ
+chatgpt-bridge worker --queue S:\work\bridge-queue              # 常駐（Ctrl+C で現在の 1 件を終えて停止）
+chatgpt-bridge usage --queue S:\work\bridge-queue               # キュー分も含めて集計
+```
+
+標準出力に 1 件ごとの JSON 行（`run --json` と同じ）と最後にまとめの JSON。`blocked` が出たら exit 3 で終わるので、人間が対応してから再開する。項目内の `result.json` の絶対パスは処理時点（`running/`）のものなので、移動後は項目ディレクトリ基準で読む。
+
+### 4g. 画像
+
+- **画像を渡す**: `attachments` に `.png` / `.jpg` を入れる（MM-01: 説明・タグ付けが可能）
+- **生成画像を受け取る**: 依頼するだけでよい。回答ターンの画像が `images/1.png` … に保存され、`result.json.images` と `response.md` に載る。画像だけの回答（本文なし）も成功扱い
+
 ## 5. 共通オプション / 環境変数
 
 | CLI オプション | 環境変数 | 既定 | 意味 |
@@ -198,6 +225,7 @@ chatgpt-bridge bundle --root . --include "src/**/*.ts" --diff HEAD~1 --out conte
 | — | `CHATGPT_BRIDGE_CHANNEL` | `chrome` | `chromium` にすると Playwright 同梱 Chromium を使う（テスト用） |
 | — | `CHATGPT_BRIDGE_TRACE_ON_SUCCESS` | `0` | `1` で成功時も trace を保存 |
 | `--allow-unverified` | — | off | 実画面未確認の selector 候補も使う。**診断専用。通常の `run` では付けない** |
+| — | `CHATGPT_BRIDGE_IMAGE_VIA_VIEWER` | `0` | `1` で画像ビューアの「保存」経由も試す（**自動操作下で Chrome がクラッシュする**ことがあるため既定は off。通常はページ内取得のみ） |
 | `--help` | — | — | 使い方を表示 |
 
 ## 6. 開発者向け
@@ -228,6 +256,11 @@ npm run build         # dist/ を生成
 | 1 往復（短い質問、Thinking 高） | 28〜31 s |
 | 1 往復（Pro） | 54 s |
 | 1 往復（添付 2 件 + 引用） | 32 s |
+| 画像生成 1 枚（instant） | 34〜48 s、1536×1024 PNG 約 1 MB |
+| 画像添付 → 説明 + タグ 5 つ | 25 s |
+| バッチ分類 30 件（JSON Lines、medium） | 70 s、30/30 有効 |
+| 同一会話への追記 | 25 s、前メッセージを正しく想起 |
+| レビュー medium vs extra_high（111 行） | 50 s vs 91 s、どちらも 3/3 |
 | 添付 57 k 文字（1,000 行）の参照 | 66 s、全行正確 |
 | 3 MB のアップロード | 10 s 超 |
 | 111 行のコードレビュー（バグ 3 件仕込み） | 3/3 発見、誤検出 0、51 s |
@@ -241,5 +274,6 @@ npm run build         # dist/ を生成
 - CAPTCHA / 再ログイン / 利用上限の自動突破（すべて exit 3 で停止）
 - 送信状態が不明なリクエストの自動再送
 - 複数リクエストの並行処理
-- 既存チャットへの追記、画像の受け取り（Phase 6 の検討事項）
 - 本文 20,000 文字超の直接入力（添付を使う）
+- 複数リクエストの並行処理（キューは直列）
+- ChatGPT の利用ポリシーで拒否される内容の回避（拒否はそのまま返す）

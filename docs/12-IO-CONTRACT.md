@@ -26,7 +26,7 @@ runtime/state/<requestId>/
 
 ## 2. `request.json`
 
-契約 **1.1**（2026-09-15、A-067 / A-068 / A-083）。1.0 の request もそのまま受け付ける。
+契約 **1.2**（2026-09-15、A-067 / A-068 / A-083 / A-091 / A-096）。1.0 / 1.1 の request もそのまま受け付ける。
 
 ```json
 {
@@ -50,7 +50,8 @@ runtime/state/<requestId>/
 | `attachments` | string[] | 任意、最大 20、各 1 文字以上 | 1.1。composer の file input に添付するファイル。相対パスは `request.json` 基準。1 ファイル 100 MB まで。秘密らしい名前 / 拡張子 / ディレクトリ / 内容（2 MB 以下のテキストを走査）、空ファイル、同名重複は送信前に `INVALID_REQUEST`（A-080）。ChatGPT 側の制限（80 ファイル/3 時間、未検証）は `usage` で目安を出す |
 | `preset` | string | enum `current, instant, medium, high, extra_high, pro` | **思考量スライダーの段階**（Instant / 中程度 / 高 / 極高 / Pro）。`current` は現在値を観測して使う。`pro` は「最新」モデルでは GPT-6 Pro にルーティングされ週次上限を消費する（A-077） |
 | `model` | string | 任意、enum `current, latest, gpt-5.6-sol, gpt-5.5`、既定 `current` | 1.1。メニュー内のモデルのラジオ。`current` は観測のみ（ラジオはページ読込ごとに「最新」へ戻るため `latest` と実質同じ、A-078） |
-| `newChat` | boolean | const `true` | MVP では `true` のみ。`false` は `INVALID_REQUEST` |
+| `newChat` | boolean | | `false` は 1.2（A-096）: `conversationUrl` の会話に追記する。`true` のとき `conversationUrl` があれば `INVALID_REQUEST` |
+| `conversationUrl` | string | `^https://chatgpt\.com/c/[A-Za-z0-9-]+$` | `newChat: false` のとき必須。存在しない・生成中・下書きありなら送信前に `PROMPT_SUBMIT_FAILED`（cause `conversation_not_found` / `generating` / `composer_not_empty`） |
 | `timeoutMs` | integer | 10000 〜 3600000、**任意** | 送信から完了までの上限。省略時 900000（A-030。FR-007 / NFR-003 と整合） |
 | `responseFormat` | string | const `"markdown"` | 将来拡張用。MVP は markdown のみ |
 
@@ -121,7 +122,7 @@ runtime/state/<requestId>/
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `schemaVersion` | `"1.1"` | |
+| `schemaVersion` | `"1.2"` | |
 | `bridgeVersion` | string | `package.json` の version |
 | `requestId` | string \| null | `request.json` から。欠落・パターン不一致の場合 null（AC-006） |
 | `status` | `completed` \| `failed` \| `manual_intervention_required` | |
@@ -138,6 +139,7 @@ runtime/state/<requestId>/
 | `startedAt` / `completedAt` | date-time（RFC 3339、オフセット付き） | |
 | `durationMs` | integer ≥ 0 | `completedAt - startedAt` |
 | `artifacts` | string[] | 絶対パス。ブラウザ起動前の失敗では `[]` |
+| `images` | string[] | 1.2（A-091）。生成画像の requestDir 相対パス（`images/1.png`）。取得はページ内 `fetch(img.src)`（A-069 / A-092）。無ければ `[]` |
 | `warnings` | string[] | best-effort 処理（screenshot / trace / inspect-ui / marker 追記・削除 / ブラウザ終了 / 思考量の復元 `restore_effort_failed`）の失敗記録と `model_slug_mismatch`。`"<kind>_failed: <redacted cause>"` 形式。通常は `[]` |
 | `error` | object \| null | `completed` のとき null、それ以外は必須 |
 | `error.code` | string | `13-ERROR-MODEL.md` の enum |

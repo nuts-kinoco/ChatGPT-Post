@@ -1,0 +1,46 @@
+---
+name: chatgpt-bridge
+description: ChatGPT Web（Pro）に 1 往復の質問・レビュー・調査・分類を投げて Markdown で受け取る。ローカルの chatgpt-bridge CLI（専用 Chrome プロファイル、API 不使用）を使う。独立した作業（材料をすべて渡せるもの）向け。
+---
+
+# chatgpt-bridge スキル
+
+他プロジェクトの Claude Code / Codex から ChatGPT Web を「外部アドバイザー」として使うための手順。このスキルは **`chatgpt-bridge` が `npm link` 済みで、専用プロファイルにログイン済み**であることを前提にする（`chatgpt-bridge doctor` で確認）。詳細は `S:\Projects\chatgpt-web-bridge\docs\20-COMMAND-REFERENCE.md`。
+
+## 使いどころ
+
+- 独立したコードレビュー（1〜数ファイル）、修正パッチの生成、設計のセカンドオピニオン、web 検索付きの調査、JSON Lines のバッチ分類・タグ付け、画像生成 / 画像の説明
+- **向かない**: 対話的な多段作業、リアルタイム応答、リポジトリ全体を前提にした作業（ChatGPT はローカルを見られない。材料は bundle / 添付で渡す）
+
+## 6 手順
+
+1. **残量確認**: `chatgpt-bridge usage --json` → `pro_pool.remaining` が 5 未満なら `preset: pro` を使わない。`lastRateLimited` が直近なら人間に確認
+2. **材料を作る**（必要なら）: `chatgpt-bridge bundle --root <repo> --include "src/**/*.ts" --exclude "**/*.test.ts" --max-bytes 200000 --out <dir>/context.md`。拒否されたら（秘密パターン）`--exclude` で外す。**秘密を消して通すことはしない**
+3. **request を作る**: `requestId = <UTC yyyyMMddTHHmmssZ>-<8 hex>`。`S:\Projects\chatgpt-web-bridge\runtime\requests\<requestId>\` に `request.json` と `prompt.md`（`prompts/*.md` のテンプレートから。**先頭に requestId、回答にも書かせる**）、添付ファイルを置く
+   ```json
+   { "schemaVersion": "1.2", "requestId": "<id>", "promptFile": "prompt.md",
+     "attachments": ["context.md"], "preset": "high", "model": "current",
+     "newChat": true, "timeoutMs": 900000, "responseFormat": "markdown" }
+   ```
+   - `preset`: レビュー / 調査 `high`（1 ファイル規模なら `medium` で同品質）、定型変換 `instant`、`pro` は最後の手段（週次上限）
+   - 本文は 20,000 文字まで。長い材料は `attachments`
+   - 追記したいときは `"newChat": false, "conversationUrl": "<前回の result.json の conversationUrl>"`
+4. **実行**: `chatgpt-bridge run --request <path> --json`（30〜120 s。ブラウザが開く。**触らない**）
+5. **判定**（`exitCode`）:
+   - `0` → `response.md` を読む。`images[]` があれば `images/` に生成画像
+   - `3` → **人間に知らせて止まる**（ログイン / CAPTCHA / 上限）。自動再試行しない
+   - `4` → 前の実行の終了を待って同じ request を再実行してよい
+   - `1` で `submitted: "unknown"` → 同じ requestId を再実行しない。`conversationUrl` を人間が確認
+   - `1`/`2` で `submitted: "no"` → `error.cause` を直して、`result.json` を消してから再実行
+6. **知見化**: 残す価値があれば `S:\Projects\chatgpt-web-bridge\knowledge\INDEX.md` に 1 行追加（要約と requestId のみ。原文は写さない）
+
+## 複数件を流す
+
+`<queue>/pending/<requestId>/` に request 一式を置き、`chatgpt-bridge worker --queue <queue> --drain`。結果は `done/`、人間待ちは `blocked/`（そこでキューは止まる）。
+
+## 守ること
+
+- 秘密情報（`.env`、鍵、トークン、Cookie）を含むファイルや本文を渡さない。ブリッジは拒否するが、拒否されたら **消して通さず** 対象から外す
+- 送信状態が不明な request を再送しない
+- ブリッジの実行中にブラウザを操作しない
+- 「ChatGPT の回答」は一次情報ではない。URL や数値は確認してから採用する
