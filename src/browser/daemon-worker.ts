@@ -4,7 +4,7 @@
  * against the shared profile, exposes it over a local CDP port, writes runtime/daemon.json once
  * ready, then stays alive until stopped. Spawned detached so it survives its parent CLI exiting.
  */
-import { rename, unlink, writeFile } from "node:fs/promises";
+import { access, rename, unlink, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
 
@@ -14,6 +14,8 @@ const { values } = parseArgs({
     channel: { type: "string" },
     port: { type: "string" },
     "state-path": { type: "string" },
+    "lock-path": { type: "string" },
+    "keepalive-ms": { type: "string" },
   },
 });
 if (!values["profile-dir"] || !values["state-path"]) {
@@ -22,8 +24,12 @@ if (!values["profile-dir"] || !values["state-path"]) {
 }
 const profileDir: string = values["profile-dir"];
 const statePath: string = values["state-path"];
+const lockPath = values["lock-path"];
 const channel = values.channel === "chromium" ? "chromium" : "chrome";
 const port = Number(values.port ?? "9876");
+// A-105: ChatGPT's own guidance is that an idle session needs interaction roughly every
+// 15-30 minutes; default to the low end of that window with margin to spare.
+const keepAliveMs = Number(values["keepalive-ms"] ?? 15 * 60 * 1000);
 
 const context = await chromium.launchPersistentContext(profileDir, {
   ...(channel === "chrome" ? { channel: "chrome" as const } : {}),
@@ -38,15 +44,46 @@ const context = await chromium.launchPersistentContext(profileDir, {
     "--no-default-browser-check",
   ],
 });
-if (context.pages().length === 0) await context.newPage();
+const page = context.pages()[0] ?? (await context.newPage());
 
 let shuttingDown = false;
+let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (keepAliveTimer) clearInterval(keepAliveTimer);
   await unlink(statePath).catch(() => undefined);
   await context.close().catch(() => undefined);
   process.exit(0);
+}
+
+async function isLockHeld(): Promise<boolean> {
+  if (!lockPath) return false;
+  try {
+    await access(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A-105: periodic real navigation as an activity signal, skipped whenever a command holds the
+ * bridge lock so it can't collide with one in flight (small residual race between the check and
+ * the goto below; accepted for a single-user machine, same as the rest of A-103/A-104). */
+async function keepAliveTick(): Promise<void> {
+  if (shuttingDown) return;
+  if (await isLockHeld()) {
+    process.stdout.write(`[keepalive ${new Date().toISOString()}] skipped: lock held\n`);
+    return;
+  }
+  try {
+    await page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    process.stdout.write(`[keepalive ${new Date().toISOString()}] reloaded, url=${page.url()}\n`);
+  } catch (err) {
+    process.stdout.write(
+      `[keepalive ${new Date().toISOString()}] failed: ${(err as Error).message}\n`,
+    );
+  }
 }
 
 // C-4 (Codex Medium): atomic write (tmp + rename) so a reader never observes a partial file.
@@ -67,6 +104,9 @@ process.stdout.write(`daemon ready: pid=${process.pid} port=${port}\n`);
 process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
 context.on("close", () => void shutdown());
+
+keepAliveTimer = setInterval(() => void keepAliveTick(), keepAliveMs);
+process.stdout.write(`[keepalive] interval=${keepAliveMs}ms lockPath=${lockPath ?? "(none)"}\n`);
 
 // Keep the process alive until a shutdown signal arrives or the browser context closes.
 await new Promise(() => undefined);

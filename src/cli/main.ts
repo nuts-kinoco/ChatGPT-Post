@@ -39,7 +39,9 @@ commands:
                              バックグラウンドでブラウザを開いたままにする（A-103）。開始しておくと
                              run/login/doctor/inspect-ui はこれを使い回し、毎回の起動・終了を避ける。
                              最小化して起動するので作業の邪魔にはならない。ウィンドウを手動で閉じた
-                             場合は daemon stop で状態ファイルを片付けてから daemon start してください
+                             場合は daemon stop で状態ファイルを片付けてから daemon start してください。
+                             15 分おきに空いていれば軽い keep-alive（A-105）を行いセッション切れを防ぐ
+                             （間隔は CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS[ms] で変更可）
   inspect-ui [--dump-dom] [--walk-effort]
                              UI 要素の検出状況を出力する（送信しない）。--walk-effort は
                              思考量スライダーを全段階なめてラベルを記録し、元の段階に戻す

@@ -13,6 +13,13 @@
  * a fixed one, and guard PID reuse the same way lock.ts does before ever killing or trusting a
  * recorded pid. A full authenticated control channel (named pipe + ACL) is out of scope — accepted
  * given the single-user-PC assumption this was built for (A-103).
+ *
+ * A-105: an idle daemon page was still observed going AUTH_REQUIRED after enough elapsed time,
+ * even though Playwright/CDP keeps `document.visibilityState` "visible" while minimized (measured
+ * live — Chrome's background-tab timer throttling was ruled out as the cause). ChatGPT's own
+ * support guidance says an idle session needs interaction roughly every 15–30 minutes, so the
+ * worker now does a periodic `page.reload()` (see daemon-worker.ts) as a real activity signal,
+ * skipped whenever the bridge lock is held so it can't collide with a command in flight.
  */
 import { spawn } from "node:child_process";
 import { mkdir, readFile, unlink } from "node:fs/promises";
@@ -179,6 +186,11 @@ export async function startDaemon(
       String(port),
       "--state-path",
       daemonStatePath(cfg),
+      "--lock-path",
+      join(cfg.runtimeDir, "locks", "bridge.lock"),
+      ...(process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS
+        ? ["--keepalive-ms", process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS]
+        : []),
     ],
     {
       detached: true,
