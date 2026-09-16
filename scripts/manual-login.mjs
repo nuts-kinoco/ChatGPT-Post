@@ -44,12 +44,24 @@ if (!chromePath) {
   process.exit(1);
 }
 
+// A-108: macOS encrypts cookies with the OS Keychain by default, keyed to how Chrome was
+// launched/signed; a mismatch between this manual login and the bridge's own automated Chrome
+// launch (browser/launch.ts, daemon-worker.ts) makes the bridge see AUTH_REQUIRED right after a
+// login that looked successful here. Both sides must use the same (non-Keychain) cookie storage.
+const darwinArgs =
+  process.platform === "darwin" ? ["--password-store=basic", "--use-mock-keychain"] : [];
+
 console.log(`起動: ${chromePath}`);
 console.log(`プロファイル: ${profileDir}`);
-console.log("ログイン後、このウィンドウを閉じてから `chatgpt-bridge doctor` で確認してください。");
+console.log(
+  process.platform === "darwin"
+    ? "ログイン後、このウィンドウを閉じ（Dock のアイコンを右クリック→終了、または Chrome を選択して ⌘Q。ウィンドウを閉じるだけでは Chrome プロセスが終了しません）てから `chatgpt-bridge doctor` で確認してください。"
+    : "ログイン後、このウィンドウを閉じてから `chatgpt-bridge doctor` で確認してください。",
+);
 
-const child = spawn(chromePath, [`--user-data-dir=${profileDir}`, "https://chatgpt.com/"], {
-  detached: true,
-  stdio: "ignore",
-});
+const child = spawn(
+  chromePath,
+  [`--user-data-dir=${profileDir}`, ...darwinArgs, "https://chatgpt.com/"],
+  { detached: true, stdio: "ignore" },
+);
 child.unref();

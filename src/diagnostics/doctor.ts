@@ -110,15 +110,21 @@ export async function checkProfileDir(
     });
   }
   const occ = await checkProfileFree(cfg.profileDir);
-  // A-103: with a daemon running, the profile lockfile is expected to be held by it — that's not
-  // contention, it's the daemon doing its job.
+  // A-103/A-108: with a daemon running — ours or, on shared storage, another host's — the profile
+  // lockfile is expected to be held. That's not contention, it's the daemon doing its job.
+  const daemonExpected = daemon.alive || daemon.foreign;
+  const daemonNote = daemon.alive
+    ? `pid=${daemon.state.pid}, expected`
+    : daemon.foreign
+      ? `host="${daemon.state.hostname}" daemon, expected`
+      : null;
   items.push({
     name: "profile.free",
-    ok: occ.free || daemon.alive,
+    ok: occ.free || daemonExpected,
     detail: occ.free
       ? "not held by another process"
-      : daemon.alive
-        ? `held by daemon (pid=${daemon.state.pid}, expected)`
+      : daemonNote
+        ? `held by daemon (${daemonNote})`
         : occ.cause,
   });
   if (process.platform === "win32") {
@@ -137,12 +143,12 @@ export async function checkProfileDir(
       const hits = stdout.split(/\r?\n/).filter((l) => l.toLowerCase().includes(needle));
       items.push({
         name: "profile.processes",
-        ok: hits.length === 0 || daemon.alive,
+        ok: hits.length === 0 || daemonExpected,
         detail:
           hits.length === 0
             ? "no browser process uses this profile"
-            : daemon.alive
-              ? `${hits.length} browser process(es) use this profile (daemon, expected)`
+            : daemonNote
+              ? `${hits.length} browser process(es) use this profile (${daemonNote})`
               : `${hits.length} browser process(es) use this profile`,
       });
     } catch {
@@ -173,7 +179,14 @@ export async function checkDaemonStatus(
           ok: true,
           detail: `running: pid=${health.state.pid} port=${health.state.port}`,
         }
-      : { name: "daemon", ok: true, warn: true, detail: `not running (${health.reason})` },
+      : health.foreign
+        ? {
+            name: "daemon",
+            ok: true,
+            warn: true,
+            detail: `not running here (${health.reason}); this host treats the profile as busy and refuses to launch its own browser until that daemon is gone`,
+          }
+        : { name: "daemon", ok: true, warn: true, detail: `not running (${health.reason})` },
   };
 }
 
@@ -199,6 +212,58 @@ export async function checkLock(cfg: BridgeConfig): Promise<DoctorItem> {
     ok: false,
     detail: `held: pid=${rec?.pid ?? "?"} command=${rec?.command ?? "?"} (${verdict.reason})`,
   };
+}
+
+/**
+ * A-108: best-effort, informational only. Detects the common shapes of a network-mounted path
+ * (macOS/Linux mounts under /Volumes, /net, /mnt; a raw Windows UNC path) so a human notices
+ * before hitting the cross-host lock/daemon/profile corruption this was built to guard against —
+ * it cannot detect every case (e.g. a Windows drive letter mapped to a share it itself re-exports,
+ * as observed live 2026-09-16) and never fails doctor on its own.
+ */
+export function looksNetworkMounted(path: string): boolean {
+  if (/^[\\/]{2}/.test(path)) return true; // UNC: \\server\share or //server/share
+  return /^[\\/](Volumes|net|mnt)[\\/]/i.test(path);
+}
+
+/** A-108 (Codex review, Medium): `looksNetworkMounted()` alone misses a mapped Windows drive
+ * letter (e.g. `S:\`) that is itself backed by a network share re-exported to other hosts — the
+ * exact real-world case reported. `Win32_LogicalDisk.DriveType` (4 = Network) or a non-empty
+ * `ProviderName` catches that. Best-effort: any failure (no PowerShell, WMI unavailable, no drive
+ * letter) is swallowed and treated as "can't tell", never as a false positive or a doctor failure. */
+async function isWindowsMappedNetworkDrive(path: string): Promise<boolean> {
+  const drive = /^([A-Za-z]):[\\/]/.exec(path)?.[1];
+  if (!drive) return false;
+  try {
+    const { stdout } = await run(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$d = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='${drive}:'"; "$($d.DriveType),$($d.ProviderName)"`,
+      ],
+      { timeout: 5000, windowsHide: true },
+    );
+    const [driveType, providerName] = stdout.trim().split(",");
+    return driveType === "4" || Boolean(providerName?.trim());
+  } catch {
+    return false;
+  }
+}
+
+export async function checkRuntimeLocation(runtimeDir: string): Promise<DoctorItem> {
+  const suspect =
+    looksNetworkMounted(runtimeDir) ||
+    (process.platform === "win32" && (await isWindowsMappedNetworkDrive(runtimeDir)));
+  return suspect
+    ? {
+        name: "runtime.location",
+        ok: true,
+        warn: true,
+        detail: `${runtimeDir} looks network-mounted; if another host shares it, set CHATGPT_BRIDGE_RUNTIME_DIR to a host-local path (A-108)`,
+      }
+    : { name: "runtime.location", ok: true, detail: runtimeDir };
 }
 
 export async function checkRuntimeDirs(cfg: BridgeConfig): Promise<DoctorItem[]> {
@@ -229,6 +294,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorItem[]> {
   items.push(...(await checkProfileDir(deps.cfg, daemonHealth)));
   items.push(await checkLock(deps.cfg));
   items.push(...(await checkRuntimeDirs(deps.cfg)));
+  items.push(await checkRuntimeLocation(deps.cfg.runtimeDir));
   if (deps.loginProbe) {
     const lockOk = items.find((i) => i.name === "lock")?.ok;
     const profileOk = items.find((i) => i.name === "profile.exists")?.ok;

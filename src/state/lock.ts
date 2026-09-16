@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, openSync, writeSync } from "node:fs";
 import { mkdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { hostname as osHostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 export interface LockRecord {
@@ -9,6 +10,9 @@ export interface LockRecord {
   token: string;
   command: string;
   requestId: string | null;
+  /** A-108: empty string for pre-A-108 lock files (treated as "unknown host", falls back to the
+   * old same-machine PID check below — never breaks locks a human already had on disk). */
+  hostname: string;
 }
 
 export interface LockDeps {
@@ -18,6 +22,8 @@ export interface LockDeps {
   processStartedAt: (pid: number) => Promise<Date | null>;
   now: () => Date;
   pid: number;
+  /** A-108: os.hostname() of this machine — see judgeStale's foreign-host branch. */
+  hostname: string;
   /** Empty / unparseable lock files younger than this are treated as live. */
   unparseableGraceMs: number;
 }
@@ -63,6 +69,7 @@ export const defaultLockDeps: LockDeps = {
   },
   now: () => new Date(),
   pid: process.pid,
+  hostname: osHostname(),
   unparseableGraceMs: 10_000,
 };
 
@@ -78,13 +85,18 @@ export async function readLockRecord(path: string): Promise<LockRecord | null> {
       token: parsed.token,
       command: typeof parsed.command === "string" ? parsed.command : "",
       requestId: typeof parsed.requestId === "string" ? parsed.requestId : null,
+      hostname: typeof parsed.hostname === "string" ? parsed.hostname : "",
     };
   } catch {
     return null;
   }
 }
 
-/** ADR-005 決定 2: stale if the PID is gone, or the PID was reused (created after the lock). */
+/** ADR-005 決定 2: stale if the PID is gone, or the PID was reused (created after the lock).
+ * A-108: `pid`/`isProcessAlive` are meaningless across machines (PID namespaces aren't shared) —
+ * if `runtime/` is shared over a network drive and another host holds the lock, treat it as live
+ * unconditionally rather than risk two hosts believing they both hold it (the exact failure a
+ * Mac session observed reclaiming a Windows host's live lock, 2026-09-16). */
 export async function judgeStale(
   path: string,
   record: LockRecord | null,
@@ -102,6 +114,12 @@ export async function judgeStale(
     }
   }
   if (record.pid === deps.pid) return { stale: false, reason: "held by this process" };
+  if (record.hostname && record.hostname !== deps.hostname) {
+    return {
+      stale: false,
+      reason: `held by pid ${record.pid} on host ${record.hostname} (different host; PID liveness can't be checked remotely, assuming live)`,
+    };
+  }
   if (!deps.isProcessAlive(record.pid))
     return { stale: true, reason: `pid ${record.pid} not running` };
   const created = await deps.processStartedAt(record.pid);
@@ -151,6 +169,7 @@ export class ProcessLock {
       token: randomBytes(16).toString("hex"),
       command,
       requestId,
+      hostname: this.deps.hostname,
     };
     const content = JSON.stringify(record);
     if (createExclusive(this.path, content)) return this.confirm(record);

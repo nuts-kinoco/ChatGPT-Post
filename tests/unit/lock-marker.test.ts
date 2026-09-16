@@ -26,6 +26,7 @@ function deps(over: Partial<LockDeps> = {}): LockDeps {
     processStartedAt: async () => null,
     now: () => new Date("2026-09-15T00:00:00Z"),
     pid: 4242,
+    hostname: "test-host",
     unparseableGraceMs: 10_000,
     ...over,
   };
@@ -104,6 +105,38 @@ describe("ProcessLock (ADR-005)", () => {
       deps({ processStartedAt: async () => new Date("2026-09-13T23:00:00Z") }),
     );
     expect(v2.stale).toBe(false);
+  });
+
+  it("A-108: a lock held by another hostname is never treated as stale, even if the pid doesn't exist here", async () => {
+    const p = join(dir, "bridge.lock");
+    await writeFile(
+      p,
+      JSON.stringify({
+        pid: 117856,
+        startedAt: "2026-09-16T00:00:00Z",
+        token: "win-host",
+        command: "run",
+        requestId: null,
+        hostname: "NAT-PC",
+      }),
+    );
+    // this machine has no pid 117856 at all — a naive same-host check would call it dead
+    const v = await judgeStale(
+      p,
+      await readLockRecord(p),
+      deps({ hostname: "mac-mini.local", isProcessAlive: () => false }),
+    );
+    expect(v.stale).toBe(false);
+    expect(v.reason).toContain("NAT-PC");
+    // a record with no hostname (pre-A-108 lock file) keeps the old same-machine behavior
+    const legacy = { pid: 999, startedAt: "", token: "t", command: "run", requestId: null };
+    await writeFile(p, JSON.stringify(legacy));
+    const v2 = await judgeStale(
+      p,
+      await readLockRecord(p),
+      deps({ hostname: "mac-mini.local", isProcessAlive: () => false }),
+    );
+    expect(v2.stale).toBe(true);
   });
 
   it("unparseable lock: recent = live, old = stale", async () => {

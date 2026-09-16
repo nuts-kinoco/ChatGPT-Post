@@ -20,10 +20,29 @@
  * support guidance says an idle session needs interaction roughly every 15–30 minutes, so the
  * worker now does a periodic `page.reload()` (see daemon-worker.ts) as a real activity signal,
  * skipped whenever the bridge lock is held so it can't collide with a command in flight.
+ *
+ * A-108: if `runtime/` sits on storage shared between hosts (observed live: this repo mounted on
+ * both a Windows machine and a Mac over the same SMB share), a single shared daemon.json is a
+ * write conflict waiting to happen — whichever host writes last wins, silently stranding the
+ * other's real, running daemon. Each host now owns a separate state file
+ * (`daemon.<hostname>.json`); no host ever writes, renames, or unlinks a path derived from any
+ * hostname but its own, which removes the read-modify-write race entirely rather than just
+ * detecting it after the fact. Detecting another host's daemon (to avoid launching a second,
+ * conflicting browser against the same profile) is a directory scan, never a write.
+ *
+ * Accepted residual risk (Codex review of A-108, reviews/cross-host-fix-codex.md): anyone who can
+ * write into a shared `runtime/` can drop a `daemon.<anyhost>.json` naming this host and matching
+ * this host's real pid, which this host's own `checkDaemon()` would then treat as "foreign,
+ * profile busy" — a denial of service, not a code-execution or data-exfiltration risk. There is no
+ * capability/token system guarding these files, matching the same single-trusted-user-PC
+ * assumption already accepted for the unauthenticated CDP port in A-103/A-104. This tool is built
+ * for one person's own machines, not a multi-tenant environment; do not extend it to one without
+ * revisiting this.
  */
 import { spawn } from "node:child_process";
-import { mkdir, readFile, unlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink } from "node:fs/promises";
 import { createServer } from "node:net";
+import { hostname as osHostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultLockDeps } from "../state/lock.js";
@@ -33,6 +52,7 @@ export interface DaemonState {
   port: number;
   startedAt: string;
   profileDir: string;
+  hostname: string;
 }
 
 export interface DaemonCfg {
@@ -41,8 +61,16 @@ export interface DaemonCfg {
   channel: "chrome" | "chromium";
 }
 
-export function daemonStatePath(cfg: DaemonCfg): string {
-  return join(cfg.runtimeDir, "daemon.json");
+/** Filesystem-safe encoding of a hostname for use in a filename. */
+function sanitizeHostname(h: string): string {
+  return h.replace(/[^A-Za-z0-9._-]/g, "_") || "unknown-host";
+}
+
+const DAEMON_FILE_RE = /^daemon\.(.+)\.json$/;
+
+/** This host's own daemon state file — the only one this process ever writes or deletes. */
+export function daemonStatePath(cfg: DaemonCfg, hostname: string = osHostname()): string {
+  return join(cfg.runtimeDir, `daemon.${sanitizeHostname(hostname)}.json`);
 }
 
 function isValidState(parsed: Partial<DaemonState>): parsed is DaemonState {
@@ -55,13 +83,15 @@ function isValidState(parsed: Partial<DaemonState>): parsed is DaemonState {
     parsed.port > 0 &&
     parsed.port <= 65535 &&
     typeof parsed.startedAt === "string" &&
-    typeof parsed.profileDir === "string"
+    typeof parsed.profileDir === "string" &&
+    typeof parsed.hostname === "string" &&
+    parsed.hostname.length > 0
   );
 }
 
-export async function readDaemonState(cfg: DaemonCfg): Promise<DaemonState | null> {
+async function readStateFile(path: string): Promise<DaemonState | null> {
   try {
-    const text = await readFile(daemonStatePath(cfg), "utf8");
+    const text = await readFile(path, "utf8");
     const parsed = JSON.parse(text) as Partial<DaemonState>;
     return isValidState(parsed) ? parsed : null;
   } catch {
@@ -69,9 +99,37 @@ export async function readDaemonState(cfg: DaemonCfg): Promise<DaemonState | nul
   }
 }
 
+/** This host's own state only. */
+export async function readDaemonState(cfg: DaemonCfg): Promise<DaemonState | null> {
+  return readStateFile(daemonStatePath(cfg));
+}
+
+/** Read-only directory scan for another host's daemon file naming the same profile — never reads
+ * (let alone writes) a specific other host's path directly, since the hostname on a shared drive
+ * isn't known in advance. */
+async function findForeignDaemon(cfg: DaemonCfg): Promise<DaemonState | null> {
+  const own = sanitizeHostname(osHostname());
+  let entries: string[];
+  try {
+    entries = await readdir(cfg.runtimeDir);
+  } catch {
+    return null;
+  }
+  for (const name of entries) {
+    const m = DAEMON_FILE_RE.exec(name);
+    if (!m || m[1] === own) continue;
+    const state = await readStateFile(join(cfg.runtimeDir, name));
+    if (state && state.profileDir === cfg.profileDir) return state;
+  }
+  return null;
+}
+
 export type DaemonHealth =
   | { alive: true; state: DaemonState }
-  | { alive: false; reason: string; staleState: DaemonState | null };
+  | { alive: false; foreign: false; reason: string; staleState: DaemonState | null }
+  // A-108: another host's daemon file names this profile. Its PID can't be checked remotely, so
+  // this is never "safe to start/attach here" — callers must treat the profile as busy.
+  | { alive: false; foreign: true; reason: string; state: DaemonState };
 
 /**
  * C-2 (Codex High): a bare `isProcessAlive(pid)` trusts PID reuse — some unrelated process that
@@ -91,12 +149,34 @@ async function verifyOwnedProcess(state: DaemonState): Promise<boolean> {
 
 export async function checkDaemon(cfg: DaemonCfg): Promise<DaemonHealth> {
   const state = await readDaemonState(cfg);
-  if (!state) return { alive: false, reason: "no daemon.json", staleState: null };
-  if (state.profileDir !== cfg.profileDir)
-    return { alive: false, reason: "daemon.json is for a different profile", staleState: state };
-  if (!(await verifyOwnedProcess(state)))
-    return { alive: false, reason: `pid ${state.pid} not running (or reused)`, staleState: state };
-  return { alive: true, state };
+  if (state) {
+    if (state.profileDir !== cfg.profileDir) {
+      return {
+        alive: false,
+        foreign: false,
+        reason: "daemon.json is for a different profile",
+        staleState: state,
+      };
+    }
+    if (await verifyOwnedProcess(state)) return { alive: true, state };
+    // fall through: our own record is stale (dead/reused pid) — still check for a foreign one
+    // below before declaring the profile fully free.
+  }
+  const foreign = await findForeignDaemon(cfg);
+  if (foreign) {
+    return {
+      alive: false,
+      foreign: true,
+      reason: `a daemon on host "${foreign.hostname}" already uses this profile`,
+      state: foreign,
+    };
+  }
+  return {
+    alive: false,
+    foreign: false,
+    reason: state ? `pid ${state.pid} not running (or reused)` : "no daemon.json",
+    staleState: state,
+  };
 }
 
 /** A free loopback TCP port chosen by the OS, so `daemon start` never collides with (or blindly
@@ -116,6 +196,7 @@ async function pickFreePort(): Promise<number> {
 }
 
 export async function stopDaemon(cfg: DaemonCfg): Promise<{ ok: boolean; detail: string }> {
+  // A-108: only ever this host's own path — structurally impossible to touch another host's file.
   const state = await readDaemonState(cfg);
   if (!state) return { ok: true, detail: "no daemon running" };
   const owned = await verifyOwnedProcess(state);
@@ -167,11 +248,20 @@ export async function startDaemon(
 > {
   const health = await checkDaemon(cfg);
   if (health.alive) return { ok: true, state: health.state, alreadyRunning: true };
+  if (health.foreign) {
+    // A-108: another host already has one for this profile — starting our own here would race
+    // it for the same Chrome profile lock. Never write here in that case.
+    return {
+      ok: false,
+      cause: `${health.reason}; refusing to start here (would race it for the same profile). If it's really gone, run "daemon stop" on that host, or set CHATGPT_BRIDGE_RUNTIME_DIR to a directory local to each host instead of sharing this one`,
+    };
+  }
 
+  const hostname = osHostname();
   const port = Number(process.env.CHATGPT_BRIDGE_DAEMON_PORT ?? (await pickFreePort()));
   await mkdir(cfg.runtimeDir, { recursive: true });
   const workerPath = fileURLToPath(new URL("./daemon-worker.js", import.meta.url));
-  const logPath = join(cfg.runtimeDir, "daemon.log");
+  const logPath = join(cfg.runtimeDir, `daemon.${sanitizeHostname(hostname)}.log`);
   const { open } = await import("node:fs/promises");
   const logFd = await open(logPath, "a");
   const child = spawn(
@@ -185,7 +275,9 @@ export async function startDaemon(
       "--port",
       String(port),
       "--state-path",
-      daemonStatePath(cfg),
+      daemonStatePath(cfg, hostname),
+      "--hostname",
+      hostname,
       "--lock-path",
       join(cfg.runtimeDir, "locks", "bridge.lock"),
       ...(process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS

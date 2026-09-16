@@ -114,9 +114,16 @@ export function playwrightBrowser(cfg: BridgeConfig): BrowserPort & { session: B
     // launch() below will attach to it over CDP instead of starting a fresh browser. Applies to
     // every caller (run/worker via RunController, and login/doctor/inspect-ui via withBrowser),
     // since both drive the browser exclusively through this BrowserPort.
+    // A-108 (Codex review, High): a *foreign* daemon (another host, on shared runtime/) must be
+    // treated as busy too — its Chrome may hold the profile in a way an SMB-mounted lockfile check
+    // can't reliably see, so silently falling through to checkProfileFree()/launch() below would
+    // risk two hosts' Chrome instances colliding on the same profile (the exact class of incident
+    // A-101 was about). Never attach to it either — its CDP port is on that host, unreachable here.
     checkProfileFree: async () => {
       const daemon = await checkDaemon(daemonCfg);
       if (daemon.alive) return { free: true };
+      if (daemon.foreign)
+        return { free: false, cause: `${daemon.reason} (cannot verify or use it from here)` };
       return checkProfileFree(cfg.profileDir);
     },
     launch: async (opts) => {
@@ -125,6 +132,10 @@ export function playwrightBrowser(cfg: BridgeConfig): BrowserPort & { session: B
         const attached = await session.attach(`http://127.0.0.1:${daemon.state.port}`, opts);
         if (attached.ok) return attached;
         // Daemon looked alive but attach failed (e.g. port stopped answering); fall back below.
+      } else if (daemon.foreign) {
+        // Belt-and-suspenders: checkProfileFree() above already refuses this case, but launch()
+        // must never be called out of order and silently proceed if it somehow is.
+        return { ok: false, cause: `${daemon.reason} (cannot verify or use it from here)` };
       }
       return session.launch(opts);
     },

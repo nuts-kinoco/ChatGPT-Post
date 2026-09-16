@@ -16,6 +16,12 @@ export interface LaunchOptions {
   onCrash: (cause: string) => void;
 }
 
+/** A-108: macOS Chrome encrypts cookies with the OS Keychain by default, and the key differs by
+ * how Chrome was invoked — a mismatch between this launch and scripts/manual-login.mjs's manual
+ * fallback made a real login look like AUTH_REQUIRED here. No-op on other platforms. */
+const DARWIN_COOKIE_STORE_ARGS =
+  process.platform === "darwin" ? ["--password-store=basic", "--use-mock-keychain"] : [];
+
 /** ADR-002: dedicated persistent profile, headed, no stealth/UA arguments. */
 export class BrowserSession {
   private context: BrowserContext | null = null;
@@ -62,6 +68,7 @@ export class BrowserSession {
         headless: false,
         viewport: null,
         acceptDownloads: true,
+        args: DARWIN_COOKIE_STORE_ARGS,
       });
       this.context = context;
       this.attached = false;

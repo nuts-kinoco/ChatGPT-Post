@@ -5,6 +5,7 @@
  * ready, then stays alive until stopped. Spawned detached so it survives its parent CLI exiting.
  */
 import { access, rename, unlink, writeFile } from "node:fs/promises";
+import { hostname as osHostname } from "node:os";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
 
@@ -16,6 +17,7 @@ const { values } = parseArgs({
     "state-path": { type: "string" },
     "lock-path": { type: "string" },
     "keepalive-ms": { type: "string" },
+    hostname: { type: "string" },
   },
 });
 if (!values["profile-dir"] || !values["state-path"]) {
@@ -27,6 +29,10 @@ const statePath: string = values["state-path"];
 const lockPath = values["lock-path"];
 const channel = values.channel === "chromium" ? "chromium" : "chrome";
 const port = Number(values.port ?? "9876");
+// A-108: caller (daemon.ts) passes its own os.hostname() explicitly rather than this process
+// computing it, so the recorded owner is unambiguous even if start and worker ever ran on
+// different hosts for some reason.
+const hostname = values.hostname ?? osHostname();
 // A-105: ChatGPT's own guidance is that an idle session needs interaction roughly every
 // 15-30 minutes; default to the low end of that window with margin to spare.
 const keepAliveMs = Number(values["keepalive-ms"] ?? 15 * 60 * 1000);
@@ -42,6 +48,9 @@ const context = await chromium.launchPersistentContext(profileDir, {
     "--start-minimized",
     "--no-first-run",
     "--no-default-browser-check",
+    // A-108: keep cookie storage consistent with scripts/manual-login.mjs and browser/launch.ts
+    // on macOS (Keychain-encrypted cookies from one invocation aren't readable by another).
+    ...(process.platform === "darwin" ? ["--password-store=basic", "--use-mock-keychain"] : []),
   ],
 });
 const page = context.pages()[0] ?? (await context.newPage());
@@ -95,6 +104,7 @@ await writeFile(
     port,
     startedAt: new Date().toISOString(),
     profileDir,
+    hostname,
   }),
   "utf8",
 );
