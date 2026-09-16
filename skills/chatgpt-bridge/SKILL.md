@@ -48,3 +48,4 @@ description: ChatGPT Web（Pro）に 1 往復の質問・レビュー・調査�
 - **プロファイル・ブラウザ・ログインセッションは同時に 1 つしか無い専有リソース**。他のセッション（別の Claude Code / Codex / 人間の手動操作）が同時に使っている可能性を常に想定する。`chatgpt-bridge login` を「動作確認のため」だけの目的で試しに実行しない — 人間が手動ログイン中のブラウザと衝突してクラッシュや認証切れを引き起こし得る。`doctor` の `login` が NG のときだけ、人間に断ってから使う
 - daemon 稼働中にブラウザで手動ログインし直す必要があるときは、先に `chatgpt-bridge daemon stop`（プロファイルは 1 つの Chrome しか持てない）→ 手動ログイン → `chatgpt-bridge daemon start` の順で
 - **このリポジトリフォルダ自体を複数ホスト（Win/Mac 等）で共有マウントしない**（`node_modules` のネイティブバイナリが OS/アーキテクチャ依存のため壊れる。実際に Mac 側の `npm install` が Windows 側のバイナリを上書きした事故が発生済み）。各ホストは git 経由（pull/push）でのみ同期する別クローンを使う。どうしても共有せざるを得ない場合は、`CHATGPT_BRIDGE_RUNTIME_DIR` を各ホスト固有のローカルパスに設定すること（`runtime/`＝profile・lock・daemon.json も分離される。未設定だと `doctor` の `runtime.location` が warn を出す）
+- Cloudflare の「私はロボットではありません」チェックが出ることがある（特に新しいプロファイルで頻発。ホストによって差が出て構わない）。**ブリッジは自動で突破しない** — 可視ブラウザに出ているので人間がその場でクリックして通過する。何度か通過するとプロファイルに信頼履歴が付き頻度が下がる
