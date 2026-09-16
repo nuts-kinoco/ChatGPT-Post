@@ -10,7 +10,12 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(fileURLToPath(import.meta.url), "..", "..");
-const profileDir = process.env.CHATGPT_BRIDGE_PROFILE_DIR ?? join(repoRoot, "runtime", "profile");
+// Mirror cli/config.ts's derivation exactly (CHATGPT_BRIDGE_PROFILE_DIR, else
+// <runtimeDir>/profile, where runtimeDir is CHATGPT_BRIDGE_RUNTIME_DIR or <repo>/runtime) — this
+// script used to ignore CHATGPT_BRIDGE_RUNTIME_DIR entirely, so setting only that env var made it
+// open a different profile than `doctor`/`run` use (reported live on a shared-runtime Mac setup).
+const runtimeDir = process.env.CHATGPT_BRIDGE_RUNTIME_DIR ?? join(repoRoot, "runtime");
+const profileDir = process.env.CHATGPT_BRIDGE_PROFILE_DIR ?? join(runtimeDir, "profile");
 
 const candidates =
   process.platform === "win32"
