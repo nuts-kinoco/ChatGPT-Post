@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { access, constants, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { checkDaemon, type DaemonHealth } from "../browser/daemon.js";
 import { checkProfileFree, checkProfilePath } from "../browser/profile-guard.js";
 import type { BridgeConfig } from "../cli/config.js";
 import { defaultLockDeps, judgeStale, readLockRecord } from "../state/lock.js";
@@ -87,7 +88,10 @@ export async function checkBrowserExecutable(cfg: BridgeConfig): Promise<DoctorI
   }
 }
 
-export async function checkProfileDir(cfg: BridgeConfig): Promise<DoctorItem[]> {
+export async function checkProfileDir(
+  cfg: BridgeConfig,
+  daemon: DaemonHealth,
+): Promise<DoctorItem[]> {
   const items: DoctorItem[] = [];
   const guard = await checkProfilePath(cfg.profileDir);
   items.push({
@@ -106,10 +110,16 @@ export async function checkProfileDir(cfg: BridgeConfig): Promise<DoctorItem[]> 
     });
   }
   const occ = await checkProfileFree(cfg.profileDir);
+  // A-103: with a daemon running, the profile lockfile is expected to be held by it — that's not
+  // contention, it's the daemon doing its job.
   items.push({
     name: "profile.free",
-    ok: occ.free,
-    detail: occ.free ? "not held by another process" : occ.cause,
+    ok: occ.free || daemon.alive,
+    detail: occ.free
+      ? "not held by another process"
+      : daemon.alive
+        ? `held by daemon (pid=${daemon.state.pid}, expected)`
+        : occ.cause,
   });
   if (process.platform === "win32") {
     try {
@@ -127,11 +137,13 @@ export async function checkProfileDir(cfg: BridgeConfig): Promise<DoctorItem[]> 
       const hits = stdout.split(/\r?\n/).filter((l) => l.toLowerCase().includes(needle));
       items.push({
         name: "profile.processes",
-        ok: hits.length === 0,
+        ok: hits.length === 0 || daemon.alive,
         detail:
           hits.length === 0
             ? "no browser process uses this profile"
-            : `${hits.length} browser process(es) use this profile`,
+            : daemon.alive
+              ? `${hits.length} browser process(es) use this profile (daemon, expected)`
+              : `${hits.length} browser process(es) use this profile`,
       });
     } catch {
       items.push({
@@ -143,6 +155,26 @@ export async function checkProfileDir(cfg: BridgeConfig): Promise<DoctorItem[]> 
     }
   }
   return items;
+}
+
+export async function checkDaemonStatus(
+  cfg: BridgeConfig,
+): Promise<{ item: DoctorItem; health: DaemonHealth }> {
+  const health = await checkDaemon({
+    runtimeDir: cfg.runtimeDir,
+    profileDir: cfg.profileDir,
+    channel: cfg.channel,
+  });
+  return {
+    health,
+    item: health.alive
+      ? {
+          name: "daemon",
+          ok: true,
+          detail: `running: pid=${health.state.pid} port=${health.state.port}`,
+        }
+      : { name: "daemon", ok: true, warn: true, detail: `not running (${health.reason})` },
+  };
 }
 
 export async function checkLock(cfg: BridgeConfig): Promise<DoctorItem> {
@@ -192,7 +224,9 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorItem[]> {
   items.push(await checkNode());
   items.push(await checkPlaywright());
   items.push(await checkBrowserExecutable(deps.cfg));
-  items.push(...(await checkProfileDir(deps.cfg)));
+  const { item: daemonItem, health: daemonHealth } = await checkDaemonStatus(deps.cfg);
+  items.push(daemonItem);
+  items.push(...(await checkProfileDir(deps.cfg, daemonHealth)));
   items.push(await checkLock(deps.cfg));
   items.push(...(await checkRuntimeDirs(deps.cfg)));
   if (deps.loginProbe) {

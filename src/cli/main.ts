@@ -5,6 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { checkDaemon, startDaemon, stopDaemon } from "../browser/daemon.js";
+import { checkProfilePath } from "../browser/profile-guard.js";
 import { buildBundle } from "../bundle/bundle.js";
 import { ChatGptPage } from "../chatgpt/page.js";
 import { EXIT_CODES } from "../contracts/types.js";
@@ -33,6 +35,11 @@ commands:
          [--max-bytes <n>] [--diff <gitref>]
                              リポジトリの一部を 1 つの Markdown（ツリー + fence 付き本文 [+ git diff]）に
                              まとめる。秘密らしい内容があれば生成を拒否する（ブラウザは使わない）
+  daemon start | stop | status
+                             バックグラウンドでブラウザを開いたままにする（A-103）。開始しておくと
+                             run/login/doctor/inspect-ui はこれを使い回し、毎回の起動・終了を避ける。
+                             最小化して起動するので作業の邪魔にはならない。ウィンドウを手動で閉じた
+                             場合は daemon stop で状態ファイルを片付けてから daemon start してください
   inspect-ui [--dump-dom] [--walk-effort]
                              UI 要素の検出状況を出力する（送信しない）。--walk-effort は
                              思考量スライダーを全段階なめてラベルを記録し、元の段階に戻す
@@ -354,6 +361,64 @@ async function cmdUsage(cfg: BridgeConfig, json: boolean, queue?: string): Promi
   return 0;
 }
 
+async function cmdDaemon(cfg: BridgeConfig, action: string | undefined): Promise<number> {
+  const daemonCfg = {
+    runtimeDir: cfg.runtimeDir,
+    profileDir: cfg.profileDir,
+    channel: cfg.channel,
+  };
+  // C-3 (Codex High): daemon start/stop must not bypass the same profile-path safety border and
+  // bridge-lock exclusion every other command goes through.
+  if (action === "start" || action === "stop") {
+    const guard = await checkProfilePath(cfg.profileDir);
+    if (!guard.ok) {
+      process.stderr.write(`INVALID_CONFIG: ${guard.cause}\n`);
+      return EXIT_CODES.invalidInput;
+    }
+    const logger = createLogger(cfg.logLevel);
+    const ports = buildPorts(cfg, logger, true);
+    const lock = await ports.lock.acquire(`daemon-${action}`, null);
+    if (lock.kind === "busy") {
+      logger.stderr(`ALREADY_RUNNING: ${lock.cause}`);
+      return EXIT_CODES.beforeBrowser;
+    }
+    try {
+      if (action === "start") {
+        const r = await startDaemon(daemonCfg);
+        if (!r.ok) {
+          process.stderr.write(`DAEMON_START_FAILED: ${r.cause}\n`);
+          return 1;
+        }
+        process.stdout.write(
+          `${r.alreadyRunning ? "既に起動しています" : "起動しました"}: pid=${r.state.pid} port=${r.state.port}\n`,
+        );
+        return 0;
+      }
+      const r = await stopDaemon(daemonCfg);
+      process.stdout.write(`${r.detail}\n`);
+      return r.ok ? 0 : 1;
+    } finally {
+      await ports.lock.release();
+    }
+  }
+  switch (action) {
+    case "status": {
+      const h = await checkDaemon(daemonCfg);
+      if (h.alive) {
+        process.stdout.write(
+          `running: pid=${h.state.pid} port=${h.state.port} since=${h.state.startedAt}\n`,
+        );
+        return 0;
+      }
+      process.stdout.write(`not running: ${h.reason}\n`);
+      return 1;
+    }
+    default:
+      process.stderr.write("daemon requires a subcommand: start | stop | status\n");
+      return EXIT_CODES.invalidInput;
+  }
+}
+
 async function cmdInspectUi(
   cfg: BridgeConfig,
   dumpDom: boolean,
@@ -450,6 +515,8 @@ export async function main(argv: string[]): Promise<number> {
       });
     case "usage":
       return cmdUsage(cfg, values.json ?? false, values.queue);
+    case "daemon":
+      return cmdDaemon(cfg, positionals[1]);
     case "inspect-ui":
       return cmdInspectUi(
         cfg,

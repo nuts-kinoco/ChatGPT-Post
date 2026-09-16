@@ -1,6 +1,7 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { checkDaemon } from "../browser/daemon.js";
 import { BrowserSession } from "../browser/launch.js";
 import { checkProfileFree, checkProfilePath } from "../browser/profile-guard.js";
 import { ChatGptPage } from "../chatgpt/page.js";
@@ -98,14 +99,35 @@ export function fileLock(cfg: BridgeConfig): LockPort & { raw: ProcessLock } {
 
 export function playwrightBrowser(cfg: BridgeConfig): BrowserPort & { session: BrowserSession } {
   const session = new BrowserSession({ profileDir: cfg.profileDir, channel: cfg.channel });
+  const daemonCfg = {
+    runtimeDir: cfg.runtimeDir,
+    profileDir: cfg.profileDir,
+    channel: cfg.channel,
+  };
   return {
     session,
     checkProfilePath: async () => {
       const v = await checkProfilePath(cfg.profileDir);
       return v.ok ? { ok: true } : { ok: false, cause: v.cause };
     },
-    checkProfileFree: () => checkProfileFree(cfg.profileDir),
-    launch: (opts) => session.launch(opts),
+    // A-103: a healthy daemon legitimately holds the profile lockfile, so it isn't contention —
+    // launch() below will attach to it over CDP instead of starting a fresh browser. Applies to
+    // every caller (run/worker via RunController, and login/doctor/inspect-ui via withBrowser),
+    // since both drive the browser exclusively through this BrowserPort.
+    checkProfileFree: async () => {
+      const daemon = await checkDaemon(daemonCfg);
+      if (daemon.alive) return { free: true };
+      return checkProfileFree(cfg.profileDir);
+    },
+    launch: async (opts) => {
+      const daemon = await checkDaemon(daemonCfg);
+      if (daemon.alive) {
+        const attached = await session.attach(`http://127.0.0.1:${daemon.state.port}`, opts);
+        if (attached.ok) return attached;
+        // Daemon looked alive but attach failed (e.g. port stopped answering); fall back below.
+      }
+      return session.launch(opts);
+    },
     capture: (dir) => session.capture(dir),
     stopTrace: (dir) => session.stopTrace(dir),
     close: () => session.close(),

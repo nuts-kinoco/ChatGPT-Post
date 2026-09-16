@@ -25,7 +25,7 @@ description: ChatGPT Web（Pro）に 1 往復の質問・レビュー・調査�
    - `preset`: レビュー / 調査 `high`（1 ファイル規模なら `medium` で同品質）、定型変換 `instant`、`pro` は最後の手段（週次上限）
    - 本文は 20,000 文字まで。長い材料は `attachments`
    - 追記したいときは `"newChat": false, "conversationUrl": "<前回の result.json の conversationUrl>"`
-4. **実行**: `chatgpt-bridge run --request <path> --json`（30〜120 s。ブラウザが開く。**触らない**）
+4. **実行**: `chatgpt-bridge run --request <path> --json`（30〜120 s）。`chatgpt-bridge daemon start` 済みなら常駐ブラウザ（最小化）を使い回すので毎回の開閉が無く、無い場合は毎回ブラウザを開閉する。いずれも**触らない**
 5. **判定**（`exitCode`）:
    - `0` → `response.md` を読む。`images[]` があれば `images/` に生成画像
    - `3` → **人間に知らせて止まる**（ログイン / CAPTCHA / 上限）。自動再試行しない
@@ -45,3 +45,4 @@ description: ChatGPT Web（Pro）に 1 往復の質問・レビュー・調査�
 - ブリッジの実行中にブラウザを操作しない
 - 「ChatGPT の回答」は一次情報ではない。URL や数値は確認してから採用する
 - **プロファイル・ブラウザ・ログインセッションは同時に 1 つしか無い専有リソース**。他のセッション（別の Claude Code / Codex / 人間の手動操作）が同時に使っている可能性を常に想定する。`chatgpt-bridge login` を「動作確認のため」だけの目的で試しに実行しない — 人間が手動ログイン中のブラウザと衝突してクラッシュや認証切れを引き起こし得る。`doctor` の `login` が NG のときだけ、人間に断ってから使う
+- daemon 稼働中にブラウザで手動ログインし直す必要があるときは、先に `chatgpt-bridge daemon stop`（プロファイルは 1 つの Chrome しか持てない）→ 手動ログイン → `chatgpt-bridge daemon start` の順で
