@@ -4,6 +4,7 @@ import {
   judge,
   type Observation,
 } from "../chatgpt/completion.js";
+import { CHATGPT_ORIGIN, CONVERSATION_PATH_RE } from "../chatgpt/page.js";
 import { slugMatches } from "../chatgpt/selectors.js";
 import { uploadBudgetMs } from "../contracts/attachments.js";
 import type {
@@ -291,7 +292,9 @@ export class RunController {
         const n = await this.withPhaseLimit(
           req.newChat === false && req.conversationUrl
             ? chatgpt.openConversation(req.conversationUrl)
-            : chatgpt.openNewChat(),
+            : req.newChat !== false && req.project
+              ? chatgpt.openProject(req.project)
+              : chatgpt.openNewChat(),
         );
         if (n.kind === "ok") return { type: "NEW_CHAT_OK" };
         if (n.kind === "failed") return { type: "NEW_CHAT_FAILED", cause: n.cause };
@@ -540,8 +543,18 @@ export class RunController {
       this.history.push(obs);
       if (this.history.length > 4000) this.history.splice(0, this.history.length - 4000);
       // The URL right after dispatch may be a transient client id (e.g. /c/WEB:...); keep the latest.
+      // A-106: a chat started inside a Project (openProject) lives under /g/g-p-.../c/<id>, not
+      // the plain /c/<id> — CONVERSATION_PATH_RE covers both.
+      // Codex review of A-106, High: origin must be checked too, not just the pathname shape —
+      // otherwise a same-shaped path on a different origin would be captured as conversationUrl.
       const url = await this.ports.chatgpt.currentUrl();
-      if (url.startsWith("https://chatgpt.com/c/")) this.conversationUrl = url;
+      try {
+        const u = new URL(url);
+        if (u.origin === CHATGPT_ORIGIN && CONVERSATION_PATH_RE.test(u.pathname))
+          this.conversationUrl = url;
+      } catch {
+        /* not a well-formed URL; ignore */
+      }
       const verdict = judge(this.history, baseline, cfg);
       const wasObserving = this.observing;
       await this.dispatch(verdict);

@@ -196,6 +196,63 @@ describe("result.json schema + invariants (AC-007)", () => {
         .valid,
     ).toBe(false);
   });
+  it("1.3 (A-106): project is only valid with newChat true, on chatgpt.com, and mutually exclusive with conversationUrl", () => {
+    const projectUrl =
+      "https://chatgpt.com/g/g-p-6aa226cca960819188ec3e6b03c25580-pixivvault/project";
+    expect(validateRequest({ ...okReq, schemaVersion: "1.3", project: projectUrl }).valid).toBe(
+      true,
+    );
+    // accepted regardless of declared schemaVersion, same as model/attachments (documentation only)
+    expect(validateRequest({ ...okReq, project: projectUrl }).valid).toBe(true);
+    // newChat: false + project is rejected (project only makes sense when starting a new chat)
+    expect(
+      validateRequest({
+        ...okReq,
+        newChat: false,
+        conversationUrl: "https://chatgpt.com/c/abc1234",
+        project: projectUrl,
+      }).valid,
+    ).toBe(false);
+    // project and conversationUrl together are rejected even with newChat: true (conversationUrl
+    // requires newChat: false, so this is really the same "not both" rule from the other side)
+    expect(
+      validateRequest({
+        ...okReq,
+        newChat: true,
+        project: projectUrl,
+        conversationUrl: "https://chatgpt.com/c/abc1234",
+      }).valid,
+    ).toBe(false);
+    // wrong origin, wrong path shape, and a plain conversation URL are all rejected
+    expect(
+      validateRequest({ ...okReq, project: "https://evil.example/g/g-p-x/project" }).valid,
+    ).toBe(false);
+    expect(validateRequest({ ...okReq, project: "https://chatgpt.com/g/g-p-x" }).valid).toBe(false);
+    expect(
+      validateRequest({
+        ...okReq,
+        project: "https://chatgpt.com/c/6aa8f9e7-f47c-83e8-9f20-e6e71c33026f",
+      }).valid,
+    ).toBe(false);
+  });
+  it("1.3 (A-106): conversationUrl also accepts the Project-nested conversation form", () => {
+    expect(
+      validateRequest({
+        ...okReq,
+        newChat: false,
+        conversationUrl:
+          "https://chatgpt.com/g/g-p-6aa226cca960819188ec3e6b03c25580-pixivvault/c/6aaa4a53-70e8-83e8-b14f-c5c99647ca3e",
+      }).valid,
+    ).toBe(true);
+    // same nested shape on a different origin must still be rejected
+    expect(
+      validateRequest({
+        ...okReq,
+        newChat: false,
+        conversationUrl: "https://evil.example/g/g-p-x/c/y",
+      }).valid,
+    ).toBe(false);
+  });
   it("1.1: model is optional in request (default current) and rejects unknown models", () => {
     expect(validateRequest({ ...okReq, schemaVersion: "1.1" }).valid).toBe(true);
     expect(validateRequest({ ...okReq, schemaVersion: "1.1", model: "gpt-5.5" }).valid).toBe(true);

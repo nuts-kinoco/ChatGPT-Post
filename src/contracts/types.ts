@@ -18,7 +18,7 @@ export const OBSERVED_MODELS = ["latest", "gpt-5.6-sol", "gpt-5.5"] as const;
 export type ObservedModel = (typeof OBSERVED_MODELS)[number];
 
 export interface BridgeRequest {
-  schemaVersion: "1.0" | "1.1" | "1.2";
+  schemaVersion: "1.0" | "1.1" | "1.2" | "1.3";
   requestId: string;
   promptFile: string;
   preset: RequestedPreset;
@@ -29,6 +29,10 @@ export interface BridgeRequest {
   newChat: boolean;
   /** 1.2 (A-096): required when newChat is false. */
   conversationUrl?: string;
+  /** 1.3 (A-106): only valid when newChat is true. Opens this ChatGPT Project's home
+   * (`https://chatgpt.com/g/g-p-<id>-<slug>/project`) and starts the new chat there instead of
+   * at the plain chatgpt.com root, so it lands inside the project. */
+  project?: string;
   timeoutMs?: number;
   responseFormat: "markdown";
 }

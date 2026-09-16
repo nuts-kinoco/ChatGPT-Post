@@ -25,6 +25,7 @@ description: ChatGPT Web（Pro）に 1 往復の質問・レビュー・調査�
    - `preset`: レビュー / 調査 `high`（1 ファイル規模なら `medium` で同品質）、定型変換 `instant`、`pro` は最後の手段（週次上限）
    - 本文は 20,000 文字まで。長い材料は `attachments`
    - 追記したいときは `"newChat": false, "conversationUrl": "<前回の result.json の conversationUrl>"`
+   - リポジトリ専用の ChatGPT Project にまとめたいときは `newChat: true` のまま `"project": "<Project ホーム URL>"`（サイドバーの鉛筆アイコン「プロジェクトのホームを開く」から取得、`https://chatgpt.com/g/g-p-.../project`）。以後その会話に追記する場合の `conversationUrl` は `https://chatgpt.com/g/g-p-.../c/<id>`（通常の `/c/<id>` とは別形式）になる
 4. **実行**: `chatgpt-bridge run --request <path> --json`（30〜120 s）。`chatgpt-bridge daemon start` 済みなら常駐ブラウザ（最小化）を使い回すので毎回の開閉が無く、無い場合は毎回ブラウザを開閉する。いずれも**触らない**
 5. **判定**（`exitCode`）:
    - `0` → `response.md` を読む。`images[]` があれば `images/` に生成画像

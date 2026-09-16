@@ -45,6 +45,14 @@ import {
 } from "./selectors.js";
 
 export const CHATGPT_ORIGIN = "https://chatgpt.com";
+/**
+ * A-106: a conversation's pathname is either the plain `/c/<id>` or, when started inside a
+ * Project (openProject), nested under it: `/g/g-p-<hash>-<slug>/c/<id>` — verified live
+ * 2026-09-16 (clicking a project chat lands on the nested form). Keep schemas/request.schema.json
+ * §conversationUrl in sync with this pattern by hand (JSON can't import it).
+ */
+export const CONVERSATION_PATH_RE =
+  /^(?:\/c\/[A-Za-z0-9-]+|\/g\/g-p-[A-Za-z0-9-]+\/c\/[A-Za-z0-9-]+)$/;
 const LOGIN_HOSTS = [
   /(^|\.)auth\.openai\.com$/i,
   /(^|\.)auth0\.openai\.com$/i,
@@ -199,7 +207,7 @@ export class ChatGptPage implements ChatGptPort {
     } catch {
       return { kind: "failed", cause: "conversation_not_found" };
     }
-    if (target.origin !== CHATGPT_ORIGIN || !/^\/c\/[A-Za-z0-9-]+$/.test(target.pathname)) {
+    if (target.origin !== CHATGPT_ORIGIN || !CONVERSATION_PATH_RE.test(target.pathname)) {
       return { kind: "failed", cause: "conversation_not_found" };
     }
     try {
@@ -229,6 +237,57 @@ export class ChatGptPage implements ChatGptPort {
       await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 250);
     }
     return { kind: "retry", cause: "composer did not appear in the conversation" };
+  }
+
+  /**
+   * A-106: opens a ChatGPT Project's home page and waits for its own composer (same
+   * `#prompt-textarea`, reused as-is — verified live 2026-09-16). Submitting from there starts a
+   * new chat inside that project instead of at the plain chatgpt.com root.
+   */
+  async openProject(
+    url: string,
+  ): Promise<
+    | { kind: "ok" }
+    | { kind: "failed"; cause: "project_not_found" | "generating" | "composer_not_empty" }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  > {
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      return { kind: "failed", cause: "project_not_found" };
+    }
+    if (
+      target.origin !== CHATGPT_ORIGIN ||
+      !/^\/g\/g-p-[A-Za-z0-9-]+\/project$/.test(target.pathname)
+    ) {
+      return { kind: "failed", cause: "project_not_found" };
+    }
+    try {
+      await this.page.goto(`${target.origin}${target.pathname}`, { waitUntil: "domcontentloaded" });
+    } catch (err) {
+      return { kind: "retry", cause: (err as Error).message };
+    }
+    const deadline = Date.now() + (this.opts.newChatTimeoutMs ?? 30_000);
+    while (Date.now() < deadline) {
+      const composer = await probe(this.page, "composer", this.sel);
+      if (composer.found && composer.locator) {
+        const now = new URL(this.page.url());
+        // A redirect away from the project (e.g. access revoked, project deleted) must never
+        // receive the prompt — same fail-closed pattern as openConversation's Codex P6-1 fix.
+        if (now.origin !== CHATGPT_ORIGIN || now.pathname !== target.pathname) {
+          return { kind: "failed", cause: "project_not_found" };
+        }
+        if (await exists(this.page, "stopButton", this.sel))
+          return { kind: "failed", cause: "generating" };
+        const text = (await composer.locator.innerText().catch(() => "")).trim();
+        if (text.length > 0) return { kind: "failed", cause: "composer_not_empty" };
+        return { kind: "ok" };
+      }
+      await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 250);
+    }
+    return { kind: "retry", cause: "composer did not appear on the project page" };
   }
 
   async openNewChat(): Promise<

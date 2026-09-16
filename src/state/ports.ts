@@ -131,6 +131,15 @@ export interface ChatGptPort {
     | { kind: "retry"; cause: string }
     | { kind: "dom_unexpected"; element: string; tried: string[] }
   >;
+  /** A-106: opens a ChatGPT Project's home and starts the new chat there (newChat: true + project). */
+  openProject(
+    url: string,
+  ): Promise<
+    | { kind: "ok" }
+    | { kind: "failed"; cause: NewChatFailure }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  >;
   /** Selects model (in-page radio) then effort (persisted slider); observes both; fails closed. */
   resolvePreset(requested: RequestedPreset, model: RequestedModel): Promise<PresetResolution>;
   /** Types the prompt, then attaches files and waits for their upload (send button re-enabled). */

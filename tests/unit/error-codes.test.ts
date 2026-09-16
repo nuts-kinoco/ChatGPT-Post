@@ -47,6 +47,7 @@ function harness(): Harness {
     navigateAndObserveAuth: async () => ({ kind: "AUTH_OK" }),
     openNewChat: async () => ({ kind: "ok" }),
     openConversation: async () => ({ kind: "ok" }),
+    openProject: async () => ({ kind: "ok" }),
     resolvePreset: async () => ({
       kind: "observed",
       preset: "high",

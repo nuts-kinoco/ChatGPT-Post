@@ -59,6 +59,7 @@ function fake(
     navigateAndObserveAuth: async () => ({ kind: "AUTH_OK" }),
     openNewChat: async () => ({ kind: "ok" }),
     openConversation: async () => ({ kind: "ok" }),
+    openProject: async () => ({ kind: "ok" }),
     resolvePreset: async () => ({
       kind: "observed",
       preset: "pro",
@@ -401,5 +402,22 @@ describe("RunController", () => {
     expect(out.result?.error?.cause).toContain("Authorization: [REDACTED]");
     expect(out.result?.error?.message).not.toMatch(/SECRET/);
     expect(out.result?.warnings.join("\n")).toContain("[REDACTED]");
+  });
+
+  // Codex review of A-106, High: pathname-shape alone isn't enough — origin must match too, or a
+  // same-shaped path on another origin would be captured as conversationUrl.
+  it("A-106: conversationUrl capture accepts the Project-nested form but rejects a foreign origin", async () => {
+    const nested = await run(
+      fake({
+        currentUrl: async () =>
+          "https://chatgpt.com/g/g-p-6aa226cca960819188ec3e6b03c25580-pixivvault/c/abc123",
+      }),
+    );
+    expect(nested.result?.conversationUrl).toBe(
+      "https://chatgpt.com/g/g-p-6aa226cca960819188ec3e6b03c25580-pixivvault/c/abc123",
+    );
+
+    const foreign = await run(fake({ currentUrl: async () => "https://evil.example/g/g-p-x/c/y" }));
+    expect(foreign.result?.conversationUrl).not.toBe("https://evil.example/g/g-p-x/c/y");
   });
 });
