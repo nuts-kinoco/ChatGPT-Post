@@ -11,3 +11,4 @@
 | 2026-09-15 | classify | EX-08 Danbooru 風タグ付け 30 件 | 30/30 有効な JSON Lines、4〜8 タグ、70 s | 20260915T075931Z-3d1ae5d3 | adopted（えまきのこ / たぐきのこの方式として） |
 | 2026-09-15 | other | MM-02 画像生成の受け取り | ビューア「保存」は Chrome クラッシュ、ページ内 fetch で取得 | 20260915T074954Z-9fe9699e | adopted（A-092） |
 | 2026-09-15 | review | PixivVault discovery_tab.py 画像サイズ仕様書レビュー | 原因特定は妥当だが修正案(keep_image=True)が#48-B型の罠を再現する懸念を指摘。plan変化時のみ再構築へ設計変更が必要 | 20260915T105935Z-01c8798c | adopted（仕様書改訂へ反映予定） |
+| 2026-09-17 | research | hunkヘッダ行数不一致の原因調査 | ヘッダ先行フォーマット+自由テキスト生成が原因と推定(トークナイザのバグではない)。対策は3段: (1)old/new countの計算式を明文化する注意書き (2)bridge側でhunk-count validatorを機械検証 (3)長期的にはLLMにOLD/NEW編集指示だけ書かせgit diffでヘッダ生成 | 20260917T030032Z-59d11c90 | adopted（bridge側validator追加は未実装・提案） |
