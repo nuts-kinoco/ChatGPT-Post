@@ -34,6 +34,7 @@ export type Verdict = Extract<
       | "VERDICT_STABILIZING"
       | "VERDICT_COMPLETE"
       | "VERDICT_TIMEOUT"
+      | "VERDICT_TIMEOUT_ACTIVE"
       | "VERDICT_CHAT_ERROR"
       | "VERDICT_RATE_LIMITED"
       | "VERDICT_CHALLENGE";
@@ -78,7 +79,13 @@ export function judge(
   if (o.truncated) return { type: "VERDICT_CHAT_ERROR", cause: "output_truncated" };
   if (o.assistantCount - baseline > 1)
     return { type: "VERDICT_CHAT_ERROR", cause: "multiple_responses" };
-  if (o.t >= cfg.timeoutMs) return { type: "VERDICT_TIMEOUT" };
+  if (o.t >= cfg.timeoutMs) {
+    // #124: a bare VERDICT_TIMEOUT is indistinguishable from "the page stalled" and
+    // "ChatGPT is still actively streaming, we just gave up watching." The stop button
+    // (o.streaming) already tells us which one it is — surface that distinction instead
+    // of losing it, so callers don't treat an in-progress generation as a dead one.
+    return o.streaming ? { type: "VERDICT_TIMEOUT_ACTIVE" } : { type: "VERDICT_TIMEOUT" };
+  }
   if (o.assistantCount <= baseline) return { type: "VERDICT_WAITING" };
   if (o.streaming) return { type: "VERDICT_GENERATING" };
 

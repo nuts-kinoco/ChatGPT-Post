@@ -317,6 +317,35 @@ const ROWS: Row[] = [
     submitted: "yes",
     status: "failed",
     inject: (h) => {
+      // #124: streaming must be false here — a genuine stall (stop button already gone,
+      // nothing changing) is the only case that should still map to plain GENERATION_TIMEOUT.
+      h.timeline.splice(1, h.timeline.length, obs({ streaming: false, composerReady: false }));
+      h.ports.contracts.validate = async () => ({
+        kind: "valid",
+        request: {
+          schemaVersion: "1.2",
+          requestId: "req-00000001",
+          promptFile: "p",
+          preset: "current",
+          newChat: true,
+          responseFormat: "markdown",
+        },
+        prompt: "hi",
+        timeoutMs: 10_000,
+        attachments: [],
+        attachmentBytes: 0,
+      });
+    },
+  },
+  {
+    code: "GENERATION_TIMEOUT_ACTIVE",
+    exit: 1,
+    submitted: "yes",
+    status: "failed",
+    inject: (h) => {
+      // #124: the deadline hits while the stop button is still showing (streaming: true) —
+      // this must NOT collapse into plain GENERATION_TIMEOUT, or callers can't tell "dead"
+      // from "still running" and end up retrying into a second concurrent generation.
       h.timeline.splice(1, h.timeline.length, obs({ streaming: true, composerReady: false }));
       h.ports.contracts.validate = async () => ({
         kind: "valid",
@@ -404,7 +433,7 @@ const ROWS: Row[] = [
 ];
 
 describe("every error code through machine + controller (16 §3)", () => {
-  it("the table covers all 23 codes", () => {
+  it("the table covers all 24 codes", () => {
     expect([...new Set(ROWS.map((r) => r.code))].sort()).toEqual([...ERROR_CODES].sort());
   });
   for (const row of ROWS) {

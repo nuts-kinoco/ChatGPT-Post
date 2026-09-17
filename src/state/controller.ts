@@ -674,7 +674,9 @@ export function messageFor(code: ErrorCode, cause: string | null): string {
     case "PROMPT_SUBMIT_FAILED":
       return "送信操作に失敗しました。submitted が unknown の場合は ChatGPT の会話一覧で送信有無を確認してください。";
     case "GENERATION_TIMEOUT":
-      return "回答の生成が timeoutMs 内に終わりませんでした。conversationUrl を開いて確認し、再送する場合は新しい requestId を使ってください。";
+      return "回答の生成が timeoutMs 内に終わりませんでした（停止ボタンは既に消えており、ページは停止しているように見えます）。conversationUrl を開いて確認してから再送してください。新しい requestId を使う場合も、artifacts の screenshot で本当に生成が止まっているかを先に確認してください。";
+    case "GENERATION_TIMEOUT_ACTIVE":
+      return "回答の生成が timeoutMs 内に終わりませんでしたが、タイムアウト時点でまだ生成中でした（停止ボタンが表示されていた）。CLI が待つのを諦めただけで、ChatGPT 側の生成はブラウザ上で続いている可能性が高いです。⚠️ このまま新しい requestId で再送すると、同じ専有プロファイルの中で生成が並走し、他セッション（人間の手動操作を含む）と衝突します。再送する前に必ず (1) artifacts/<requestId>/screenshot.png で本当に止まっているか確認する (2) chatgpt-bridge doctor の profile.free/lock を見る (3) それでも不明なら人間に確認する、のいずれかを行ってください。timeoutMs を伸ばして待つ方が安全な場合もあります。";
     case "CHAT_ERROR":
       return `ChatGPT 側でエラーが発生しました（${cause ?? "unknown"}）。conversationUrl を開いて確認してください。`;
     case "DOM_CHANGED":

@@ -102,9 +102,20 @@ describe("completion.judge (10-ARCHITECTURE §6)", () => {
     expect(judge(h, 0, cfg).type).toBe("VERDICT_COMPLETE");
   });
 
-  it("timeoutMs wins even while streaming", () => {
+  it("timeoutMs wins even while streaming, but reports VERDICT_TIMEOUT_ACTIVE not plain VERDICT_TIMEOUT (#124)", () => {
+    // The wall-clock deadline still stops the wait — it must not keep watching forever
+    // just because streaming is true. But a bare VERDICT_TIMEOUT here would be
+    // indistinguishable from a genuine stall, and a caller (bridge CLI user) reading
+    // GENERATION_TIMEOUT would reasonably retry — colliding with the still-running
+    // generation on the same shared profile (2026-09-17 incident).
     const h = timeline([[1000, { streaming: true, composerReady: false }]]);
     h.push(obs(60_000, { streaming: true, composerReady: false }));
+    expect(judge(h, 0, cfg).type).toBe("VERDICT_TIMEOUT_ACTIVE");
+  });
+
+  it("timeoutMs while genuinely stalled (not streaming) still reports plain VERDICT_TIMEOUT", () => {
+    const h = timeline([[1000, { streaming: false, composerReady: false }]]);
+    h.push(obs(60_000, { streaming: false, composerReady: false }));
     expect(judge(h, 0, cfg).type).toBe("VERDICT_TIMEOUT");
   });
 

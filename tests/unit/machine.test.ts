@@ -53,6 +53,7 @@ const ALL_EVENTS: Event[] = [
   { type: "VERDICT_STABILIZING" },
   { type: "VERDICT_COMPLETE" },
   { type: "VERDICT_TIMEOUT" },
+  { type: "VERDICT_TIMEOUT_ACTIVE" },
   { type: "VERDICT_CHAT_ERROR", cause: "banner" },
   { type: "VERDICT_RATE_LIMITED" },
   { type: "VERDICT_CHALLENGE", kind: "login" },

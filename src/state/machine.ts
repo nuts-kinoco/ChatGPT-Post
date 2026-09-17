@@ -65,6 +65,7 @@ export type Event =
   | { type: "VERDICT_STABILIZING" }
   | { type: "VERDICT_COMPLETE" }
   | { type: "VERDICT_TIMEOUT" }
+  | { type: "VERDICT_TIMEOUT_ACTIVE" }
   | { type: "VERDICT_CHAT_ERROR"; cause: ChatErrorCause }
   | { type: "VERDICT_RATE_LIMITED" }
   | { type: "VERDICT_CHALLENGE"; kind: PostChallengeKind }
@@ -548,6 +549,13 @@ export function transition(s: MachineState, ev: Event): Transition {
           ]);
         case "VERDICT_TIMEOUT":
           return verdictFail("GENERATION_TIMEOUT");
+        case "VERDICT_TIMEOUT_ACTIVE":
+          // 2026-09-17 (#124 incident): the wall-clock deadline hit while the page still
+          // showed the stop button (streaming). This is NOT the same failure as a genuine
+          // stall — the generation is very likely still running in the browser. Reported
+          // under a distinct code so callers don't blindly retry into a second concurrent
+          // generation on the same shared profile.
+          return verdictFail("GENERATION_TIMEOUT_ACTIVE");
         case "VERDICT_CHAT_ERROR":
           return verdictFail("CHAT_ERROR", ev.cause);
         case "VERDICT_RATE_LIMITED":

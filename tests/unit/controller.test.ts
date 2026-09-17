@@ -283,12 +283,22 @@ describe("RunController", () => {
     expect(f.calls).toContain("deleteMarker");
   });
 
-  it("timeout during generation: GENERATION_TIMEOUT, submitted yes", async () => {
+  it("timeout while stalled (not streaming): GENERATION_TIMEOUT, submitted yes", async () => {
+    const f = fake({
+      observe: async (t) => observation({ streaming: false, composerReady: false, t }),
+    });
+    const out = await run(f);
+    expect(out.result?.error?.code).toBe("GENERATION_TIMEOUT");
+    expect(out.result?.submitted).toBe("yes");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("timeout while still streaming: GENERATION_TIMEOUT_ACTIVE, submitted yes (#124)", async () => {
     const f = fake({
       observe: async (t) => observation({ streaming: true, composerReady: false, t }),
     });
     const out = await run(f);
-    expect(out.result?.error?.code).toBe("GENERATION_TIMEOUT");
+    expect(out.result?.error?.code).toBe("GENERATION_TIMEOUT_ACTIVE");
     expect(out.result?.submitted).toBe("yes");
     expect(out.exitCode).toBe(1);
   });
