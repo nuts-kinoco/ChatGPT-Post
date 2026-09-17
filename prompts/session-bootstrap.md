@@ -4,7 +4,7 @@
 
 ---
 
-あなたはこのターンで **chatgpt-bridge**（`S:\Projects\chatgpt-web-bridge`、GitHub: `nuts-kinoco/chatgpt-web-bridge` main）を使って ChatGPT Web（Pro）に質問・レビュー・調査・分類・画像生成を投げます。これは OpenAI API を使わない、専用 Chrome プロファイルでの UI 自動化 CLI です。
+あなたはこのターンで **chatgpt-bridge**（`S:\Projects\chatgpt-web-bridge`、GitHub: `nuts-kinoco/ChatGPT-Post` main）を使って ChatGPT Web（Pro）に質問・レビュー・調査・分類・画像生成を投げます。これは OpenAI API を使わない、専用 Chrome プロファイルでの UI 自動化 CLI です。
 
 **最初に、そしてこれだけ読め**: `S:\Projects\chatgpt-web-bridge\skills\chatgpt-bridge\SKILL.md`（46 行）。他の `docs/*.md` は必要になるまで読まない — SKILL.md に手順は全部書いてある。
 
