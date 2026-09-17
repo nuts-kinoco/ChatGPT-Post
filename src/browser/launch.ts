@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Browser, type BrowserContext, chromium, type Page } from "playwright";
 import { COPY_CAPTURE_SHIM } from "../extraction/copy-capture.js";
+import { withTimeout } from "./timeout.js";
 import { sanitizeTraceZip } from "./trace-sanitizer.js";
+
+/** Codex review of A-110: page.evaluate() has no built-in timeout, so a half-dead CDP connection
+ * could hang the liveness check (and the bridge lock it's held under) indefinitely. */
+const PAGE_LIVENESS_TIMEOUT_MS = 5000;
 
 export interface BrowserConfig {
   profileDir: string;
@@ -46,9 +51,12 @@ export class BrowserSession {
     return this.context !== null;
   }
 
-  private async attachHandlers(context: BrowserContext, opts: LaunchOptions): Promise<Page> {
+  private async attachHandlers(
+    context: BrowserContext,
+    opts: LaunchOptions,
+    page: Page,
+  ): Promise<Page> {
     if (opts.copyCaptureShim) await context.addInitScript(COPY_CAPTURE_SHIM);
-    const page = context.pages()[0] ?? (await context.newPage());
     this.page = page;
     context.on("close", () => {
       if (this.context) opts.onCrash("browser context closed");
@@ -58,6 +66,41 @@ export class BrowserSession {
       if (this.context) opts.onCrash("page closed");
     });
     return page;
+  }
+
+  /**
+   * A-110: a daemon's single tracked page can go unusable (closed, or its frame detached — a Mac
+   * session observed this under macOS memory pressure on a backgrounded tab) while the CDP
+   * connection and context otherwise still respond. `isClosed()` alone doesn't catch the detached-
+   * frame case, so confirm the page can actually run JS (bounded — Codex review, High: evaluate()
+   * has no built-in timeout and could hang forever against a half-dead connection) before trusting
+   * it; otherwise open a fresh one and verify *that* too (Codex review, High: newPage() succeeding
+   * doesn't by itself prove the page is usable). If nothing usable can be produced, the error
+   * propagates out of attach() so the caller falls back to a fresh local launch instead of handing
+   * back a broken page.
+   */
+  private async getUsablePage(context: BrowserContext): Promise<Page> {
+    const candidate = context.pages().find((p) => !p.isClosed());
+    if (candidate) {
+      try {
+        await withTimeout(
+          candidate.evaluate(() => true),
+          PAGE_LIVENESS_TIMEOUT_MS,
+          "page liveness check",
+        );
+        return candidate;
+      } catch {
+        // Don't leave a broken tab lying around for the next attach() to trip over too.
+        await candidate.close().catch(() => undefined);
+      }
+    }
+    const fresh = await context.newPage();
+    await withTimeout(
+      fresh.evaluate(() => true),
+      PAGE_LIVENESS_TIMEOUT_MS,
+      "new page liveness check",
+    );
+    return fresh;
   }
 
   async launch(opts: LaunchOptions): Promise<{ ok: true } | { ok: false; cause: string }> {
@@ -72,7 +115,8 @@ export class BrowserSession {
       });
       this.context = context;
       this.attached = false;
-      await this.attachHandlers(context, opts);
+      const page = context.pages()[0] ?? (await context.newPage());
+      await this.attachHandlers(context, opts, page);
       await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
       this.tracing = true;
       return { ok: true };
@@ -87,17 +131,24 @@ export class BrowserSession {
     cdpUrl: string,
     opts: LaunchOptions,
   ): Promise<{ ok: true } | { ok: false; cause: string }> {
+    // Codex review of A-110, Medium: kept outside the try's local scope so the catch below can
+    // always close a connected-but-not-yet-committed CDP session instead of leaking it.
+    let browser: Browser | undefined;
     try {
-      const browser = await chromium.connectOverCDP(cdpUrl);
+      browser = await chromium.connectOverCDP(cdpUrl);
       const context = browser.contexts()[0];
       if (!context) {
         await browser.close().catch(() => undefined);
         return { ok: false, cause: "daemon browser exposes no persistent context" };
       }
+      // Resolved (and verified live, with a bounded timeout) before committing `this.context`/
+      // `this.cdpBrowser` — if this throws, the catch below closes `browser` and this.* stays
+      // exactly as it was, rather than pointing at a half-attached session (A-110).
+      const page = await this.getUsablePage(context);
       this.context = context;
       this.attached = true;
       this.cdpBrowser = browser;
-      await this.attachHandlers(context, opts);
+      await this.attachHandlers(context, opts, page);
       try {
         await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
         this.tracing = true;
@@ -113,6 +164,7 @@ export class BrowserSession {
       this.context = null;
       this.attached = false;
       this.cdpBrowser = null;
+      if (browser) await browser.close().catch(() => undefined);
       return { ok: false, cause: (err as Error).message };
     }
   }

@@ -8,6 +8,7 @@ import { access, rename, unlink, writeFile } from "node:fs/promises";
 import { hostname as osHostname } from "node:os";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
+import { withTimeout } from "./timeout.js";
 
 const { values } = parseArgs({
   options: {
@@ -53,16 +54,24 @@ const context = await chromium.launchPersistentContext(profileDir, {
     ...(process.platform === "darwin" ? ["--password-store=basic", "--use-mock-keychain"] : []),
   ],
 });
-const page = context.pages()[0] ?? (await context.newPage());
+let page = context.pages()[0] ?? (await context.newPage());
 
 let shuttingDown = false;
 let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
+/**
+ * Codex review of A-110, High: unlinking the state file *before* confirming the context is
+ * actually closed meant a hung/failed close() could leave the real Chrome still holding the
+ * profile lock while every other command already believed the daemon (and the profile) was free
+ * — the two would then race a fresh launch against the still-live one. Close first (bounded, same
+ * pattern as BrowserSession.close()), and only unlink after that attempt — success or timeout —
+ * has actually run.
+ */
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   if (keepAliveTimer) clearInterval(keepAliveTimer);
+  await withTimeout(context.close(), 10_000, "context.close()").catch(() => undefined);
   await unlink(statePath).catch(() => undefined);
-  await context.close().catch(() => undefined);
   process.exit(0);
 }
 
@@ -76,22 +85,100 @@ async function isLockHeld(): Promise<boolean> {
   }
 }
 
+/**
+ * A-110: a Mac session reported the daemon's single tracked `page` going unusable (closed /
+ * detached — observed with macOS reclaiming a backgrounded tab under memory pressure) while the
+ * *context* stayed open, so `context.on("close")` below never fired and the daemon sat reporting
+ * "running" for 13 hours while every keepalive tick and every command's attach() failed against
+ * the dead page. `run`/`doctor` surfaced this as confusing errors (INVALID_STATE / NOT_READY)
+ * instead of the clean PROFILE_IN_USE-then-fresh-launch path a genuinely absent daemon gets.
+ */
+let consecutiveFailures = 0;
+/** After this many consecutive ticks where even opening a replacement page failed, give up on the
+ * browser entirely and self-shutdown — doctor/run then correctly see "no daemon" and fall back to
+ * a fresh launch, instead of a daemon that looks alive but can never serve a page again. Kept low
+ * (worst case ~2 keepalive intervals) since a repeated newPage() failure is already a strong
+ * signal the underlying context is dead, not a transient blip. */
+const MAX_CONSECUTIVE_FAILURES = 2;
+
+function log(msg: string): void {
+  process.stdout.write(`[keepalive ${new Date().toISOString()}] ${msg}\n`);
+}
+
+/** Codex review of A-110, Medium: setInterval doesn't wait for a slow tick before starting the
+ * next one; without this guard, two overlapping ticks could fight over replacing `page` and
+ * `consecutiveFailures`, or one could close a page the other just opened. */
+let tickInFlight = false;
+
 /** A-105: periodic real navigation as an activity signal, skipped whenever a command holds the
- * bridge lock so it can't collide with one in flight (small residual race between the check and
- * the goto below; accepted for a single-user machine, same as the rest of A-103/A-104). */
+ * bridge lock so it can't collide with one in flight. Codex review of A-110, High: the original
+ * check only ran once at the top of the tick — re-checked again immediately before any
+ * page-replacing action below, since goto()'s own 30s wait is plenty of time for a client to have
+ * acquired the lock and started using whatever page we're about to touch. This narrows, but per
+ * A-105's existing note does not eliminate, the race; full mutual exclusion would need the daemon
+ * to participate in the lock protocol itself, out of scope here. */
 async function keepAliveTick(): Promise<void> {
-  if (shuttingDown) return;
-  if (await isLockHeld()) {
-    process.stdout.write(`[keepalive ${new Date().toISOString()}] skipped: lock held\n`);
-    return;
-  }
+  if (shuttingDown || tickInFlight) return;
+  tickInFlight = true;
   try {
-    await page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 30000 });
-    process.stdout.write(`[keepalive ${new Date().toISOString()}] reloaded, url=${page.url()}\n`);
-  } catch (err) {
-    process.stdout.write(
-      `[keepalive ${new Date().toISOString()}] failed: ${(err as Error).message}\n`,
-    );
+    if (await isLockHeld()) {
+      log("skipped: lock held");
+      return;
+    }
+    // A-110: prefer a page a client already opened (via BrowserSession.getUsablePage()) over the
+    // one this loop last knew about, if that one is now closed — avoids piling up an extra blank
+    // tab here on top of whatever the client already recovered to.
+    if (page.isClosed()) {
+      const alive = context.pages().find((p) => !p.isClosed());
+      if (alive) page = alive;
+    }
+    try {
+      await withTimeout(
+        page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 30000 }),
+        35_000,
+        "keepalive goto",
+      );
+      log(`reloaded, url=${page.url()}`);
+      consecutiveFailures = 0;
+      return;
+    } catch (err) {
+      consecutiveFailures++;
+      log(`failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${(err as Error).message}`);
+    }
+    if (await isLockHeld()) {
+      // A client grabbed the lock while goto() was failing/timing out — don't touch pages now.
+      log("aborting recovery: lock now held");
+      return;
+    }
+    // A-110: the page itself (not necessarily the context) may be the thing that died. Try opening
+    // a replacement page on the same context before giving up on the whole daemon. Codex review,
+    // High: newPage() succeeding doesn't by itself prove the new page is usable — verify it too
+    // (bounded) before trusting it and resetting the failure count.
+    try {
+      const fresh = await context.newPage();
+      await withTimeout(
+        fresh.evaluate(() => true),
+        5000,
+        "replacement page liveness check",
+      );
+      await page.close().catch(() => undefined);
+      page = fresh;
+      log("opened a replacement page");
+      consecutiveFailures = 0;
+      return;
+    } catch (err) {
+      log(
+        `could not open a usable replacement page (context likely dead too): ${(err as Error).message}`,
+      );
+    }
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      log(
+        `giving up after ${consecutiveFailures} consecutive failures; shutting down so doctor/run see "no daemon" instead of a stuck one`,
+      );
+      await shutdown();
+    }
+  } finally {
+    tickInFlight = false;
   }
 }
 
