@@ -71,7 +71,8 @@
 | `VERDICT_GENERATING` | completion | — |
 | `VERDICT_STABILIZING` | completion | — |
 | `VERDICT_COMPLETE` | completion | — |
-| `VERDICT_TIMEOUT` | completion | — |
+| `VERDICT_TIMEOUT` | completion | 真にスタール（`streaming === false`） |
+| `VERDICT_TIMEOUT_ACTIVE` | completion | タイムアウト到達時点で `streaming === true`（生成継続中の可能性、2026-09-17 #124） |
 | `VERDICT_CHAT_ERROR(cause)` | completion | `cause ∈ { banner, network, output_truncated, multiple_responses }` |
 | `VERDICT_RATE_LIMITED` | completion | — |
 | `VERDICT_CHALLENGE(kind)` | completion | `kind ∈ { login, captcha, consent }` |
@@ -161,6 +162,7 @@ effects の定義:
 | `STABILIZING` | `VERDICT_GENERATING` / `VERDICT_WAITING` | `GENERATING` | —（再開・一過性の揺れ。安定化の起点はリセット） |
 | `STABILIZING` | `VERDICT_COMPLETE` | `EXTRACTING` | `STOP_OBSERVATION_LOOP`, `EXTRACT_LATEST` |
 | `WAITING_FOR_RESPONSE` / `GENERATING` / `STABILIZING` | `VERDICT_TIMEOUT` | `FAILED(GENERATION_TIMEOUT)` | `STOP_OBSERVATION_LOOP`, `FAIL_AFTER_BROWSER`, `EXIT(1)` |
+| 同上 | `VERDICT_TIMEOUT_ACTIVE` | `FAILED(GENERATION_TIMEOUT_ACTIVE)` | 同上 |
 | 同上 | `VERDICT_CHAT_ERROR(cause)` | `FAILED(CHAT_ERROR)` | 同上（`error.cause` に理由） |
 | 同上 | `VERDICT_RATE_LIMITED` | `MI(RATE_LIMITED)` | `STOP_OBSERVATION_LOOP`, `FAIL_AFTER_BROWSER`, `EXIT(3)` |
 | 同上 | `VERDICT_CHALLENGE(login)` | `MI(AUTH_REQUIRED)` | 同上 |

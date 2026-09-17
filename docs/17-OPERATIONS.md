@@ -129,7 +129,8 @@ exit code の意味: 0 成功 / 1 ブラウザ起動後の失敗 / 2 入力・�
 | `ALREADY_RUNNING` | 別のブリッジ実行中、または stale lock | 待つ。`doctor` が stale と言えば `runtime/locks/bridge.lock` を削除 |
 | `ALREADY_PROCESSED` | 同じ requestId | 既存 `result.json` を読む。再送は新 requestId |
 | `SUBMIT_STATE_UNKNOWN` | 前回、送信直前〜終端前に異常終了（クラッシュ含む） | chatgpt.com の会話一覧で送信済みか確認。送信済みなら回答を手動取得、または `newChat: false` で同じ会話に「先ほどの回答をもう一度」と依頼。再送は新 requestId |
-| `GENERATION_TIMEOUT` | `timeoutMs` 内に終わらない | `conversationUrl` を開いて確認。伸ばすなら新 requestId |
+| `GENERATION_TIMEOUT` | `timeoutMs` 内に終わらない（真にスタール） | `conversationUrl` を開いて確認。伸ばすなら新 requestId |
+| `GENERATION_TIMEOUT_ACTIVE` | `timeoutMs` 到達時点でまだ生成中（停止ボタン表示中、#124） | すぐ再送しない。screenshot / `doctor` の profile.free・lock を確認するか人間に聞く。専有プロファイルで二重生成を起こし得る |
 | `EXTRACTION_FAILED` | 本文が空（画像も無い）/ Canvas（`canvas`） | `conversationUrl` から手動取得 |
 | `CHAT_ERROR` | `banner` / `network` / `output_truncated` / `multiple_responses` | `conversationUrl` を開いて確認 |
 | `BROWSER_CRASHED` | Chrome 終了。`CHATGPT_BRIDGE_IMAGE_VIA_VIEWER=1` のときは画像ビューア「保存」が原因のことがある | `submitted` を確認。環境変数を外す。`runtime/profile/Crashpad/reports/*.dmp` は削除してよい |

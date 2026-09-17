@@ -6,7 +6,12 @@ import { atomicWriteFile, normaliseResponseBody } from "../../src/contracts/atom
 import { checkResultInvariants } from "../../src/contracts/invariants.js";
 import { isValidRequestId, readRequestFile, validateAndLoad } from "../../src/contracts/request.js";
 import { validateRequest, validateResult } from "../../src/contracts/schema.js";
-import type { BridgeResult } from "../../src/contracts/types.js";
+import {
+  type BridgeResult,
+  ERROR_CODES,
+  NO_RESULT_CODES,
+  statusFor,
+} from "../../src/contracts/types.js";
 
 const BOM = "\uFEFF";
 let dir: string;
@@ -163,6 +168,30 @@ describe("result.json schema + invariants (AC-007)", () => {
   it("accepts the completed example", () => {
     expect(validateResult(baseResult()).valid).toBe(true);
     expect(checkResultInvariants(baseResult())).toEqual([]);
+  });
+  // Every member of contracts/types.ts's ERROR_CODES must also be in the result schema's
+  // errorCode enum — the two are hand-kept in sync (a JSON schema can't import a TS const), and a
+  // code added to one without the other passes typecheck/lint/build cleanly while silently
+  // breaking WRITE_RESULT for that one code at runtime (discovered live 2026-09-17: a code missing
+  // from the schema made checkResultInvariants() reject every result carrying it, so no
+  // result.json was ever written for that failure — the opposite of what result.json is for).
+  it("every ErrorCode in contracts/types.ts validates against the result schema (schema sync)", () => {
+    // ALREADY_PROCESSED / ALREADY_RUNNING never reach WRITE_RESULT by design (NO_RESULT_CODES —
+    // the bridge only reports them on stderr), so there is no result.json shape to check for them.
+    for (const code of ERROR_CODES.filter((c) => !NO_RESULT_CODES.includes(c))) {
+      const result = baseResult({
+        status: statusFor(code),
+        // SUBMIT_STATE_UNKNOWN is special-cased to "unknown" regardless of phase (invariants.ts
+        // expectedSubmitted()); every other code here uses phase: GENERATING, a post-submission
+        // state, so "yes" is what the real controller would produce for it.
+        submitted: code === "SUBMIT_STATE_UNKNOWN" ? "unknown" : "yes",
+        responseFile: null,
+        extractionMethod: null,
+        extractionQuality: null,
+        error: { code, message: "m", retryable: false, phase: "GENERATING", cause: null },
+      });
+      expect(checkResultInvariants(result), `error code ${code} should validate`).toEqual([]);
+    }
   });
   it("1.2: images[] must be images/<n>.<ext>, unique, and only on completed (Codex P6-3)", () => {
     expect(checkResultInvariants(baseResult({ images: ["images/1.png", "images/2.jpg"] }))).toEqual(

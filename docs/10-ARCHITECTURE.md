@@ -149,7 +149,7 @@ judge は履歴から `baseline`（送信前 assistant 数）、`streamingSeen`�
 2. `errorBanner === 'rate_limited'` → `VERDICT_RATE_LIMITED`。`'chat_error' | 'network'` → `VERDICT_CHAT_ERROR(banner | network)`。
 3. `truncated` → `VERDICT_CHAT_ERROR(output_truncated)`（「続きを生成」は自動クリックしない。再送に相当し得る）。
 4. `assistantCount - baseline > 1` → `VERDICT_CHAT_ERROR(multiple_responses)`（A/B 比較等。どちらを採用したか保証できない）。
-5. `t >= timeoutMs` → `VERDICT_TIMEOUT`（**以降の規則より優先**。生成中 UI が出続けていても timeoutMs で打ち切る）。
+5. `t >= timeoutMs` → `VERDICT_TIMEOUT`（**以降の規則より優先**。生成中 UI が出続けていても timeoutMs で打ち切る自体は変わらない）。ただしこの時点で `streaming === true`（停止ボタンがまだ出ている＝ CLI が待つのを諦めただけで ChatGPT 側は生成継続中の可能性が高い）なら `VERDICT_TIMEOUT` ではなく `VERDICT_TIMEOUT_ACTIVE` を返す（2026-09-17, #124: 専有プロファイルへの二重送信事故の再発防止。`GENERATION_TIMEOUT` は真にスタールした場合専用）。
 6. `assistantCount <= baseline` → `VERDICT_WAITING`（`responseSeen === true` の後に起きた場合は SPA 再描画等の一過性とみなし、状態機械側で継続扱い。`11-STATE-MACHINE.md` §4）。
 7. `streaming` → `VERDICT_GENERATING`。
 8. `streaming === false`:
