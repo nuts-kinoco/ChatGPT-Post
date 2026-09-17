@@ -19,14 +19,18 @@ const { values } = parseArgs({
     "lock-path": { type: "string" },
     "keepalive-ms": { type: "string" },
     hostname: { type: "string" },
+    "profile-id": { type: "string" },
   },
 });
-if (!values["profile-dir"] || !values["state-path"]) {
-  process.stderr.write("daemon-worker: --profile-dir and --state-path are required\n");
+if (!values["profile-dir"] || !values["state-path"] || !values["profile-id"]) {
+  process.stderr.write(
+    "daemon-worker: --profile-dir, --state-path and --profile-id are required\n",
+  );
   process.exit(1);
 }
 const profileDir: string = values["profile-dir"];
 const statePath: string = values["state-path"];
+const profileId: string = values["profile-id"];
 const lockPath = values["lock-path"];
 const channel = values.channel === "chromium" ? "chromium" : "chrome";
 const port = Number(values.port ?? "9876");
@@ -192,6 +196,7 @@ await writeFile(
     startedAt: new Date().toISOString(),
     profileDir,
     hostname,
+    profileId,
   }),
   "utf8",
 );

@@ -33,6 +33,16 @@ export function sanitiseResultText(text: string): string {
   return r.length <= RESULT_TEXT_MAX ? r : `${r.slice(0, RESULT_TEXT_MAX)}…`;
 }
 
+/** schemas/result.schema.json caps error.cause at 200 chars (warnings[] entries use the looser
+ * RESULT_TEXT_MAX=500). Codex review of A-113: emergencyResult() below reused sanitiseResultText's
+ * 500-char cap for error.cause, so a 201-500 char original cause would make the fallback write
+ * fail the exact same schema check it exists to survive. */
+const ERROR_CAUSE_MAX = 200;
+function sanitiseErrorCause(text: string): string {
+  const r = redactSecrets(text);
+  return r.length <= ERROR_CAUSE_MAX ? r : `${r.slice(0, ERROR_CAUSE_MAX - 1)}…`;
+}
+
 /** 13 §6: conversationUrl is origin + path only (no query / fragment / credentials). */
 export function sanitiseConversationUrl(url: string | null): string | null {
   if (url === null) return null;
@@ -479,9 +489,28 @@ export class RunController {
           this.result = result;
           return this.state.terminal ? null : { type: "RESULT_WRITTEN" };
         } catch (err) {
-          if (!this.state.terminal)
-            return { type: "WRITE_FAILED", file: "result", cause: (err as Error).message };
-          this.ports.stderr(`WRITE_FAILED (result.json): ${(err as Error).message}`);
+          const cause = (err as Error).message;
+          if (!this.state.terminal) return { type: "WRITE_FAILED", file: "result", cause };
+          // A-113 (AGY/Antigravity independent review, 2026-09-18; same gap A-112 patched one
+          // instance of): `result` violated its own contract (e.g. an ErrorCode the schema hasn't
+          // caught up with, as in A-112) — don't just log to stderr and vanish. A caller watching
+          // for result.json gets nothing to react to, which is the opposite of fail-closed. Retry
+          // once with a deliberately minimal, hand-verified-schema-safe fallback so a terminal
+          // record always exists, carrying the real cause in its warnings/error.cause.
+          try {
+            const fallback = this.emergencyResult(result, cause);
+            this.resultPath = await contracts.writeResult(this.requestDir, fallback);
+            // Codex review: keeping the original (schema-invalid) `result` here while the fallback
+            // was what actually got written meant `run --json`'s stdout and RunOutcome.result
+            // disagreed with the file on disk — an external watcher reading one vs. the other
+            // would see two different error codes for the same run. Export the same object that
+            // was actually written.
+            this.result = fallback;
+          } catch (err2) {
+            this.ports.stderr(
+              `WRITE_FAILED (result.json): ${cause}; emergency fallback also failed: ${(err2 as Error).message}`,
+            );
+          }
           return null;
         }
       }
@@ -567,7 +596,11 @@ export class RunController {
     const term = this.state.terminal;
     const completedAt = this.ports.clock.now();
     const completed = term?.name === "COMPLETED" || (!term && this.state.name === "WRITING_RESULT");
+    // Pre-existing mismatch noticed alongside A-113: error.cause is capped at 200 chars by
+    // schemas/result.schema.json, not RESULT_TEXT_MAX's 500 — messageFor() below still gets the
+    // fuller 500-char text since `message` has no such limit, only `cause` needs the tighter cap.
     const safeCause = term?.cause == null ? null : sanitiseResultText(term.cause);
+    const safeFieldCause = term?.cause == null ? null : sanitiseErrorCause(term.cause);
     return {
       schemaVersion: "1.2",
       bridgeVersion: this.opts.bridgeVersion,
@@ -601,8 +634,70 @@ export class RunController {
               message: messageFor(term.code, safeCause),
               retryable: false,
               phase: this.state.phase,
-              cause: safeCause,
+              cause: safeFieldCause,
             },
+    };
+  }
+
+  /**
+   * A-113 (AGY/Antigravity independent review, 2026-09-18): last-resort fallback when `result`
+   * itself fails `checkResultInvariants()` — e.g. an `ErrorCode` the schema enum hasn't caught up
+   * with yet, the exact class of bug A-112 fixed one instance of. Deliberately minimal and
+   * constructed to always satisfy the schema regardless of what was wrong with the real result:
+   * `status` is always "failed" (the "completed" branch has stricter requirements that may
+   * themselves be the problem), and `phase` is chosen FROM `submitted` — not copied from the
+   * original — so invariants.ts's `expectedSubmitted()` phase/submitted consistency check can
+   * never fail here even if the real state's phase/code combination was itself the issue.
+   *
+   * Codex review of the first cut: two more ways this "always valid" fallback could itself have
+   * failed validation, both fixed here. (1) `error.cause` is capped at 200 chars by the schema —
+   * reusing sanitiseResultText's 500-char cap for it meant a 201-500 char cause would make the
+   * fallback fail the exact same check it exists to survive; sanitiseErrorCause() below is capped
+   * correctly. (2) `original.warnings` was spliced in unfiltered — schema requires every entry be
+   * non-empty, so a corrupt warnings array could itself be (part of) what made `original` invalid
+   * in the first place. Dropped entirely; only fields not derived from scraped/free-form content
+   * (bridgeVersion, requestId, requestedPreset/Model — all already schema-validated far upstream —
+   * and the already-sanitised conversationUrl) are carried over.
+   */
+  private emergencyResult(original: BridgeResult, cause: string): BridgeResult {
+    const submitted = original.submitted;
+    const phase: StateName =
+      submitted === "no"
+        ? "VALIDATED"
+        : submitted === "yes"
+          ? "WRITING_RESULT"
+          : "PROMPT_SUBMITTING";
+    return {
+      schemaVersion: "1.2",
+      bridgeVersion: original.bridgeVersion,
+      requestId: original.requestId,
+      status: "failed",
+      requestedPreset: original.requestedPreset,
+      observedPreset: null,
+      requestedModel: original.requestedModel,
+      observedModel: null,
+      observedModelSlug: null,
+      submitted,
+      conversationUrl: original.conversationUrl,
+      responseFile: null,
+      extractionMethod: null,
+      extractionQuality: null,
+      startedAt: original.startedAt,
+      completedAt: original.completedAt,
+      durationMs: original.durationMs,
+      artifacts: [],
+      images: [],
+      warnings: [
+        `result.json failed contract validation; this is a fallback record (A-113). Original error code was "${original.error?.code ?? "unknown"}".`,
+      ],
+      error: {
+        code: "INTERNAL_ERROR",
+        message:
+          "The real result failed contract validation. This is a fallback record — see error.cause for the original cause.",
+        retryable: false,
+        phase,
+        cause: sanitiseErrorCause(cause),
+      },
     };
   }
 

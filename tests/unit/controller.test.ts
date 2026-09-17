@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Observation } from "../../src/chatgpt/completion.js";
+import { checkResultInvariants } from "../../src/contracts/invariants.js";
 import type { BridgeResult } from "../../src/contracts/types.js";
 import { RunController } from "../../src/state/controller.js";
 import type { ChatGptPort, Ports } from "../../src/state/ports.js";
@@ -429,5 +430,50 @@ describe("RunController", () => {
 
     const foreign = await run(fake({ currentUrl: async () => "https://evil.example/g/g-p-x/c/y" }));
     expect(foreign.result?.conversationUrl).not.toBe("https://evil.example/g/g-p-x/c/y");
+  });
+
+  // A-113 (AGY/Antigravity independent review, 2026-09-18): if the real result fails its own
+  // schema (e.g. A-112's missing ErrorCode enum entry), the bridge must not just log to stderr and
+  // write nothing — that leaves an external watcher with no terminal record to react to at all.
+  it("A-113: a result that fails contract validation gets a minimal, valid emergency fallback instead of no file at all", async () => {
+    const f = fake({
+      observe: async (t) => observation({ streaming: false, composerReady: false, t }),
+    });
+    let call = 0;
+    const realWriteResult = f.ports.contracts.writeResult;
+    f.ports.contracts.writeResult = async (dir, r) => {
+      call++;
+      if (call === 1)
+        throw new Error("schema: /error/code must be equal to one of the allowed values");
+      return realWriteResult(dir, r);
+    };
+    const out = await run(f);
+    // Codex review: RunOutcome.result (and run --json's stdout) must match what's actually on
+    // disk — both are the fallback, not the original schema-invalid result.
+    expect(out.result?.error?.code).toBe("INTERNAL_ERROR");
+    expect(f.results).toHaveLength(1);
+    const written = f.results[0];
+    expect(written).toBe(out.result);
+    expect(written?.status).toBe("failed");
+    expect(written?.warnings.join()).toContain("GENERATION_TIMEOUT");
+    expect(checkResultInvariants(written as BridgeResult)).toEqual([]);
+  });
+
+  it("A-113: error.cause is capped at 200 chars (the schema's limit, not the 500-char warnings cap) even in the fallback", async () => {
+    const longCause = "x".repeat(300);
+    const f = fake({
+      observe: async (t) => observation({ streaming: false, composerReady: false, t }),
+    });
+    let call = 0;
+    const realWriteResult = f.ports.contracts.writeResult;
+    f.ports.contracts.writeResult = async (dir, r) => {
+      call++;
+      if (call === 1) throw new Error(longCause);
+      return realWriteResult(dir, r);
+    };
+    const out = await run(f);
+    expect(out.result?.error?.code).toBe("INTERNAL_ERROR");
+    expect((out.result?.error?.cause ?? "").length).toBeLessThanOrEqual(200);
+    expect(checkResultInvariants(out.result as BridgeResult)).toEqual([]);
   });
 });

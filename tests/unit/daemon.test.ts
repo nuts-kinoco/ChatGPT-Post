@@ -6,6 +6,7 @@ import {
   checkDaemon,
   type DaemonCfg,
   daemonStatePath,
+  getOrCreateProfileId,
   readDaemonState,
   startDaemon,
   stopDaemon,
@@ -22,7 +23,9 @@ afterEach(async () => {
 });
 
 /** Writes a state file as if a different host had started a daemon (A-108: each host owns a
- * `daemon.<hostname>.json`, never a shared `daemon.json`). */
+ * `daemon.<hostname>.json`, never a shared `daemon.json`). Defaults `profileId` to match this
+ * test's own `cfg.profileDir` (as a genuine same-profile foreign host would); pass a different
+ * `profileId` in `over` to simulate a distinct profile sharing this runtimeDir. */
 async function writeForeignState(
   hostname: string,
   over: Record<string, unknown> = {},
@@ -36,6 +39,7 @@ async function writeForeignState(
       startedAt: new Date().toISOString(),
       profileDir: cfg.profileDir,
       hostname,
+      profileId: await getOrCreateProfileId(cfg.profileDir),
       ...over,
     }),
   );
@@ -53,8 +57,25 @@ describe("daemon per-host state files (A-108)", () => {
     expect(h.reason).toContain("mac-mini.local");
   });
 
-  it("checkDaemon: a foreign file for a *different* profile is ignored", async () => {
-    await writeForeignState("mac-mini.local", { profileDir: join(dir, "other-profile") });
+  it("checkDaemon: a foreign file counts even if its recorded profileDir string differs, as long as profileId matches (AGY review, 2026-09-18)", async () => {
+    // Each host resolves profileDir in its own path notation (Windows vs. macOS mount point for
+    // the same shared directory), so an absolute-string profileDir comparison across hosts can
+    // never match. profileId lives inside the profile directory itself and is compared instead —
+    // must NOT be ignored just because the profileDir *string* differs.
+    await writeForeignState("mac-mini.local", {
+      profileDir: "/Volumes/Share/chatgpt-web-bridge/runtime/profile",
+    });
+    const h = await checkDaemon(cfg);
+    expect(h.alive).toBe(false);
+    if (h.alive) return;
+    expect(h.foreign).toBe(true);
+  });
+
+  it("checkDaemon: a foreign file for a genuinely different profileId (distinct profile sharing this runtimeDir) is correctly ignored (Codex review of the profileDir-string removal, 2026-09-18)", async () => {
+    // Dropping the profileDir-string comparison entirely (instead of switching to profileId)
+    // would have falsely blocked two independent profiles that happen to share one runtimeDir via
+    // CHATGPT_BRIDGE_PROFILE_DIR. profileId correctly tells them apart.
+    await writeForeignState("mac-mini.local", { profileId: "totally-different-profile-uuid" });
     const h = await checkDaemon(cfg);
     expect(h.alive).toBe(false);
     if (h.alive) return;

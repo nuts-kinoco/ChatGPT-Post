@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { daemonStatePath } from "../../src/browser/daemon.js";
+import { daemonStatePath, getOrCreateProfileId } from "../../src/browser/daemon.js";
 import { playwrightBrowser } from "../../src/cli/adapters.js";
 import type { BridgeConfig } from "../../src/cli/config.js";
 
@@ -29,24 +29,29 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+async function writeForeignDaemonState(): Promise<void> {
+  await writeFile(
+    daemonStatePath(
+      { runtimeDir: cfg.runtimeDir, profileDir: cfg.profileDir, channel: "chrome" },
+      "mac-mini.local",
+    ),
+    JSON.stringify({
+      pid: 999999,
+      port: 12345,
+      startedAt: new Date().toISOString(),
+      profileDir: cfg.profileDir,
+      hostname: "mac-mini.local",
+      profileId: await getOrCreateProfileId(cfg.profileDir),
+    }),
+  );
+}
+
 // Codex review of A-108, High: a foreign daemon (another host, shared runtime/) must be treated
 // as profile-busy — never silently falling through to a fresh local launch, which could collide
 // with that host's real Chrome on the same profile (the exact class of incident A-101 was about).
 describe("playwrightBrowser + foreign daemon (A-108)", () => {
   it("checkProfileFree() reports not-free when a foreign host's daemon owns this profile", async () => {
-    await writeFile(
-      daemonStatePath(
-        { runtimeDir: cfg.runtimeDir, profileDir: cfg.profileDir, channel: "chrome" },
-        "mac-mini.local",
-      ),
-      JSON.stringify({
-        pid: 999999,
-        port: 12345,
-        startedAt: new Date().toISOString(),
-        profileDir: cfg.profileDir,
-        hostname: "mac-mini.local",
-      }),
-    );
+    await writeForeignDaemonState();
     const browser = playwrightBrowser(cfg);
     const free = await browser.checkProfileFree();
     expect(free.free).toBe(false);
@@ -55,19 +60,7 @@ describe("playwrightBrowser + foreign daemon (A-108)", () => {
   });
 
   it("launch() refuses outright rather than starting a local browser against a foreign-owned profile", async () => {
-    await writeFile(
-      daemonStatePath(
-        { runtimeDir: cfg.runtimeDir, profileDir: cfg.profileDir, channel: "chrome" },
-        "mac-mini.local",
-      ),
-      JSON.stringify({
-        pid: 999999,
-        port: 12345,
-        startedAt: new Date().toISOString(),
-        profileDir: cfg.profileDir,
-        hostname: "mac-mini.local",
-      }),
-    );
+    await writeForeignDaemonState();
     const browser = playwrightBrowser(cfg);
     const launched = await browser.launch({ copyCaptureShim: false, onCrash: () => undefined });
     expect(launched.ok).toBe(false);

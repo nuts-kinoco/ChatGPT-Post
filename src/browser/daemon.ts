@@ -40,7 +40,8 @@
  * revisiting this.
  */
 import { spawn } from "node:child_process";
-import { mkdir, readdir, readFile, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { hostname as osHostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -53,6 +54,43 @@ export interface DaemonState {
   startedAt: string;
   profileDir: string;
   hostname: string;
+  profileId: string;
+}
+
+const PROFILE_ID_FILE = ".chatgpt-bridge-profile-id";
+
+/**
+ * A stable identity for a profile directory that survives being seen through different mount
+ * points (Codex review of A-108's cross-host fix, 2026-09-18: dropping the `profileDir` string
+ * comparison entirely — needed so Windows `S:\...` and macOS `/Volumes/Share/...` for the *same*
+ * shared directory are recognized as the same profile — meant two genuinely *different* profiles
+ * that happen to share one `runtimeDir` via CHATGPT_BRIDGE_PROFILE_DIR would now falsely block
+ * each other). The ID lives inside the profile directory itself, so reading it always reflects
+ * the actual target directory regardless of the path string used to reach it. Created lazily,
+ * race-safe (O_EXCL create; on a lost race, read back whatever the winner wrote).
+ */
+export async function getOrCreateProfileId(profileDir: string): Promise<string> {
+  const idPath = join(profileDir, PROFILE_ID_FILE);
+  try {
+    const existing = (await readFile(idPath, "utf8")).trim();
+    if (existing) return existing;
+  } catch {
+    /* doesn't exist yet */
+  }
+  await mkdir(profileDir, { recursive: true });
+  const id = randomUUID();
+  try {
+    await writeFile(idPath, id, { flag: "wx" });
+    return id;
+  } catch {
+    try {
+      const existing = (await readFile(idPath, "utf8")).trim();
+      if (existing) return existing;
+    } catch {
+      /* fall through */
+    }
+    return id; // best effort — at worst this run treats itself as a fresh profile identity
+  }
 }
 
 export interface DaemonCfg {
@@ -85,7 +123,9 @@ function isValidState(parsed: Partial<DaemonState>): parsed is DaemonState {
     typeof parsed.startedAt === "string" &&
     typeof parsed.profileDir === "string" &&
     typeof parsed.hostname === "string" &&
-    parsed.hostname.length > 0
+    parsed.hostname.length > 0 &&
+    typeof parsed.profileId === "string" &&
+    parsed.profileId.length > 0
   );
 }
 
@@ -104,11 +144,24 @@ export async function readDaemonState(cfg: DaemonCfg): Promise<DaemonState | nul
   return readStateFile(daemonStatePath(cfg));
 }
 
-/** Read-only directory scan for another host's daemon file naming the same profile — never reads
- * (let alone writes) a specific other host's path directly, since the hostname on a shared drive
- * isn't known in advance. */
+/**
+ * Read-only directory scan for another host's daemon file — never reads (let alone writes) a
+ * specific other host's path directly, since the hostname on a shared drive isn't known in
+ * advance.
+ *
+ * Compares `state.profileId`, not `state.profileDir` (AGY/Antigravity second-opinion review,
+ * 2026-09-18): each host resolves its own profileDir in its own path notation (Windows
+ * `S:\...\runtime\profile` vs. macOS `/Volumes/Share/.../runtime/profile` for the exact same
+ * shared directory over the same SMB mount), so an absolute-string comparison between hosts can
+ * never match — it silently defeated this entire cross-host check, exactly the class of incident
+ * A-108 exists to prevent. `profileId` (getOrCreateProfileId) lives inside the profile directory
+ * itself, so it reads the same regardless of which path was used to reach it, and — unlike
+ * dropping the comparison outright — still correctly distinguishes two genuinely different
+ * profiles that happen to share one `runtimeDir`.
+ */
 async function findForeignDaemon(cfg: DaemonCfg): Promise<DaemonState | null> {
   const own = sanitizeHostname(osHostname());
+  const profileId = await getOrCreateProfileId(cfg.profileDir);
   let entries: string[];
   try {
     entries = await readdir(cfg.runtimeDir);
@@ -119,7 +172,7 @@ async function findForeignDaemon(cfg: DaemonCfg): Promise<DaemonState | null> {
     const m = DAEMON_FILE_RE.exec(name);
     if (!m || m[1] === own) continue;
     const state = await readStateFile(join(cfg.runtimeDir, name));
-    if (state && state.profileDir === cfg.profileDir) return state;
+    if (state && state.profileId === profileId) return state;
   }
   return null;
 }
@@ -258,6 +311,7 @@ export async function startDaemon(
   }
 
   const hostname = osHostname();
+  const profileId = await getOrCreateProfileId(cfg.profileDir);
   const port = Number(process.env.CHATGPT_BRIDGE_DAEMON_PORT ?? (await pickFreePort()));
   await mkdir(cfg.runtimeDir, { recursive: true });
   const workerPath = fileURLToPath(new URL("./daemon-worker.js", import.meta.url));
@@ -278,6 +332,8 @@ export async function startDaemon(
       daemonStatePath(cfg, hostname),
       "--hostname",
       hostname,
+      "--profile-id",
+      profileId,
       "--lock-path",
       join(cfg.runtimeDir, "locks", "bridge.lock"),
       ...(process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS
