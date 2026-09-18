@@ -192,7 +192,14 @@ export class BrowserSession {
   }
 
   /** 10 §5: bounded close, then kill. When attached to a daemon, only detach — the daemon owns
-   * the browser's lifecycle, so it must survive this command returning (A-103). */
+   * the browser's lifecycle, so it must survive this command returning (A-103).
+   *
+   * A-121 (Phase 0-B-5, ChatGPT Pro redesign review §3.6): `ctx.tracing.stop()` had no timeout at
+   * all, and the post-timeout fallback `ctx.close()` was itself a second, genuinely unbounded
+   * await — the "bounded close, then kill" comment didn't match what the code did. Persistent
+   * contexts expose no process handle, so there is nothing to literally kill from here; the
+   * achievable guarantee is that `close()` itself always returns within a bound, even if the
+   * underlying Playwright call is still hung in the background. */
   async close(): Promise<void> {
     const ctx = this.context;
     if (!ctx) return;
@@ -202,30 +209,33 @@ export class BrowserSession {
       this.attached = false;
       if (this.tracing) {
         this.tracing = false;
-        await ctx.tracing.stop().catch(() => undefined);
+        await withTimeout(ctx.tracing.stop(), 10_000, "tracing.stop() (detach)").catch(
+          () => undefined,
+        );
       }
       // C-6 (Codex Medium): disconnect the CDP session explicitly instead of just dropping the
       // reference. For a Browser obtained via connectOverCDP(), .close() ends only this
       // connection — the daemon's actual browser process keeps running.
       const cdp = this.cdpBrowser;
       this.cdpBrowser = null;
-      if (cdp) await cdp.close().catch(() => undefined);
+      if (cdp) await withTimeout(cdp.close(), 10_000, "cdp.close()").catch(() => undefined);
       return;
     }
     const limit = this.cfg.closeTimeoutMs ?? 15_000;
     if (this.tracing) {
       this.tracing = false;
-      await ctx.tracing.stop().catch(() => undefined);
+      await withTimeout(ctx.tracing.stop(), 10_000, "tracing.stop()").catch(() => undefined);
     }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<"timeout">((r) => {
-      timer = setTimeout(() => r("timeout"), limit);
-    });
-    const result = await Promise.race([ctx.close().then(() => "closed" as const), timeout]);
-    if (timer) clearTimeout(timer);
+    const result = await withTimeout(
+      ctx.close().then(() => "closed" as const),
+      limit,
+      "context.close()",
+    ).catch(() => "timeout" as const);
     if (result === "timeout") {
-      // Persistent contexts expose no process handle; fall back to a forced close.
-      await ctx.close().catch(() => undefined);
+      // Second chance, still bounded — never the unbounded await the old code fell back to.
+      await withTimeout(ctx.close(), limit, "context.close() (second attempt)").catch(
+        () => undefined,
+      );
     }
   }
 }
