@@ -253,12 +253,16 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
       },
     ],
   },
+  // A-127 (Phase 0-C-1): no verifiedOn candidate. page.ts calls exists() for this key with
+  // verifiedOnly:false unconditionally (safetyCheckOpts) — a false verifiedOnly default here would
+  // otherwise silently disable this detection entirely in every normal run.
   continueButton: {
     key: "continueButton",
     purpose: "続きを生成（存在 = truncated）",
     mode: "presence",
     candidates: [{ kind: "role", role: "button", name: /続きを生成|Continue generating/i }],
   },
+  // A-127: same as continueButton above — no verifiedOn, always checked via safetyCheckOpts.
   sidePanel: {
     key: "sidePanel",
     purpose: "Canvas 等の編集パネル",
@@ -293,6 +297,7 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
       { kind: "testid", testId: "login-button" },
     ],
   },
+  // A-127: same as continueButton above — no verifiedOn, always checked via safetyCheckOpts.
   challengeFrame: {
     key: "challengeFrame",
     purpose: "Cloudflare / Turnstile / CAPTCHA",

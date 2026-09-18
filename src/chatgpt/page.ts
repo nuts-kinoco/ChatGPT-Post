@@ -105,6 +105,21 @@ export class ChatGptPage implements ChatGptPort {
     return { verifiedOnly: this.opts.verifiedOnly };
   }
 
+  /**
+   * A-127 (Phase 0-C-1, ChatGPT Pro self-review §2.1): `continueButton`/`sidePanel`/
+   * `challengeFrame` have no `verifiedOn` candidates, so with the normal `verifiedOnly: true`
+   * every candidate was skipped and these presence checks always silently returned `false` — "we
+   * never checked" was indistinguishable from "confirmed absent" for exactly the three signals
+   * (truncated response, Canvas, CAPTCHA/challenge) safety-relevant enough to matter most. Rather
+   * than fabricate an unverified `verifiedOn` date, these detection-only checks (never used to
+   * click/act — only to report a status) always run their candidates regardless of the run's
+   * `verifiedOnly` setting: a false positive here just means extra caution in a warning/status
+   * field, not a wrong action, so it's an acceptable trade for closing the always-false gap.
+   */
+  private get safetyCheckOpts() {
+    return { verifiedOnly: false };
+  }
+
   async currentUrl(): Promise<string> {
     return this.page.url();
   }
@@ -153,7 +168,7 @@ export class ChatGptPage implements ChatGptPort {
         ? { kind: "AUTH_REQUIRED" }
         : { kind: "WRONG_PAGE", url };
     }
-    if (await exists(this.page, "challengeFrame", this.sel))
+    if (await exists(this.page, "challengeFrame", this.safetyCheckOpts))
       return { kind: "CHALLENGE", challenge: "captcha" };
     const dialogs = build(this.page, { kind: "role", role: "dialog", name: "" });
     const dialogCount = await dialogs.count();
@@ -774,8 +789,8 @@ export class ChatGptPage implements ChatGptPort {
     const composer = await probe(this.page, "composer", this.sel);
     const composerReady = !streaming && composer.found && composer.enabled === true;
     const copyAvailable = latestTurn ? await exists(latestTurn, "copyTurnButton", this.sel) : false;
-    const truncated = await exists(this.page, "continueButton", this.sel);
-    const sidePanel = await exists(this.page, "sidePanel", this.sel);
+    const truncated = await exists(this.page, "continueButton", this.safetyCheckOpts);
+    const sidePanel = await exists(this.page, "sidePanel", this.safetyCheckOpts);
 
     let errorBanner: Observation["errorBanner"] = "none";
     const alerts = build(this.page, { kind: "role", role: "alert", name: "" });
@@ -800,7 +815,7 @@ export class ChatGptPage implements ChatGptPort {
     else if (has("chatError")) errorBanner = "chat_error";
 
     let challenge: Observation["challenge"] = "none";
-    if (await exists(this.page, "challengeFrame", this.sel)) challenge = "captcha";
+    if (await exists(this.page, "challengeFrame", this.safetyCheckOpts)) challenge = "captcha";
     else if (!composer.found && (await exists(this.page, "loginCta", this.sel)))
       challenge = "login";
 
@@ -824,7 +839,8 @@ export class ChatGptPage implements ChatGptPort {
   async extractLatest(): Promise<Extraction | { kind: "empty"; cause: "empty" | "canvas" }> {
     const turn = await latest(this.page, "assistantTurn", this.sel);
     if (!turn) return { kind: "empty", cause: "empty" };
-    if (await exists(this.page, "sidePanel", this.sel)) return { kind: "empty", cause: "canvas" };
+    if (await exists(this.page, "sidePanel", this.safetyCheckOpts))
+      return { kind: "empty", cause: "canvas" };
     const bodyProbe = await probe(turn, "assistantTurnBody", this.sel);
     const modelSlug = await this.readModelSlug(turn);
     if (!bodyProbe.found || !bodyProbe.locator) {
