@@ -5,7 +5,7 @@
   "description": "Local, serial CLI bridge that submits one prompt to the ChatGPT web UI via a dedicated Playwright profile and returns the reply as Markdown + result.json.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "bin": {
     "chatgpt-bridge": "./dist/cli/main.js"

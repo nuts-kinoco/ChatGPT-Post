@@ -69,6 +69,8 @@
 
 次へ進む条件: CLI切断・長時間生成・管理サービス再起動後に同じrequestIdで結果を再送なしに取得できること。
 
+**実装状況(A-132/A-133)**: MVP版として`submit`/`status`/`wait`/`result`コマンドを追加済み(既存`run`は無変更)。`node:sqlite`（Node 22.13+）でjob台帳(`runtime/jobs.db`)を実装。**制約**: `runtime/`がSMB等の共有ドライブ上にある場合、WAL modeが正しく動作しない可能性がある(A-108参照)。`CHATGPT_BRIDGE_RUNTIME_DIR`を各ホストローカルに設定すること(実行時の自動検知は未実装)。daemon側での観測引き継ぎ(CLIタイムアウト後もdaemonが監視を継続する部分)は未実装のまま — 現状は「submitしたCLI自身の寿命からは独立するが、生成の実際の監視・タイムアウト判定は引き続き検出された`run`子プロセス自身が行う」に留まる。
+
 ## Phase 2: 送信後の回復
 
 出典: §5.3, §6.4。読み取り専用のrecovery経路(`openConversation()`の送信用厳格条件をそのまま復旧に流用しない)、会話・ターンの永続束縛、marker/manifest/DB照合。

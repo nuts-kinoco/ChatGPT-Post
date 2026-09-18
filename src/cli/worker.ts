@@ -8,7 +8,7 @@ import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promi
 import { join } from "node:path";
 import { isValidRequestId } from "../contracts/request.js";
 import { EXIT_CODES } from "../contracts/types.js";
-import { defaultLockDeps, type LockDeps } from "../state/lock.js";
+import { defaultLockDeps, isOwnerLive, type LockDeps, type ProcessOwner } from "../state/lock.js";
 
 export const QUEUE_DIRS = ["pending", "running", "done", "failed", "blocked"] as const;
 export type QueueDir = (typeof QUEUE_DIRS)[number];
@@ -51,12 +51,6 @@ async function moveDir(
 
 const OWNER_FILE = ".worker-owner.json";
 
-interface WorkerOwner {
-  pid: number;
-  startedAt: string;
-  hostname: string;
-}
-
 type OwnerDeps = Pick<LockDeps, "isProcessAlive" | "processStartedAt" | "now" | "pid" | "hostname">;
 
 /** A-116 (Phase 0-B-1, `docs/23-DURABLE-BRIDGE-PHASES.md`): written into `running/<id>/` right
@@ -68,7 +62,7 @@ async function writeOwnerFile(
   dir: string,
   deps: Pick<OwnerDeps, "now" | "pid" | "hostname">,
 ): Promise<void> {
-  const owner: WorkerOwner = {
+  const owner: ProcessOwner = {
     pid: deps.pid,
     startedAt: deps.now().toISOString(),
     hostname: deps.hostname,
@@ -76,11 +70,11 @@ async function writeOwnerFile(
   await writeFile(join(dir, OWNER_FILE), JSON.stringify(owner), "utf8").catch(() => undefined);
 }
 
-async function readOwnerFile(dir: string): Promise<WorkerOwner | null> {
+async function readOwnerFile(dir: string): Promise<ProcessOwner | null> {
   try {
     const parsed = JSON.parse(
       await readFile(join(dir, OWNER_FILE), "utf8"),
-    ) as Partial<WorkerOwner>;
+    ) as Partial<ProcessOwner>;
     if (typeof parsed.pid !== "number" || typeof parsed.hostname !== "string") return null;
     return {
       pid: parsed.pid,
@@ -90,23 +84,6 @@ async function readOwnerFile(dir: string): Promise<WorkerOwner | null> {
   } catch {
     return null;
   }
-}
-
-/** Same reuse-guard shape as `judgeStale()` in `state/lock.ts` (A-108/ADR-005): a different host
- * can't be checked remotely so is assumed live; a dead PID or one reused after the recorded start
- * time means the owner is gone. */
-async function ownerIsLive(
-  owner: WorkerOwner,
-  deps: Pick<OwnerDeps, "isProcessAlive" | "processStartedAt" | "hostname">,
-): Promise<boolean> {
-  if (owner.hostname && owner.hostname !== deps.hostname) return true;
-  if (!deps.isProcessAlive(owner.pid)) return false;
-  const created = await deps.processStartedAt(owner.pid);
-  const started = new Date(owner.startedAt);
-  if (created && !Number.isNaN(started.getTime()) && created.getTime() > started.getTime() + 2000) {
-    return false; // PID reused since this worker claimed the item
-  }
-  return true;
 }
 
 /**
@@ -132,7 +109,7 @@ export async function recoverRunning(
     if (!isValidRequestId(id)) continue;
     const dir = join(queueDir, "running", id);
     const owner = await readOwnerFile(dir);
-    if (owner && (await ownerIsLive(owner, deps))) {
+    if (owner && (await isOwnerLive(owner, deps))) {
       log(
         `worker: ${id} still owned by pid ${owner.pid}@${owner.hostname}; leaving it in running/`,
       );

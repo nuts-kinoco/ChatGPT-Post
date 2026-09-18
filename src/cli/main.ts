@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { realpathSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
@@ -14,6 +14,12 @@ import { formatDoctor, runDoctor } from "../diagnostics/doctor.js";
 import { createLogger } from "../diagnostics/logger.js";
 import { computeUsage, formatUsage, loadLimits, loadRecords } from "../diagnostics/usage.js";
 import { RunController } from "../state/controller.js";
+// A-132 Opus review, High #8: `node:sqlite` needs Node >=22.13 unflagged. These are imported
+// dynamically ONLY inside the four Phase 1 command handlers below (never at module top level),
+// so `run`/`doctor`/`worker`/`login`/etc. — the commands other projects' CLAUDE.md/SKILL.md files
+// already call directly — keep working unmodified even on a Node version where node:sqlite can't
+// load; only `submit`/`status`/`wait`/`result` themselves require the newer engines.node floor.
+import type { JobRow } from "../state/jobstore.js";
 import { buildPorts } from "./adapters.js";
 import { type BridgeConfig, loadConfig } from "./config.js";
 import { runWorker } from "./worker.js";
@@ -25,6 +31,17 @@ commands:
   doctor                     環境・プロファイル・ロック・ログイン状態を診断する
   run --request <path> [--json]
                              request.json を 1 件処理する。--json は result.json の内容を標準出力に 1 行で出す
+  submit --request <path> [--json]
+                             （Phase 1）request.json を検証してjob台帳（runtime/jobs.db）に登録し、
+                             実際の生成は別プロセス（detached）へ渡してすぐ戻る。呼び出し元CLIが
+                             終了・切断しても生成は続く。同じ requestId・同じ内容の再送は既存jobを返す
+  status <requestId> [--json]
+                             （Phase 1）jobの現在状態を見る（result.json があれば優先）
+  wait <requestId> [--timeout-ms <n>] [--json]
+                             （Phase 1）jobが終端状態になるかタイムアウトするまで待つ。タイムアウトしても
+                             jobそのものは止まらない
+  result <requestId> [--out <path>] [--json]
+                             （Phase 1）完了したjobのresponse.mdを取得する
   usage [--json] [--queue <dir>]
                              ブリッジ経由の送信数を窓ごとに集計し、runtime/limits.json の上限と比べる
                              （--queue でキューの done / failed / blocked も数える）
@@ -269,6 +286,125 @@ async function cmdRun(
   return outcome.exitCode;
 }
 
+function printJob(job: JobRow, json: boolean): void {
+  if (json) {
+    process.stdout.write(`${JSON.stringify(job)}\n`);
+    return;
+  }
+  process.stdout.write(`requestId=${job.requestId} status=${job.status}\n`);
+  if (job.errorCode) process.stdout.write(`errorCode=${job.errorCode}\n`);
+  if (job.resultPath) process.stdout.write(`result: ${job.resultPath}\n`);
+}
+
+async function cmdSubmit(cfg: BridgeConfig, requestPath: string, json: boolean): Promise<number> {
+  const { submitJob } = await import("./submit.js");
+  const outcome = await submitJob(cfg, requestPath);
+  if (!outcome.ok) {
+    process.stderr.write(`${outcome.cause}\n`);
+    return EXIT_CODES.invalidInput;
+  }
+  if (!json && outcome.alreadySubmitted) {
+    process.stdout.write("(already submitted with the same content; returning the existing job)\n");
+  }
+  printJob(outcome.job, json);
+  return 0;
+}
+
+async function cmdStatus(cfg: BridgeConfig, requestId: string, json: boolean): Promise<number> {
+  const { jobStorePath, reconcileJob } = await import("./submit.js");
+  const { openJobStore } = await import("../state/jobstore.js");
+  const store = await openJobStore(jobStorePath(cfg));
+  try {
+    const job = store.get(requestId);
+    if (!job) {
+      process.stderr.write(`no such job: ${requestId}\n`);
+      return EXIT_CODES.invalidInput;
+    }
+    printJob(await reconcileJob(store, job), json);
+    return 0;
+  } finally {
+    store.close();
+  }
+}
+
+async function cmdWait(
+  cfg: BridgeConfig,
+  requestId: string,
+  timeoutMs: number,
+  json: boolean,
+): Promise<number> {
+  const { jobStorePath, waitForJob } = await import("./submit.js");
+  const { openJobStore } = await import("../state/jobstore.js");
+  const store = await openJobStore(jobStorePath(cfg));
+  try {
+    const { job, timedOut } = await waitForJob(store, requestId, timeoutMs);
+    if (!job) {
+      process.stderr.write(`no such job: ${requestId}\n`);
+      return EXIT_CODES.invalidInput;
+    }
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ ...job, timedOut })}\n`);
+    } else {
+      printJob(job, false);
+      if (timedOut) {
+        // The CLI's own wait gave up; the detached run keeps going regardless
+        // (11-STATE-MACHINE §5.4: CLI待機期限は「CLIだけ終了」— the job itself is untouched,
+        // poll status/wait again later.
+        process.stdout.write("(wait timed out; the job itself is still running)\n");
+      }
+    }
+    if (timedOut) return 1;
+    return job.status === "completed" ? 0 : job.status === "manual_intervention_required" ? 3 : 1;
+  } finally {
+    store.close();
+  }
+}
+
+async function cmdResult(
+  cfg: BridgeConfig,
+  requestId: string,
+  out: string | undefined,
+  json: boolean,
+): Promise<number> {
+  const { jobStorePath, reconcileJob } = await import("./submit.js");
+  const { openJobStore } = await import("../state/jobstore.js");
+  const store = await openJobStore(jobStorePath(cfg));
+  let job: JobRow | null;
+  try {
+    job = store.get(requestId);
+    if (!job) {
+      process.stderr.write(`no such job: ${requestId}\n`);
+      return EXIT_CODES.invalidInput;
+    }
+    job = await reconcileJob(store, job);
+  } finally {
+    store.close();
+  }
+  if (job.status !== "completed") {
+    process.stderr.write(`job ${requestId} is not completed (status=${job.status})\n`);
+    return EXIT_CODES.invalidInput;
+  }
+  const responsePath = join(job.requestDir, "response.md");
+  let markdown: string;
+  try {
+    markdown = await readFile(responsePath, "utf8");
+  } catch (err) {
+    process.stderr.write(`response.md missing for a completed job: ${(err as Error).message}\n`);
+    return 1;
+  }
+  if (out) {
+    await mkdir(dirname(out), { recursive: true });
+    await writeFile(out, markdown, "utf8");
+    if (!json) process.stdout.write(`wrote ${out}\n`);
+  } else if (!json) {
+    process.stdout.write(markdown);
+  }
+  // A-132 Opus review, Low #12: --json used to discard the response body entirely unless --out
+  // was also given, defeating the command's own purpose for a JSON-consuming caller.
+  if (json) process.stdout.write(`${JSON.stringify({ ...job, responseMarkdown: markdown })}\n`);
+  return 0;
+}
+
 async function cmdBundle(v: {
   root?: string | undefined;
   out?: string | undefined;
@@ -478,6 +614,7 @@ export async function main(argv: string[]): Promise<number> {
       "max-bytes": { type: "string" },
       diff: { type: "string" },
       "allow-unverified": { type: "boolean", default: false },
+      "timeout-ms": { type: "string" },
       help: { type: "boolean", default: false },
     },
   });
@@ -502,6 +639,42 @@ export async function main(argv: string[]): Promise<number> {
         return EXIT_CODES.invalidInput;
       }
       return cmdRun(cfg, values.request, verifiedOnly, values.json ?? false);
+    case "submit":
+      if (!values.request) {
+        process.stderr.write("submit requires --request <path>\n");
+        return EXIT_CODES.invalidInput;
+      }
+      return cmdSubmit(cfg, values.request, values.json ?? false);
+    case "status":
+      if (!positionals[1]) {
+        process.stderr.write("status requires <requestId>\n");
+        return EXIT_CODES.invalidInput;
+      }
+      return cmdStatus(cfg, positionals[1], values.json ?? false);
+    case "wait": {
+      if (!positionals[1]) {
+        process.stderr.write("wait requires <requestId>\n");
+        return EXIT_CODES.invalidInput;
+      }
+      // A-132 Opus review, Medium #7: Number(undefined-ish garbage) silently produces NaN, and
+      // `Date.now() >= NaN` is always false — an unvalidated --timeout-ms made `wait` poll forever
+      // instead of ever taking its timeout exit, exactly the "CLI blocked forever" failure this
+      // phase exists to eliminate.
+      const timeoutMs = Number(values["timeout-ms"] ?? 900_000);
+      if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
+        process.stderr.write(
+          `--timeout-ms must be a non-negative number, got "${values["timeout-ms"]}"\n`,
+        );
+        return EXIT_CODES.invalidInput;
+      }
+      return cmdWait(cfg, positionals[1], timeoutMs, values.json ?? false);
+    }
+    case "result":
+      if (!positionals[1]) {
+        process.stderr.write("result requires <requestId>\n");
+        return EXIT_CODES.invalidInput;
+      }
+      return cmdResult(cfg, positionals[1], values.out, values.json ?? false);
     case "bundle":
       return cmdBundle({
         root: values.root,

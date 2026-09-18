@@ -152,6 +152,34 @@ export async function judgeStale(
   return { stale: false, reason: `pid ${record.pid} is alive` };
 }
 
+export interface ProcessOwner {
+  pid: number;
+  startedAt: string;
+  hostname: string;
+}
+
+/**
+ * A-132 (Opus review of Phase 1's jobstore, ChatGPT Pro redesign review §3): the same
+ * cross-host/PID-reuse guard as `judgeStale()` above, factored out so any "is the process that
+ * recorded this row/file still the one that's alive" check in the codebase (previously
+ * duplicated as `worker.ts`'s private `ownerIsLive`, and needed again by `cli/submit.ts`'s job
+ * ledger) uses one implementation. A different host can't be checked remotely, so is assumed
+ * live; a dead PID or one reused after the recorded start time means the owner is gone.
+ */
+export async function isOwnerLive(
+  owner: ProcessOwner,
+  deps: Pick<LockDeps, "isProcessAlive" | "processStartedAt" | "hostname">,
+): Promise<boolean> {
+  if (owner.hostname && owner.hostname !== deps.hostname) return true;
+  if (!deps.isProcessAlive(owner.pid)) return false;
+  const created = await deps.processStartedAt(owner.pid);
+  const started = new Date(owner.startedAt);
+  if (created && !Number.isNaN(started.getTime()) && created.getTime() > started.getTime() + 2000) {
+    return false; // PID reused since this owner recorded its start time
+  }
+  return true;
+}
+
 function createExclusive(path: string, content: string): boolean {
   let fd: number | undefined;
   try {
