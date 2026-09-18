@@ -4,10 +4,11 @@
  * against the shared profile, exposes it over a local CDP port, writes runtime/daemon.json once
  * ready, then stays alive until stopped. Spawned detached so it survives its parent CLI exiting.
  */
-import { access, rename, unlink, writeFile } from "node:fs/promises";
+import { rename, unlink, writeFile } from "node:fs/promises";
 import { hostname as osHostname } from "node:os";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
+import { ProcessLock } from "../state/lock.js";
 import { withTimeout } from "./timeout.js";
 
 const { values } = parseArgs({
@@ -79,15 +80,13 @@ async function shutdown(): Promise<void> {
   process.exit(0);
 }
 
-async function isLockHeld(): Promise<boolean> {
-  if (!lockPath) return false;
-  try {
-    await access(lockPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
+/** A-120 (Phase 0-B-4, ChatGPT Pro redesign review, reproduced by inspection & confirmed by the
+ * codebase's own prior comment admitting the gap): keepalive used to only check whether the lock
+ * *file existed* (`access()`), never actually acquire it — a client could acquire the real lock
+ * in the window between that check and keepalive touching the page. Now keepalive is a genuine
+ * participant in the same lock protocol every other command uses, closing the TOCTOU entirely
+ * instead of narrowing it with a second re-check. */
+const keepaliveLock = lockPath ? new ProcessLock(lockPath) : null;
 
 /**
  * A-110: a Mac session reported the daemon's single tracked `page` going unusable (closed /
@@ -114,21 +113,25 @@ function log(msg: string): void {
  * `consecutiveFailures`, or one could close a page the other just opened. */
 let tickInFlight = false;
 
-/** A-105: periodic real navigation as an activity signal, skipped whenever a command holds the
- * bridge lock so it can't collide with one in flight. Codex review of A-110, High: the original
- * check only ran once at the top of the tick — re-checked again immediately before any
- * page-replacing action below, since goto()'s own 30s wait is plenty of time for a client to have
- * acquired the lock and started using whatever page we're about to touch. This narrows, but per
- * A-105's existing note does not eliminate, the race; full mutual exclusion would need the daemon
- * to participate in the lock protocol itself, out of scope here. */
+/** A-105: periodic real navigation as an activity signal. A-120 (Phase 0-B-4): the lock is held
+ * for the entire duration of this tick's page-touching work via keepaliveLock.acquire()/release()
+ * above, not just checked once — a genuine mutual-exclusion participant, not a presence check
+ * with a re-check bolted on. */
 async function keepAliveTick(): Promise<void> {
   if (shuttingDown || tickInFlight) return;
   tickInFlight = true;
+  let acquired = false;
   try {
-    if (await isLockHeld()) {
+    if (!keepaliveLock) {
+      log("skipped: no lock-path configured");
+      return;
+    }
+    const outcome = await keepaliveLock.acquire("daemon-keepalive", null);
+    if (outcome.kind !== "ok") {
       log("skipped: lock held");
       return;
     }
+    acquired = true;
     // A-110: prefer a page a client already opened (via BrowserSession.getUsablePage()) over the
     // one this loop last knew about, if that one is now closed — avoids piling up an extra blank
     // tab here on top of whatever the client already recovered to.
@@ -149,11 +152,8 @@ async function keepAliveTick(): Promise<void> {
       consecutiveFailures++;
       log(`failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${(err as Error).message}`);
     }
-    if (await isLockHeld()) {
-      // A client grabbed the lock while goto() was failing/timing out — don't touch pages now.
-      log("aborting recovery: lock now held");
-      return;
-    }
+    // A-120: no second lock-held re-check needed here — we've held the real lock since before
+    // touching `page` above, so no client could have acquired it in between.
     // A-110: the page itself (not necessarily the context) may be the thing that died. Try opening
     // a replacement page on the same context before giving up on the whole daemon. Codex review,
     // High: newPage() succeeding doesn't by itself prove the new page is usable — verify it too
@@ -182,6 +182,7 @@ async function keepAliveTick(): Promise<void> {
       await shutdown();
     }
   } finally {
+    if (acquired) await keepaliveLock?.release();
     tickInFlight = false;
   }
 }
