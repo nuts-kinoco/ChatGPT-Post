@@ -191,6 +191,20 @@ export function destinationFor(exitCode: number): QueueDir {
   return "failed";
 }
 
+/** A-131 (Phase 0-F, ChatGPT Pro self-review §13): best-effort read of the error code the `run`
+ * that just finished actually wrote, so the queue can react to specific codes exit-code grouping
+ * alone can't distinguish (GENERATION_TIMEOUT_ACTIVE and plain GENERATION_TIMEOUT are both exit 1). */
+async function readResultErrorCode(dir: string): Promise<string | null> {
+  try {
+    const res = JSON.parse(await readFile(join(dir, "result.json"), "utf8")) as {
+      error?: { code?: string } | null;
+    };
+    return res.error?.code ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Processes one pending item. Returns null when pending is empty.
  * A "blocked" outcome (exit 3) means the caller must stop the whole queue (A-094).
@@ -223,6 +237,15 @@ export async function processOne(
     const n = (busyCounts.get(id) ?? 0) + 1;
     busyCounts.set(id, n);
     if (n > opts.maxBusyRetries) dest = "failed";
+  }
+  // A-131 (Phase 0-F): GENERATION_TIMEOUT_ACTIVE's own error message warns that the previous
+  // generation may still be running in the shared profile, and that resubmitting into it risks a
+  // collision (the exact class of incident #124 was about). Exit code alone maps this to a plain
+  // "failed" -> the worker would otherwise move straight on to the next pending item in the same
+  // profile. Route it like a manual-intervention outcome instead: stop the queue for a human to
+  // check `doctor`/the screenshot before anything else touches this profile.
+  if (dest === "failed" && (await readResultErrorCode(running)) === "GENERATION_TIMEOUT_ACTIVE") {
+    dest = "blocked";
   }
   try {
     await moveDir(running, join(opts.queueDir, dest, id), sleep);

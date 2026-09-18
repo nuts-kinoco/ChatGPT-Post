@@ -154,6 +154,29 @@ describe("file-queue worker (21 §5c, A-094)", () => {
     expect(await readdir(join(q, "pending"))).toContain(id);
   });
 
+  it("A-131 (Phase 0-F, ChatGPT Pro self-review §13): GENERATION_TIMEOUT_ACTIVE stops the queue instead of moving on to the next item in the same profile", async () => {
+    const r = await runWorker(
+      { queueDir: q, once: false, drain: true, pollMs: 1, maxBusyRetries: 3 },
+      async (requestPath) => {
+        const dir = requestPath.replace(/[\\/]request\.json$/, "");
+        await writeFile(
+          join(dir, "result.json"),
+          JSON.stringify({ status: "failed", error: { code: "GENERATION_TIMEOUT_ACTIVE" } }),
+        );
+        return 1;
+      },
+      () => undefined,
+      async () => undefined,
+    );
+    expect(r.stoppedBy).toBe("blocked");
+    expect(r.processed).toHaveLength(1);
+    expect(r.processed[0]?.movedTo).toBe("blocked");
+    expect(await readdir(join(q, "blocked"))).toEqual(["20260915T000001Z-aaaaaaaa"]);
+    // the other two pending items were never touched
+    expect(await readdir(join(q, "pending"))).toContain("20260915T000002Z-bbbbbbbb");
+    expect(await readdir(join(q, "pending"))).toContain("20260915T000003Z-cccccccc");
+  });
+
   it("--once processes exactly one item", async () => {
     const r = await runWorker(
       { queueDir: q, once: true, drain: false, pollMs: 1, maxBusyRetries: 3 },
