@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright";
+import { withTimeout } from "../browser/timeout.js";
 import { uploadBudgetMs } from "../contracts/attachments.js";
 import type {
   ObservedModel,
@@ -1000,7 +1001,17 @@ export class ChatGptPage implements ChatGptPort {
     }
   }
 
-  /** A-069: read the bytes the page already displays (same URL as the <img>), nothing else. */
+  /**
+   * A-069: read the bytes the page already displays (same URL as the <img>), nothing else.
+   *
+   * A-124 (Phase 0-C-3, ChatGPT Pro redesign review §2.10): `signal` cannot itself cross the CDP
+   * boundary into the page's own `fetch()` — Playwright's `evaluate()` only accepts
+   * structured-clonable arguments, and an `AbortSignal` isn't one, so the in-page request was
+   * never actually cancellable and `signal.aborted` was previously only checked *after* the
+   * `evaluate()` call had already resolved. What this now guarantees instead: the call this
+   * function makes to `evaluate()` stops waiting promptly (bounded by `signal` firing or a fixed
+   * ceiling), even though the in-page fetch may continue running in the background regardless.
+   */
   private async saveImageViaFetch(
     src: string,
     dir: string,
@@ -1009,7 +1020,7 @@ export class ChatGptPage implements ChatGptPort {
   ): Promise<{ ok: true; file: string } | { ok: false; cause: string }> {
     if (!src.startsWith(`${CHATGPT_ORIGIN}/`))
       return { ok: false, cause: "img.src is not on chatgpt.com" };
-    const r = await this.page.evaluate(async (url) => {
+    const evalPromise = this.page.evaluate(async (url) => {
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) return { ok: false as const, cause: `HTTP ${res.status}` };
       const blob = await res.blob();
@@ -1019,6 +1030,18 @@ export class ChatGptPage implements ChatGptPort {
         bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
       return { ok: true as const, type: blob.type, b64: btoa(bin) };
     }, src);
+    const aborted = new Promise<never>((_, reject) => {
+      const onAbort = () => reject(new Error("aborted"));
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+    let r: { ok: true; type: string; b64: string } | { ok: false; cause: string };
+    try {
+      r = await Promise.race([withTimeout(evalPromise, 60_000, "saveImageViaFetch"), aborted]);
+    } catch (err) {
+      evalPromise.catch(() => undefined); // avoid an unhandled rejection once it eventually settles
+      return { ok: false, cause: (err as Error).message };
+    }
     if (!r.ok) return r;
     if (signal.aborted) return { ok: false, cause: "aborted before write" };
     const ext = r.type.includes("png")
