@@ -16,10 +16,26 @@ export function normaliseForCompare(text: string): string {
 
 const UI_NOISE = new Set(["コピーする", "copy", "code", "コードをコピー", "copy code"]);
 
+/**
+ * A-129 (Phase 0-D-2, ChatGPT Pro self-review §2.4): `normaliseForCompare()`'s word-splitting
+ * treats every operator character purely as a token separator, so `count != limit` and
+ * `count == limit` tokenized identically (both just "count", "limit") — an operator change
+ * couldn't lower coverage no matter how code-semantically different the two texts were. Extracted
+ * separately (from the *raw* text, before symbol-stripping) as their own tokens so a mismatched
+ * operator now shows up as a missing/extra token in the coverage count, without touching the
+ * existing word-level tolerance for markdown-vs-rendered-text noise.
+ */
+const OPERATOR_RE = /(===|!==|==|!=|<=|>=|&&|\|\||\+=|-=|\*=|\/=|->|=>|::|\+\+|--)/g;
+
+function operatorTokens(text: string): string[] {
+  return (text.match(OPERATOR_RE) ?? []).map((m) => `op:${m}`);
+}
+
 export function tokens(text: string): string[] {
-  return normaliseForCompare(text)
+  const words = normaliseForCompare(text)
     .split(/[^\p{L}\p{N}]+/u)
     .filter((t) => t.length >= 2 && !UI_NOISE.has(t));
+  return [...words, ...operatorTokens(text)];
 }
 
 export interface VerifyOutcome {

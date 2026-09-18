@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { htmlToMarkdown } from "../../src/extraction/markdown.js";
-import { verifyCandidate } from "../../src/extraction/verify.js";
+import { MIN_COVERAGE, verifyCandidate } from "../../src/extraction/verify.js";
 
 const innerText = `Bridge Smoke Test
 
@@ -38,6 +38,18 @@ describe("verifyCandidate (10 §7, AC-022)", () => {
   it("rejects empty innerText and empty candidate", () => {
     expect(verifyCandidate(copyMarkdown, "   ").ok).toBe(false);
     expect(verifyCandidate("", innerText).ok).toBe(false);
+  });
+
+  // A-129 (Phase 0-D-2, ChatGPT Pro self-review §2.4): an operator flip used to be invisible to
+  // coverage (both `!=` and `==` tokenized to nothing — pure separators), so a code snippet whose
+  // only real difference was the operator still passed at 100% coverage.
+  it("detects an operator change that the old word-only tokenizer was blind to", () => {
+    const v = verifyCandidate("count == limit", "count != limit");
+    expect(v.ok).toBe(false);
+    expect(v.coverage ?? 1).toBeLessThan(MIN_COVERAGE);
+  });
+  it("still accepts an exact operator match", () => {
+    expect(verifyCandidate("count != limit", "count != limit").ok).toBe(true);
   });
 });
 
