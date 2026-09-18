@@ -4,10 +4,11 @@
  * (same lock, marker, fail-closed rules) and moves each directory to done / failed / blocked.
  * No server, no database: the directory tree is the whole protocol.
  */
-import { mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isValidRequestId } from "../contracts/request.js";
 import { EXIT_CODES } from "../contracts/types.js";
+import { defaultLockDeps, type LockDeps } from "../state/lock.js";
 
 export const QUEUE_DIRS = ["pending", "running", "done", "failed", "blocked"] as const;
 export type QueueDir = (typeof QUEUE_DIRS)[number];
@@ -48,22 +49,95 @@ async function moveDir(
   throw last ?? new Error("rename failed");
 }
 
+const OWNER_FILE = ".worker-owner.json";
+
+interface WorkerOwner {
+  pid: number;
+  startedAt: string;
+  hostname: string;
+}
+
+type OwnerDeps = Pick<LockDeps, "isProcessAlive" | "processStartedAt" | "now" | "pid" | "hostname">;
+
+/** A-116 (Phase 0-B-1, `docs/23-DURABLE-BRIDGE-PHASES.md`): written into `running/<id>/` right
+ * after this worker claims the item, so a *concurrently running* worker's `recoverRunning()` can
+ * tell "crashed, truly orphaned" apart from "another worker is still actively processing this".
+ * Best-effort: a failure to write it just means recovery falls back to the pre-existing
+ * result.json-based heuristic for that item (no worse than before this change). */
+async function writeOwnerFile(
+  dir: string,
+  deps: Pick<OwnerDeps, "now" | "pid" | "hostname">,
+): Promise<void> {
+  const owner: WorkerOwner = {
+    pid: deps.pid,
+    startedAt: deps.now().toISOString(),
+    hostname: deps.hostname,
+  };
+  await writeFile(join(dir, OWNER_FILE), JSON.stringify(owner), "utf8").catch(() => undefined);
+}
+
+async function readOwnerFile(dir: string): Promise<WorkerOwner | null> {
+  try {
+    const parsed = JSON.parse(
+      await readFile(join(dir, OWNER_FILE), "utf8"),
+    ) as Partial<WorkerOwner>;
+    if (typeof parsed.pid !== "number" || typeof parsed.hostname !== "string") return null;
+    return {
+      pid: parsed.pid,
+      startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : "",
+      hostname: parsed.hostname,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Same reuse-guard shape as `judgeStale()` in `state/lock.ts` (A-108/ADR-005): a different host
+ * can't be checked remotely so is assumed live; a dead PID or one reused after the recorded start
+ * time means the owner is gone. */
+async function ownerIsLive(
+  owner: WorkerOwner,
+  deps: Pick<OwnerDeps, "isProcessAlive" | "processStartedAt" | "hostname">,
+): Promise<boolean> {
+  if (owner.hostname && owner.hostname !== deps.hostname) return true;
+  if (!deps.isProcessAlive(owner.pid)) return false;
+  const created = await deps.processStartedAt(owner.pid);
+  const started = new Date(owner.startedAt);
+  if (created && !Number.isNaN(started.getTime()) && created.getTime() > started.getTime() + 2000) {
+    return false; // PID reused since this worker claimed the item
+  }
+  return true;
+}
+
 /**
  * Codex P6-2: items left in running/ by a crashed or interrupted worker. With a result.json the
  * outcome is known and the item is routed by status; without one it goes back to pending — a
  * re-run is safe because the bridge's own submit marker turns an unknown send into
  * SUBMIT_STATE_UNKNOWN instead of a second submission.
+ *
+ * A-116 (Phase 0-B-1): before treating a `running/<id>` entry as an orphan, check whether its
+ * `.worker-owner.json` names a still-live process. Reproduced live in the 2026-09-18 ChatGPT Pro
+ * redesign review (§3.2): two workers started against the same queue directory would otherwise let
+ * the second one's startup recovery yank the first one's in-flight item back to pending.
  */
 export async function recoverRunning(
   queueDir: string,
   log: (m: string) => void,
   sleep: (ms: number) => Promise<void>,
+  deps: OwnerDeps = defaultLockDeps,
 ): Promise<void> {
   await ensureQueue(queueDir);
   const entries = await readdir(join(queueDir, "running")).catch(() => [] as string[]);
   for (const id of entries) {
     if (!isValidRequestId(id)) continue;
     const dir = join(queueDir, "running", id);
+    const owner = await readOwnerFile(dir);
+    if (owner && (await ownerIsLive(owner, deps))) {
+      log(
+        `worker: ${id} still owned by pid ${owner.pid}@${owner.hostname}; leaving it in running/`,
+      );
+      continue;
+    }
     let dest: QueueDir = "pending";
     try {
       const res = JSON.parse(await readFile(join(dir, "result.json"), "utf8")) as {
@@ -127,6 +201,7 @@ export async function processOne(
   busyCounts: Map<string, number>,
   log: (m: string) => void,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  deps: OwnerDeps = defaultLockDeps,
 ): Promise<WorkerItemOutcome | null> {
   const pending = await listPending(opts.queueDir);
   const id = pending[0];
@@ -134,6 +209,7 @@ export async function processOne(
   const from = join(opts.queueDir, "pending", id);
   const running = join(opts.queueDir, "running", id);
   await moveDir(from, running, sleep);
+  await writeOwnerFile(running, deps);
   log(`worker: ${id} -> running`);
   let exitCode: number;
   try {
@@ -176,19 +252,20 @@ export async function runWorker(
   log: (m: string) => void,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
   shouldStop: () => boolean = () => false,
+  deps: OwnerDeps = defaultLockDeps,
 ): Promise<{
   processed: WorkerItemOutcome[];
   stoppedBy: "once" | "drain" | "blocked" | "signal" | "error";
 }> {
   await ensureQueue(opts.queueDir);
-  await recoverRunning(opts.queueDir, log, sleep);
+  await recoverRunning(opts.queueDir, log, sleep, deps);
   const processed: WorkerItemOutcome[] = [];
   const busy = new Map<string, number>();
   for (;;) {
     if (shouldStop()) return { processed, stoppedBy: "signal" };
     let out: WorkerItemOutcome | null;
     try {
-      out = await processOne(opts, run, busy, log, sleep);
+      out = await processOne(opts, run, busy, log, sleep, deps);
     } catch (err) {
       log(`worker: stopping after error: ${(err as Error).message}`);
       return { processed, stoppedBy: "error" };

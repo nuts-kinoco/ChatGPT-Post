@@ -100,6 +100,60 @@ describe("file-queue worker (21 §5c, A-094)", () => {
     expect(logs.length).toBe(4);
   });
 
+  it("A-116 (Phase 0-B-1): recoverRunning() leaves an item alone while another worker's recorded owner is still alive", async () => {
+    const id = "20260915T000020Z-11111111";
+    await mkdir(join(q, "running", id), { recursive: true });
+    await writeFile(join(q, "running", id, "request.json"), "{}");
+    await writeFile(
+      join(q, "running", id, ".worker-owner.json"),
+      JSON.stringify({
+        pid: 424242,
+        startedAt: "2026-09-15T00:00:00.000Z",
+        hostname: "other-host",
+      }),
+    );
+    const logs: string[] = [];
+    // "other-host" differs from this deps.hostname, so liveness can't be disproven -> must be left alone
+    await recoverRunning(
+      q,
+      (m) => logs.push(m),
+      async () => undefined,
+      {
+        isProcessAlive: () => false,
+        processStartedAt: async () => null,
+        now: () => new Date("2026-09-15T00:00:00.000Z"),
+        pid: 1,
+        hostname: "this-host",
+      },
+    );
+    expect(await readdir(join(q, "running"))).toEqual([id]);
+    expect(logs.some((l) => l.includes(id))).toBe(true);
+  });
+
+  it("A-116 (Phase 0-B-1): recoverRunning() still reclaims an item whose recorded owner is dead", async () => {
+    const id = "20260915T000021Z-22222222";
+    await mkdir(join(q, "running", id), { recursive: true });
+    await writeFile(join(q, "running", id, "request.json"), "{}");
+    await writeFile(
+      join(q, "running", id, ".worker-owner.json"),
+      JSON.stringify({ pid: 424242, startedAt: "2026-09-15T00:00:00.000Z", hostname: "this-host" }),
+    );
+    await recoverRunning(
+      q,
+      () => undefined,
+      async () => undefined,
+      {
+        isProcessAlive: () => false, // pid 424242 is gone
+        processStartedAt: async () => null,
+        now: () => new Date("2026-09-15T00:00:00.000Z"),
+        pid: 1,
+        hostname: "this-host",
+      },
+    );
+    expect(await readdir(join(q, "running"))).toEqual([]);
+    expect(await readdir(join(q, "pending"))).toContain(id);
+  });
+
   it("--once processes exactly one item", async () => {
     const r = await runWorker(
       { queueDir: q, once: true, drain: false, pollMs: 1, maxBusyRetries: 3 },
