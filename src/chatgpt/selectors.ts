@@ -554,6 +554,32 @@ async function countVisible(loc: Locator): Promise<number> {
   return visible;
 }
 
+/**
+ * A-123 (Phase 0-C-2, ChatGPT Pro redesign review §2.2): `resolve()`/`probe()` used to check
+ * `countVisible(loc) === 1` but then return `loc.first()` — the first DOM-order match, not
+ * necessarily the one confirmed visible. If match #1 was hidden and match #2 was the visible one,
+ * the caller got handed a hidden element while believing visibility had been verified. Returns the
+ * actual visible `nth(i)` locator (or null if none/more than one), so callers never act on an
+ * element whose visibility was never actually checked.
+ */
+async function findVisible(loc: Locator): Promise<{ count: number; visible: Locator | null }> {
+  const n = await loc.count();
+  let count = 0;
+  let visible: Locator | null = null;
+  for (let i = 0; i < Math.min(n, 20); i++) {
+    if (
+      await loc
+        .nth(i)
+        .isVisible()
+        .catch(() => false)
+    ) {
+      count++;
+      if (count === 1) visible = loc.nth(i);
+    }
+  }
+  return { count, visible };
+}
+
 /** unique: first candidate that is visible and exactly-one. Throws DomUnexpected. Pre-submit only. */
 export async function resolve(
   root: Page | Locator,
@@ -565,9 +591,9 @@ export async function resolve(
   for (const c of def.candidates) {
     if (opts.verifiedOnly && !c.verifiedOn) continue;
     const loc = build(root, c);
-    const visible = await countVisible(loc);
-    tried.push(`${describeCandidate(c)} -> ${visible}`);
-    if (visible === 1) return loc.first();
+    const { count, visible } = await findVisible(loc);
+    tried.push(`${describeCandidate(c)} -> ${count}`);
+    if (count === 1 && visible) return visible;
   }
   throw new DomUnexpected(key, tried);
 }
@@ -583,18 +609,17 @@ export async function probe(
     if (opts.verifiedOnly && !c.verifiedOn) continue;
     try {
       const loc = build(root, c);
-      const visible = await countVisible(loc);
-      if (visible === 1) {
-        const l = loc.first();
+      const { count, visible } = await findVisible(loc);
+      if (count === 1 && visible) {
         return {
           found: true,
           matches: 1,
           visible: true,
-          enabled: await l.isEnabled().catch(() => false),
-          locator: l,
+          enabled: await visible.isEnabled().catch(() => false),
+          locator: visible,
         };
       }
-      if (visible > 1) return { found: false, matches: visible };
+      if (count > 1) return { found: false, matches: count };
     } catch {
       /* try next */
     }

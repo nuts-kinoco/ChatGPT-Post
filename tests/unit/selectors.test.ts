@@ -1,3 +1,4 @@
+import type { Page } from "playwright";
 import { describe, expect, it } from "vitest";
 import {
   EFFORT_INDEX_OF,
@@ -8,6 +9,8 @@ import {
   hintMatches,
   PRESET_LABELS,
   parseTriggerLabel,
+  probe,
+  resolve,
   reverseLookupModel,
   reverseLookupPreset,
 } from "../../src/chatgpt/selectors.js";
@@ -109,5 +112,30 @@ describe("selectors (14-SELECTOR-STRATEGY, AC-016)", () => {
       model: "gpt-5.5",
     });
     expect(reverseLookupModel("GPT-7", "ja")).toEqual({ error: "unmapped" });
+  });
+
+  it("A-123 (Phase 0-C-2, ChatGPT Pro redesign review §2.2): resolve()/probe() return the actually-visible match, not DOM-order index 0", async () => {
+    // Two DOM matches for composer's first (css) candidate: index 0 is hidden, index 1 is the
+    // real visible one. The old code checked countVisible()===1 but returned loc.first() (index
+    // 0) — this fixture reproduces exactly that mismatch.
+    const nths = [
+      { _idx: 0, isVisible: async () => false, isEnabled: async () => true },
+      { _idx: 1, isVisible: async () => true, isEnabled: async () => true },
+    ];
+    const fakeLocator = {
+      count: async () => nths.length,
+      nth: (i: number) => nths[i],
+      first: () => nths[0], // what the old, buggy code would have returned
+    };
+    const fakeRoot = { locator: () => fakeLocator };
+
+    const resolved = await resolve(fakeRoot as unknown as Page, "composer", {
+      verifiedOnly: true,
+    });
+    expect((resolved as unknown as { _idx: number })._idx).toBe(1);
+
+    const probed = await probe(fakeRoot as unknown as Page, "composer", { verifiedOnly: true });
+    expect(probed.found).toBe(true);
+    expect((probed.locator as unknown as { _idx: number })._idx).toBe(1);
   });
 });
