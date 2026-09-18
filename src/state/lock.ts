@@ -26,6 +26,11 @@ export interface LockDeps {
   hostname: string;
   /** Empty / unparseable lock files younger than this are treated as live. */
   unparseableGraceMs: number;
+  /** A-119: test-only seam, fired right after the stale lock is renamed aside and before the
+   * moved-vs-judged comparison. Lets a test deterministically land a *fourth* process's write at
+   * `this.path` inside the exact window the redesign review flagged (§"stale lock recovery に所有権競合"),
+   * instead of relying on real timing-dependent concurrency. No-op by default. */
+  afterStaleRename?: () => Promise<void> | void;
 }
 
 export type AcquireOutcome =
@@ -188,6 +193,7 @@ export class ProcessLock {
     } catch {
       return { kind: "busy", cause: "lost reclaim race", holder: existing };
     }
+    await this.deps.afterStaleRename?.();
     const moved = await readLockRecord(stalePath);
     const sameAsJudged =
       (existing === null && moved === null) ||
@@ -196,11 +202,24 @@ export class ProcessLock {
         existing.pid === moved.pid &&
         existing.token === moved.token);
     if (!sameAsJudged) {
-      // we grabbed someone else's live lock: put it back and yield
-      try {
-        await rename(stalePath, this.path);
-      } catch {
-        /* someone re-created the lock meanwhile; leave the stale copy for doctor */
+      // A-119 (Phase 0-B-3, ChatGPT Pro redesign review §3, "stale lock recovery に所有権競合"):
+      // we grabbed someone else's live lock (a third process created it between our judgeStale()
+      // and our rename() above). `rename(stalePath, this.path)` would silently OVERWRITE whatever
+      // now sits at `this.path` — including a live lock a *fourth* process may have legitimately
+      // acquired in the meantime, since this recovery attempt started. Restore via an exclusive
+      // create instead: it only succeeds if `this.path` is genuinely still absent, and never
+      // clobbers a lock we didn't ourselves just move aside.
+      if (moved !== null) {
+        try {
+          if (!createExclusive(this.path, JSON.stringify(moved))) {
+            // something else now legitimately holds this.path; leave our copy at stalePath for
+            // doctor/manual cleanup rather than destroying that other lock to force a restore
+          } else {
+            await unlink(stalePath).catch(() => undefined);
+          }
+        } catch {
+          /* leave the stale copy for doctor */
+        }
       }
       return { kind: "busy", cause: "reclaim collided with a live lock", holder: moved };
     }

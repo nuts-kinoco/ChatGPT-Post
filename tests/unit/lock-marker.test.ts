@@ -1,6 +1,7 @@
-import { mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import { mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { judgeStale, type LockDeps, ProcessLock, readLockRecord } from "../../src/state/lock.js";
 import {
@@ -171,6 +172,62 @@ describe("ProcessLock (ADR-005)", () => {
     expect(rc.kind).toBe("busy");
     expect((await readLockRecord(p))?.token).toBe(bRecord?.token);
     expect(await b.verify()).toBe(true);
+  });
+
+  it("A-119 (Phase 0-B-3, ChatGPT Pro redesign review §3): a lock acquired by a fourth process during the reclaim window is never clobbered by the restore-on-mismatch step", async () => {
+    const p = join(dir, "bridge.lock");
+    const oldRecord = {
+      pid: 999,
+      startedAt: "2026-09-14T00:00:00Z",
+      token: "dead",
+      command: "run",
+      requestId: null,
+    };
+    await writeFile(p, JSON.stringify(oldRecord));
+    const cRecord = JSON.stringify({
+      pid: 111,
+      startedAt: "2026-09-15T00:00:00Z",
+      token: "actor-c",
+      command: "run",
+      requestId: null,
+    });
+    const dRecord = {
+      pid: 222,
+      startedAt: "2026-09-15T00:00:01Z",
+      token: "actor-d",
+      command: "run",
+      requestId: null,
+    };
+    const b = new ProcessLock(
+      p,
+      deps({
+        pid: 1,
+        // fires during judgeStale, *before* the rename below: simulates actor C successfully
+        // creating a live lock at `p` right after B read the old record but before B moved it
+        // aside, so what actually gets renamed to stalePath is C's record, not the one B judged.
+        isProcessAlive: (pid) => {
+          if (pid === 999) {
+            writeFileSync(p, cRecord);
+            return false; // the OLD record's pid is still reported dead; B proceeds to reclaim
+          }
+          return true;
+        },
+        // fires right after the rename (p is now empty): simulates actor D creating its own live
+        // lock in the narrow window before B's mismatch-restore step runs.
+        afterStaleRename: () => {
+          writeFileSync(p, JSON.stringify(dRecord));
+        },
+      }),
+    );
+    const r = await b.acquire("run", null);
+    expect(r.kind).toBe("busy");
+    // D's lock must survive untouched — this is the property the old blind rename(stalePath, p)
+    // broke.
+    const finalRecord = await readLockRecord(p);
+    expect(finalRecord?.token).toBe("actor-d");
+    // C's orphaned copy is preserved on disk (for doctor/manual cleanup), not silently discarded.
+    const entries = await readdir(dir);
+    expect(entries.some((f) => f.startsWith(`${basename(p)}.stale-`))).toBe(true);
   });
 
   it("verify fails after the lock file is replaced (VERIFY_LOCK before marker)", async () => {
