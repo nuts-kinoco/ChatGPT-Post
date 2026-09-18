@@ -107,6 +107,11 @@ describe("trace sanitizer (SEC-010, 15 §3)", () => {
           '{"type":"frame-snapshot","html":"We use cookies to improve"}\n{"type":"x","url":"https://a.b/c?token=1"}\n{"type":"y","text":"Bearer abcdef"}\n{"type":"screencast-frame","sha1":"ddd.jpeg","pageId":"p1"}\n',
         ),
       ],
+      // A-126 (Phase 0-C-5, ChatGPT Pro redesign review §2.15): a hypothetical future entry type
+      // that is none of .network / resources/* / a known TEXT_ENTRY suffix. Before the fix, this
+      // fell through to an unconditional pass-through and carried its secret unredacted.
+      ["trace-metadata.json", Buffer.from('{"note":"Bearer abcdefghijklmnop"}\n')],
+      ["trace-thumbnail.dat", Buffer.from([0x00, 0x01, 0x02, 0x03])], // genuinely binary: kept as-is
     ]);
     const { out, report } = sanitizeEntries(entries);
     expect(out.has("resources/aaa.css")).toBe(true);
@@ -120,9 +125,11 @@ describe("trace sanitizer (SEC-010, 15 §3)", () => {
     expect(trace).toMatch(/We use cookies to improve/);
     expect(trace).not.toMatch(/token=1|Bearer abcdef/);
     expect(report.resourcesDropped).toBe(5);
-    expect(report.textLinesRedacted).toBe(2);
+    expect(report.textLinesRedacted).toBe(3); // 2 in trace.trace + 1 in the unknown text entry
     const net = out.get("trace.network")?.toString("utf8") ?? "";
     expect(net).not.toMatch(/headers|postData|__Secure/);
+    expect(out.get("trace-metadata.json")?.toString("utf8")).not.toMatch(/Bearer abcdefghijklmnop/);
+    expect(out.get("trace-thumbnail.dat")).toEqual(Buffer.from([0x00, 0x01, 0x02, 0x03]));
     for (const [, buf] of out) expect(containsSecret(buf.toString("utf8"))).toBe(false);
   });
   it("round-trips through a real zip", async () => {

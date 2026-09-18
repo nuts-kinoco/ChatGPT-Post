@@ -59,7 +59,7 @@ Packages:    openai , @openai/* , puppeteer-extra-plugin-stealth , playwright-ex
 3. `resources/*` は **許可リスト方式**で残す: `.network` で `text/css`、`font/*`、`image/*`（SVG を含む）と判定されたもの、および `trace.trace` から参照されるスクリーンキャストフレーム（`.jpeg` / `.png`）。`text/html`（bootstrap JSON 埋め込みの文書本体）、`application/javascript`、`application/json`、`text/event-stream`、未知種別は削除
 4. `*.network` は削除ではなく **縮約**する: 各エントリを `{ url（クエリ・フラグメント除去）, method, status, response.content.{ mimeType, _sha1 } }` だけに書き直し、リクエスト／レスポンスヘッダー、postData、Cookie、タイミング以外の付随情報を落とす。許可リスト外で削除した sha1 への参照も除く（Trace Viewer が CSS / フォントをスナップショットに適用できるよう URL→sha1 の対応は残す）
 5. `trace.trace` / `*.stacks` 等のテキストエントリは JSONL 行単位で §4 の `redact()` を適用する（ヘッダ形、`Bearer …`、JWT 形、`__Secure-`、`sk-…`、URL のクエリ `?…` / フラグメント `#…`）。エントリは削除せず置換し、置換が起きたことだけを `diagnostics` に警告として残す（単語としての "cookie" を含む本文は残る）
-6. 残りを `artifacts/<requestId>/trace.zip` に書き直す
+6. 残り（上記いずれにも該当しないエントリ）は、先頭バイトを見てtext-likeと判定できれば§4の`redact()`を行単位で適用してから、binary-likeならそのまま `artifacts/<requestId>/trace.zip` に書き直す（A-126、2026-09-18: 名前ベースのdenylistで「未知の新しいエントリ種別は無条件通過」となっていたのを、内容ベースの判定に変更）
 7. 一時ファイルを削除
 
 Trace Viewer で開けること（`npx playwright show-trace`）を Unit（手製 zip）と Live で確認する。

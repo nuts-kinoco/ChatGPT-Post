@@ -184,7 +184,25 @@ export function sanitizeEntries(entries: Map<string, Buffer>): {
       out.set(name, Buffer.from(redacted.join("\n"), "utf8"));
       continue;
     }
-    out.set(name, buf);
+    // A-126 (Phase 0-C-5, ChatGPT Pro redesign review §2.15): entries that are none of the above
+    // (not .network, not resources/*, not a known TEXT_ENTRY suffix) used to pass through
+    // completely unmodified — a denylist by omission. If a future Playwright trace format version
+    // adds a new text-like entry, it would carry secrets through unredacted. Classify by content
+    // (same approach as A-125's attachment scan, not by name): redact any entry that looks
+    // text-like; a genuinely binary unknown entry is passed through unchanged, matching the
+    // existing accepted policy for resources/* binaries.
+    const looksText = !buf.subarray(0, 8000).includes(0);
+    if (looksText) {
+      const lines = buf.toString("utf8").split("\n");
+      const redacted = lines.map((l) => {
+        const r = redactSecrets(l);
+        if (r !== l) report.textLinesRedacted++;
+        return r;
+      });
+      out.set(name, Buffer.from(redacted.join("\n"), "utf8"));
+    } else {
+      out.set(name, buf);
+    }
   }
   return { out, report };
 }
