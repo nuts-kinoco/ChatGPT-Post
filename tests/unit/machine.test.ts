@@ -228,10 +228,27 @@ describe("state machine (11-STATE-MACHINE)", () => {
       transition(at("MARKER_CHECKED"), { type: "PROFILE_BUSY", cause: "c" }).next.terminal
         ?.writesResult,
     ).toBe(true);
+    // A-130 (Phase 0-E): this one now writes true and re-dispatches WRITE_RESULT so a write
+    // failure on the normal-completion path can still reach the A-113/A-114 emergency fallback
+    // instead of silently producing no result.json at all — see the dedicated test below.
     expect(
       transition(at("WRITING_RESULT"), { type: "WRITE_FAILED", file: "result", cause: "c" }).next
         .terminal?.writesResult,
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("A-130 (Phase 0-E, ChatGPT Pro redesign review §3.5): a result-write failure re-dispatches WRITE_RESULT instead of giving up", () => {
+    const t = transition(at("WRITING_RESULT"), {
+      type: "WRITE_FAILED",
+      file: "result",
+      cause: "c",
+    });
+    expect(t.effects.map((e) => e.kind)).toEqual([
+      "WRITE_RESULT",
+      "CLOSE_BROWSER",
+      "RELEASE_LOCK",
+      "EXIT",
+    ]);
   });
 
   it("failure effects after browser: CAPTURE, STOP_TRACE, WRITE_RESULT, CLOSE_BROWSER, RELEASE_LOCK", () => {

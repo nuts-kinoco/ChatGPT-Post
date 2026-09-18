@@ -484,6 +484,27 @@ describe("RunController", () => {
     expect(checkResultInvariants(written as BridgeResult)).toEqual([]);
   });
 
+  it("A-130 (Phase 0-E, ChatGPT Pro redesign review §3.5): a write failure on the normal-completion path still produces a result.json, not nothing", async () => {
+    const f = fake();
+    let call = 0;
+    const realWriteResult = f.ports.contracts.writeResult;
+    f.ports.contracts.writeResult = async (dir, r) => {
+      call++;
+      if (call === 1) throw new Error("disk full");
+      return realWriteResult(dir, r);
+    };
+    const out = await run(f);
+    // must have retried after the first failure, not given up (the pre-fix bug: exactly 1 call,
+    // no result.json ever written for this transition)
+    expect(call).toBeGreaterThanOrEqual(2);
+    expect(f.results).toHaveLength(1);
+    expect(out.result).toBe(f.results[0]);
+    expect(out.result?.status).toBe("failed");
+    expect(out.result?.error?.code).toBe("WRITE_FAILED");
+    expect(out.result?.error?.cause).toContain("disk full");
+    expect(checkResultInvariants(out.result as BridgeResult)).toEqual([]);
+  });
+
   it("A-113: error.cause is capped at 200 chars (the schema's limit, not the 500-char warnings cap) even in the fallback", async () => {
     const longCause = "x".repeat(300);
     const f = fake({

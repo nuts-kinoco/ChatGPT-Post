@@ -599,10 +599,21 @@ export function transition(s: MachineState, ev: Event): Transition {
           return complete(s);
         case "WRITE_FAILED":
           if (ev.file === "result") {
+            // A-130 (Phase 0-E, ChatGPT Pro redesign review §3.5): this transition used to mark
+            // `writesResult: false` and never dispatch WRITE_RESULT again, so a write failure on
+            // the *normal completion* path (this.state.terminal was still false at that moment,
+            // inside the WRITE_RESULT effect handler) never reached the A-113/A-114 emergency
+            // fallback — that fallback only runs when the handler is re-entered while already
+            // terminal. Re-dispatching WRITE_RESULT here does exactly that: now-terminal, so a
+            // second write failure falls through to emergencyResult() instead of vanishing.
             return fail(s, "WRITE_FAILED", {
               cause: `result: ${ev.cause}`,
-              writesResult: false,
-              effects: [{ kind: "CLOSE_BROWSER", bestEffort: true }, { kind: "RELEASE_LOCK" }],
+              writesResult: true,
+              effects: [
+                { kind: "WRITE_RESULT" },
+                { kind: "CLOSE_BROWSER", bestEffort: true },
+                { kind: "RELEASE_LOCK" },
+              ],
             });
           }
           return fail(s, "WRITE_FAILED", { cause: `response: ${ev.cause}` });
