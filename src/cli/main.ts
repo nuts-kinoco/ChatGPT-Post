@@ -294,6 +294,13 @@ function printJob(job: JobRow, json: boolean): void {
   process.stdout.write(`requestId=${job.requestId} status=${job.status}\n`);
   if (job.errorCode) process.stdout.write(`errorCode=${job.errorCode}\n`);
   if (job.resultPath) process.stdout.write(`result: ${job.resultPath}\n`);
+  // A-134/A-135 Opus review, Medium #4: status/exitCode alone don't distinguish this from any
+  // other plain failure — a caller that only checks those could still retry into a double submit.
+  if (job.errorCode === "SUBMIT_STATE_UNKNOWN") {
+    process.stdout.write(
+      "⚠️ 送信状態が不明です。プロンプトがChatGPTへ実際に届いている可能性があります。このrequestIdを再送しないでください。人間がconversationUrl（result.jsonまたはブラウザ）を確認してください。\n",
+    );
+  }
 }
 
 async function cmdSubmit(cfg: BridgeConfig, requestPath: string, json: boolean): Promise<number> {
@@ -320,7 +327,7 @@ async function cmdStatus(cfg: BridgeConfig, requestId: string, json: boolean): P
       process.stderr.write(`no such job: ${requestId}\n`);
       return EXIT_CODES.invalidInput;
     }
-    printJob(await reconcileJob(store, job), json);
+    printJob(await reconcileJob(store, job, cfg), json);
     return 0;
   } finally {
     store.close();
@@ -337,7 +344,7 @@ async function cmdWait(
   const { openJobStore } = await import("../state/jobstore.js");
   const store = await openJobStore(jobStorePath(cfg));
   try {
-    const { job, timedOut } = await waitForJob(store, requestId, timeoutMs);
+    const { job, timedOut } = await waitForJob(store, requestId, timeoutMs, cfg);
     if (!job) {
       process.stderr.write(`no such job: ${requestId}\n`);
       return EXIT_CODES.invalidInput;
@@ -376,7 +383,7 @@ async function cmdResult(
       process.stderr.write(`no such job: ${requestId}\n`);
       return EXIT_CODES.invalidInput;
     }
-    job = await reconcileJob(store, job);
+    job = await reconcileJob(store, job, cfg);
   } finally {
     store.close();
   }

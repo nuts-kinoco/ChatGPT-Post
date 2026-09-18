@@ -209,7 +209,7 @@ describe("reconcileJob / waitForJob (Phase 1, A-132)", () => {
         join(requestDir, "result.json"),
         JSON.stringify({ status: "completed", error: null }),
       );
-      const reconciled = await reconcileJob(store, store.get(out.job.requestId) as never);
+      const reconciled = await reconcileJob(store, store.get(out.job.requestId) as never, cfg);
       expect(reconciled.status).toBe("completed");
       expect(reconciled.resultPath).toBe(join(requestDir, "result.json"));
     } finally {
@@ -217,18 +217,89 @@ describe("reconcileJob / waitForJob (Phase 1, A-132)", () => {
     }
   });
 
-  it("reconcileJob marks a job failed if its pid is dead and no result.json was ever written", async () => {
+  it("reconcileJob marks a job failed (BROWSER_CRASHED: never dispatched) if its pid is dead, no result.json was ever written, and no submit.marker shows a dispatch", async () => {
     const reqPath = await writeRequest("20260918T000005Z-eeeeeeee");
     const out = await submitJob(cfg, reqPath, async () => 999999999); // almost certainly not alive
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     const store = await openJobStore(jobStorePath(cfg));
     try {
-      const reconciled = await reconcileJob(store, store.get(out.job.requestId) as never);
+      const reconciled = await reconcileJob(store, store.get(out.job.requestId) as never, cfg);
       expect(reconciled.status).toBe("failed");
-      expect(reconciled.errorCode).toBe("INTERNAL_ERROR");
+      expect(reconciled.errorCode).toBe("BROWSER_CRASHED");
     } finally {
       store.close();
+    }
+  });
+
+  it("A-134/A-135 (Phase 2 MVP, Opus-reviewed): reconcileJob reports SUBMIT_STATE_UNKNOWN whenever a submit.marker exists, regardless of which fields it has — presence alone means a submit was in flight", async () => {
+    // A-135: the first cut of A-134 gated on marker.urlAfter specifically, which is only set
+    // *after* a confirmed dispatch. That inverted the write-ahead guarantee: a crash between the
+    // actual click and the UPDATE_MARKER write left urlAfter empty, and the buggy version called
+    // that "safe to retry" -- precisely the dangerous window this check exists to catch. Every
+    // marker variant below must be treated identically: something was submitted, don't guess.
+    const { writeMarker, markerPath: mkPath } = await import("../../src/state/marker.js");
+    const cases: Array<[string, (id: string) => Promise<void>]> = [
+      [
+        "full marker: dispatchedAt + urlAfter both set (confirmed dispatch)",
+        (id) =>
+          writeMarker(mkPath(cfg.stateDir, id), {
+            requestId: id,
+            writtenAt: new Date().toISOString(),
+            urlBefore: "https://chatgpt.com/",
+            baselineAssistantCount: 0,
+            presetLabelBefore: "現在",
+            dispatchedAt: new Date().toISOString(),
+            urlAfter: "https://chatgpt.com/c/abc123",
+          }),
+      ],
+      [
+        "pre-dispatch marker only: no dispatchedAt/urlAfter yet (crash between the click and UPDATE_MARKER -- A-135's exact scenario)",
+        (id) =>
+          writeMarker(mkPath(cfg.stateDir, id), {
+            requestId: id,
+            writtenAt: new Date().toISOString(),
+            urlBefore: "https://chatgpt.com/",
+            baselineAssistantCount: 0,
+            presetLabelBefore: "現在",
+          }),
+      ],
+      [
+        "dispatchedAt set but urlAfter is the empty string (non-chatgpt.com URL at dispatch time — controller.ts's own fallback)",
+        (id) =>
+          writeMarker(mkPath(cfg.stateDir, id), {
+            requestId: id,
+            writtenAt: new Date().toISOString(),
+            urlBefore: "https://chatgpt.com/",
+            baselineAssistantCount: 0,
+            presetLabelBefore: "現在",
+            dispatchedAt: new Date().toISOString(),
+            urlAfter: "",
+          }),
+      ],
+      [
+        "unparseable/corrupt marker file (still counts as present per markerExists()'s own contract)",
+        (id) => writeFile(mkPath(cfg.stateDir, id), "{not json"),
+      ],
+    ];
+    let n = 0;
+    for (const [, setup] of cases) {
+      n++;
+      const id = `20260918T00002${n}Z-99999999`;
+      const reqPath = await writeRequest(id);
+      const out = await submitJob(cfg, reqPath, async () => 999999999); // almost certainly not alive
+      expect(out.ok).toBe(true);
+      if (!out.ok) continue;
+      await mkdir(join(cfg.stateDir, id), { recursive: true });
+      await setup(id);
+      const store = await openJobStore(jobStorePath(cfg));
+      try {
+        const reconciled = await reconcileJob(store, store.get(out.job.requestId) as never, cfg);
+        expect(reconciled.status).toBe("failed");
+        expect(reconciled.errorCode).toBe("SUBMIT_STATE_UNKNOWN");
+      } finally {
+        store.close();
+      }
     }
   });
 
@@ -249,6 +320,7 @@ describe("reconcileJob / waitForJob (Phase 1, A-132)", () => {
         store,
         out.job.requestId,
         60_000,
+        cfg,
         10,
         async (ms) => {
           sleeps.push(ms);
@@ -270,7 +342,7 @@ describe("reconcileJob / waitForJob (Phase 1, A-132)", () => {
     const store = await openJobStore(jobStorePath(cfg));
     try {
       const job = store.get(out.job.requestId) as never;
-      const reconciled = await reconcileJob(store, job, {
+      const reconciled = await reconcileJob(store, job, cfg, {
         isProcessAlive: () => false, // would look dead by a bare local check
         processStartedAt: async () => null,
         hostname: "some-other-host", // job.hostname is this test process's own real hostname
@@ -289,14 +361,14 @@ describe("reconcileJob / waitForJob (Phase 1, A-132)", () => {
     const store = await openJobStore(jobStorePath(cfg));
     try {
       const job = store.get(out.job.requestId) as never;
-      const reconciled = await reconcileJob(store, job, {
+      const reconciled = await reconcileJob(store, job, cfg, {
         isProcessAlive: () => true, // pid 12345 exists...
         // ...but it started well after this job recorded its own submittedAt -> reused
         processStartedAt: async () => new Date(Date.parse(job.submittedAt) + 60_000),
         hostname: job.hostname,
       });
       expect(reconciled.status).toBe("failed");
-      expect(reconciled.errorCode).toBe("INTERNAL_ERROR");
+      expect(reconciled.errorCode).toBe("BROWSER_CRASHED"); // no submit.marker -> never dispatched
     } finally {
       store.close();
     }
@@ -311,14 +383,14 @@ describe("reconcileJob / waitForJob (Phase 1, A-132)", () => {
     const store = await openJobStore(jobStorePath(cfg));
     try {
       // first reconcile: no result.json yet, pid looks dead -> wrongly marked failed
-      const first = await reconcileJob(store, store.get(out.job.requestId) as never);
+      const first = await reconcileJob(store, store.get(out.job.requestId) as never, cfg);
       expect(first.status).toBe("failed");
       // the real run actually finishes a moment later
       await writeFile(
         join(requestDir, "result.json"),
         JSON.stringify({ status: "completed", error: null }),
       );
-      const second = await reconcileJob(store, store.get(out.job.requestId) as never);
+      const second = await reconcileJob(store, store.get(out.job.requestId) as never, cfg);
       expect(second.status).toBe("completed");
     } finally {
       store.close();
@@ -336,6 +408,7 @@ describe("reconcileJob / waitForJob (Phase 1, A-132)", () => {
         store,
         out.job.requestId,
         5,
+        cfg,
         1,
         async () => undefined,
       );

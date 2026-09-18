@@ -31,6 +31,7 @@ import {
   type LockDeps,
   readLockRecord,
 } from "../state/lock.js";
+import { markerExists, markerPath } from "../state/marker.js";
 import type { BridgeConfig } from "./config.js";
 
 /**
@@ -260,10 +261,33 @@ function statusFromResult(res: BridgeResult): JobStatus {
  * of this codebase already uses — a bare `isProcessAlive` check can't tell "pid reused by an
  * unrelated process" from "still running", and can't tell "different host, can't check" from
  * "definitely dead" (this ledger, like `runtime/`, can end up on shared storage — A-108).
+ *
+ * A-134 (Phase 2 MVP, `docs/23-DURABLE-BRIDGE-PHASES.md`, redesign review §5.3's recovery table):
+ * a dead process with no `result.json` used to always be reported as a plain `INTERNAL_ERROR`
+ * "failed" job — indistinguishable from "crashed before ever submitting anything" (safe: nothing
+ * was sent, a fresh requestId can retry) and "crashed after ChatGPT already received the prompt"
+ * (unsafe: retrying could double-submit into the same shared profile — the exact incident class
+ * #124/A-112 were about). The existing write-ahead `submit.marker` (written by `run` itself,
+ * before/after DISPATCH_SUBMIT — see `state/marker.ts`, ADR-005) already distinguishes these two
+ * cases; this only reads it, it does not attempt any DOM reconnection (that needs live-DOM
+ * verification of stable message IDs the redesign review itself flags as unverified — out of
+ * scope for this MVP).
+ *
+ * A-135 (Opus review of A-134's first cut): the initial version gated on `marker?.urlAfter`
+ * being set — but `WRITE_SUBMIT_MARKER` fires *before* the actual browser click, and `urlAfter`
+ * is only added afterwards by `UPDATE_MARKER` once dispatch is confirmed. That inverted the
+ * write-ahead guarantee: a crash in the exact dangerous window (after the click, before
+ * `UPDATE_MARKER` runs) left a marker *without* `urlAfter`, which the first cut classified as
+ * "nothing was ever sent, safe to retry" — precisely backwards for precisely the crash moment
+ * this check exists to catch. The correct, existing-house-style signal (`docs/11-STATE-MACHINE.md`
+ * §6.4, `markerExists()`'s own doc comment in `state/marker.ts`) is marker *presence*, not any
+ * particular field inside it: any marker at all (even unparseable/partially-written — treated as
+ * present, same as `markerExists()`) means "a submit was in flight; don't presume unsent."
  */
 export async function reconcileJob(
   store: JobStore,
   job: JobRow,
+  cfg: Pick<BridgeConfig, "stateDir">,
   deps: Pick<LockDeps, "isProcessAlive" | "processStartedAt" | "hostname"> = defaultLockDeps,
 ): Promise<JobRow> {
   const resultPath = join(job.requestDir, "result.json");
@@ -290,9 +314,16 @@ export async function reconcileJob(
       deps,
     );
     if (!live) {
+      // A-135: presence alone, not any field within it — see the class doc comment above.
+      const wasSubmitInFlight = await markerExists(markerPath(cfg.stateDir, job.requestId));
       return store.update(job.requestId, {
         status: "failed",
-        errorCode: "INTERNAL_ERROR",
+        // SUBMIT_STATE_UNKNOWN: reuses the exact same code/meaning `run` itself already gives a
+        // send whose outcome is unknown (SKILL.md: "同じrequestIdを再実行しない。conversationUrl
+        // を人間が確認") — a caller that already knows this code knows not to blindly retry.
+        // BROWSER_CRASHED: no marker was ever written, so the crash happened before entering the
+        // submit-dispatch window at all; a fresh requestId is safe to submit.
+        errorCode: wasSubmitInFlight ? "SUBMIT_STATE_UNKNOWN" : "BROWSER_CRASHED",
         updatedAt: new Date().toISOString(),
       });
     }
@@ -310,6 +341,7 @@ export async function waitForJob(
   store: JobStore,
   requestId: string,
   timeoutMs: number,
+  cfg: Pick<BridgeConfig, "stateDir">,
   pollMs = 1000,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Promise<{ job: JobRow | null; timedOut: boolean }> {
@@ -317,7 +349,7 @@ export async function waitForJob(
   for (;;) {
     const job = store.get(requestId);
     if (!job) return { job: null, timedOut: false };
-    const reconciled = await reconcileJob(store, job);
+    const reconciled = await reconcileJob(store, job, cfg);
     if (TERMINAL_STATUSES.has(reconciled.status)) return { job: reconciled, timedOut: false };
     if (Date.now() >= deadline) return { job: reconciled, timedOut: true };
     await sleep(pollMs);
