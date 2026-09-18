@@ -68,6 +68,13 @@ const PROFILE_ID_FILE = ".chatgpt-bridge-profile-id";
  * each other). The ID lives inside the profile directory itself, so reading it always reflects
  * the actual target directory regardless of the path string used to reach it. Created lazily,
  * race-safe (O_EXCL create; on a lost race, read back whatever the winner wrote).
+ *
+ * A-118 (Phase 0-B-2, ChatGPT Pro redesign review §3.7, reproduced live): the previous version
+ * fell back to a fresh, non-persisted `randomUUID()` when every read/write/re-read attempt failed,
+ * so a persistently unreadable/unwritable profile directory got a *different* profileId on every
+ * call — silently defeating cross-host and cross-profile identity checks (fail-open) instead of
+ * refusing to proceed. Throws instead; callers must treat this as "cannot verify this profile's
+ * identity" and refuse rather than guess.
  */
 export async function getOrCreateProfileId(profileDir: string): Promise<string> {
   const idPath = join(profileDir, PROFILE_ID_FILE);
@@ -82,14 +89,16 @@ export async function getOrCreateProfileId(profileDir: string): Promise<string> 
   try {
     await writeFile(idPath, id, { flag: "wx" });
     return id;
-  } catch {
+  } catch (writeErr) {
     try {
       const existing = (await readFile(idPath, "utf8")).trim();
       if (existing) return existing;
     } catch {
       /* fall through */
     }
-    return id; // best effort — at worst this run treats itself as a fresh profile identity
+    throw new Error(
+      `could not read or create a stable profile id at ${idPath}: ${(writeErr as Error).message}`,
+    );
   }
 }
 

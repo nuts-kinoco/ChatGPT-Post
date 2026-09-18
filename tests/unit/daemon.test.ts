@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname as osHostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -110,5 +110,28 @@ describe("daemon per-host state files (A-108)", () => {
     expect(h.alive).toBe(false);
     if (h.alive) return;
     expect(h.foreign).toBe(false);
+  });
+});
+
+// A-118 (Phase 0-B-2, ChatGPT Pro redesign review §3.7, reproduced live): getOrCreateProfileId()
+// used to fall back to a fresh, non-persisted randomUUID() when it could neither read nor create
+// the id file — fail-open, since every call then returns a *different* id and every identity
+// check silently stops meaning anything. It must instead refuse (throw), not guess.
+describe("getOrCreateProfileId fail-closed on persistent I/O failure (A-118)", () => {
+  it("throws instead of returning a fresh, non-persisted id when the id file can never be read or written", async () => {
+    // profileDir itself is a real, writable directory (mkdir succeeds trivially), but the id
+    // *file*'s path is occupied by a directory — every read and write against it fails (EISDIR)
+    // on every platform, without relying on permission bits. This is the exact branch that used
+    // to silently fall back to a fresh randomUUID() instead of failing.
+    const profileDir = join(dir, "profile-with-blocked-id-file");
+    await mkdir(join(profileDir, ".chatgpt-bridge-profile-id"), { recursive: true });
+    await expect(getOrCreateProfileId(profileDir)).rejects.toThrow();
+  });
+
+  it("still returns a stable id across repeated calls under normal conditions (no regression)", async () => {
+    const profileDir = join(dir, "profile");
+    const first = await getOrCreateProfileId(profileDir);
+    const second = await getOrCreateProfileId(profileDir);
+    expect(first).toBe(second);
   });
 });
