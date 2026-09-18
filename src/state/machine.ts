@@ -66,6 +66,7 @@ export type Event =
   | { type: "VERDICT_COMPLETE" }
   | { type: "VERDICT_TIMEOUT" }
   | { type: "VERDICT_TIMEOUT_ACTIVE" }
+  | { type: "VERDICT_CONVERSATION_MISMATCH"; cause: string }
   | { type: "VERDICT_CHAT_ERROR"; cause: ChatErrorCause }
   | { type: "VERDICT_RATE_LIMITED" }
   | { type: "VERDICT_CHALLENGE"; kind: PostChallengeKind }
@@ -556,6 +557,13 @@ export function transition(s: MachineState, ev: Event): Transition {
           // under a distinct code so callers don't blindly retry into a second concurrent
           // generation on the same shared profile.
           return verdictFail("GENERATION_TIMEOUT_ACTIVE");
+        case "VERDICT_CONVERSATION_MISMATCH":
+          // A-116 (ChatGPT Pro redesign review, 2026-09-18, §3.1): the page navigated to a
+          // *different* conversation than the one this request bound after dispatch. Reproduced
+          // live in review: without this check, a coincidentally-matching assistant count on the
+          // new conversation could get silently accepted as this request's own completion.
+          // fail-closed — never guess which conversation is "really" this request's.
+          return verdictFail("CONVERSATION_MISMATCH", ev.cause);
         case "VERDICT_CHAT_ERROR":
           return verdictFail("CHAT_ERROR", ev.cause);
         case "VERDICT_RATE_LIMITED":

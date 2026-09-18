@@ -365,6 +365,22 @@ const ROWS: Row[] = [
     },
   },
   {
+    code: "CONVERSATION_MISMATCH",
+    exit: 1,
+    submitted: "yes",
+    status: "failed",
+    inject: (h) => {
+      // A-116: the page navigates to a different conversation mid-generation. currentUrl()
+      // matches the dispatched conversation on the first observation tick (locking it), then
+      // diverges — this must fail closed rather than silently rebind conversationUrl.
+      let calls = 0;
+      h.ports.chatgpt.currentUrl = async () => {
+        calls++;
+        return calls === 1 ? "https://chatgpt.com/c/1" : "https://chatgpt.com/c/2";
+      };
+    },
+  },
+  {
     code: "CHAT_ERROR",
     exit: 1,
     submitted: "yes",
@@ -433,7 +449,7 @@ const ROWS: Row[] = [
 ];
 
 describe("every error code through machine + controller (16 §3)", () => {
-  it("the table covers all 24 codes", () => {
+  it("the table covers all codes in ERROR_CODES", () => {
     expect([...new Set(ROWS.map((r) => r.code))].sort()).toEqual([...ERROR_CODES].sort());
   });
   for (const row of ROWS) {

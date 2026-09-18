@@ -432,6 +432,31 @@ describe("RunController", () => {
     expect(foreign.result?.conversationUrl).not.toBe("https://evil.example/g/g-p-x/c/y");
   });
 
+  // A-116 (ChatGPT Pro redesign review, 2026-09-18, §3.1): reproduces the exact scenario the
+  // review demonstrated live against this codebase — without a lock, observeLoop() kept rebinding
+  // conversationUrl to whatever currentUrl() returned on every tick, so a mid-generation
+  // navigation to a *different* conversation (that happens to look equally "complete") got
+  // silently adopted as this request's own answer. Before the fix this test would have reached
+  // status:"completed" with responseFile set; it must instead fail closed.
+  it("A-116: a mid-generation navigation to a different conversation fails closed instead of adopting that conversation's answer", async () => {
+    let calls = 0;
+    const f = fake({
+      currentUrl: async () => {
+        calls++;
+        return calls === 1 ? "https://chatgpt.com/c/123" : "https://chatgpt.com/c/999";
+      },
+    });
+    const out = await run(f);
+    expect(out.result?.status).toBe("failed");
+    expect(out.result?.error?.code).toBe("CONVERSATION_MISMATCH");
+    expect(out.result?.submitted).toBe("yes");
+    // must keep the originally-bound conversation, never silently rebind to the other one
+    expect(out.result?.conversationUrl).toBe("https://chatgpt.com/c/123");
+    expect(out.result?.responseFile).toBeNull();
+    expect(f.calls).not.toContain("writeResponse");
+    expect(checkResultInvariants(out.result as BridgeResult)).toEqual([]);
+  });
+
   // A-113 (AGY/Antigravity independent review, 2026-09-18): if the real result fails its own
   // schema (e.g. A-112's missing ErrorCode enum entry), the bridge must not just log to stderr and
   // write nothing — that leaves an external watcher with no terminal record to react to at all.

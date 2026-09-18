@@ -43,6 +43,7 @@ type BridgeError = {
 | `PROMPT_SUBMIT_FAILED` | failed | 1 | 後 | 書く | no / **unknown** | AUTH_CHECKED（新規チャット失敗・生成中・既存会話）, PROMPT_SUBMITTING（クリック失敗・解決済み送信ボタンの消失・無効化） | 送信状態不明の場合は会話一覧を人間が確認 |
 | `GENERATION_TIMEOUT` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | 真にスタール（`streaming === false`）。`conversationUrl` を人間が確認。再送しない |
 | `GENERATION_TIMEOUT_ACTIVE` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | タイムアウト到達時点で `streaming === true`（2026-09-17 #124）。生成が継続中の可能性が高い。screenshot / `doctor` の profile.free・lock を確認するか人間に聞いてから判断。同じプロファイルへ即座に再送しない |
+| `CONVERSATION_MISMATCH` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | A-116（2026-09-18、ChatGPT Pro 再設計レビュー §3.1 で実証）: 送信直後に束縛した会話 URL と現在のブラウザの URL が食い違った。他セッション（人間の手動操作を含む）が同じブラウザで別のチャットを開いた可能性が高い。`conversationUrl` で本来の会話を確認してから、新しい requestId で再送 |
 | `CHAT_ERROR` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | `cause`: `banner`（エラーバナー）/ `network` / `output_truncated`（「続きを生成」表示）/ `multiple_responses`（A/B 等）。`conversationUrl` を確認 |
 | `DOM_CHANGED` | failed | 1 | 後 | 書く | no | BROWSER_STARTED 〜 PROMPT_ENTERED | UI 変更。`artifacts` の `inspect-ui.json` を基に selectors を更新。**`PROMPT_SUBMITTING` 以降は発生させない**（送信ボタンは境界前に解決済み、抽出は降格で扱う） |
 | `EXTRACTION_FAILED` | failed | 1 | 後 | 書く | yes | EXTRACTING | `cause`: `empty` / `canvas`。回答は生成された可能性。`conversationUrl` から手動取得 |
@@ -57,7 +58,7 @@ type BridgeError = {
 | 終了コード | 群 | 含まれるコード | result.json |
 |---|---|---|---|
 | 0 | 成功 | — | あり |
-| 1 | ブラウザ起動後の失敗、または送信状態不明 | `SUBMIT_STATE_UNKNOWN`, `INVALID_STATE`, `MODEL_*`, `PROMPT_*`, `GENERATION_TIMEOUT`, `GENERATION_TIMEOUT_ACTIVE`, `CHAT_ERROR`, `DOM_CHANGED`, `EXTRACTION_FAILED`, `BROWSER_CRASHED`, `WRITE_FAILED`, `INTERNAL_ERROR` | あり（`WRITE_FAILED(result)` を除く） |
+| 1 | ブラウザ起動後の失敗、または送信状態不明 | `SUBMIT_STATE_UNKNOWN`, `INVALID_STATE`, `MODEL_*`, `PROMPT_*`, `GENERATION_TIMEOUT`, `GENERATION_TIMEOUT_ACTIVE`, `CONVERSATION_MISMATCH`, `CHAT_ERROR`, `DOM_CHANGED`, `EXTRACTION_FAILED`, `BROWSER_CRASHED`, `WRITE_FAILED`, `INTERNAL_ERROR` | あり（`WRITE_FAILED(result)` を除く） |
 | 2 | 不正な入力・設定（送信されていない） | `INVALID_REQUEST`, `INVALID_CONFIG` | あり（request.json 不読を除く） |
 | 3 | 手動介入必要 | `AUTH_REQUIRED`, `CAPTCHA_OR_CHALLENGE`, `MANUAL_INTERVENTION_REQUIRED`, `RATE_LIMITED` | あり |
 | 4 | 起動前停止。**何も送信されていない** | `ALREADY_PROCESSED`, `ALREADY_RUNNING`（result.json を書かない）、`PROFILE_IN_USE`, `BROWSER_LAUNCH_FAILED`（result.json を書く） | 混在。呼び出し元は「あれば読む、無ければ stderr」 |

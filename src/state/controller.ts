@@ -112,6 +112,12 @@ export class RunController {
   private observedModel: ObservedModel | null = null;
   private observedModelSlug: string | null = null;
   private conversationUrl: string | null = null;
+  /** A-116: true once conversationUrl has been confirmed by one matching observation tick after
+   * dispatch. Before that, the URL may still be a transient value ChatGPT hasn't finished
+   * assigning a stable id for, so exactly one update is allowed. After that, observeLoop() must
+   * never silently rebind to a different conversation — see the VERDICT_CONVERSATION_MISMATCH
+   * handling below. */
+  private conversationUrlLocked = false;
   private responseFile: string | null = null;
   private extraction: {
     markdown: string;
@@ -571,18 +577,46 @@ export class RunController {
       }
       this.history.push(obs);
       if (this.history.length > 4000) this.history.splice(0, this.history.length - 4000);
-      // The URL right after dispatch may be a transient client id (e.g. /c/WEB:...); keep the latest.
+      // The URL right after dispatch may be a transient client id; keep the latest until locked.
       // A-106: a chat started inside a Project (openProject) lives under /g/g-p-.../c/<id>, not
       // the plain /c/<id> — CONVERSATION_PATH_RE covers both.
       // Codex review of A-106, High: origin must be checked too, not just the pathname shape —
       // otherwise a same-shaped path on a different origin would be captured as conversationUrl.
       const url = await this.ports.chatgpt.currentUrl();
+      let matchedPath: string | null = null;
       try {
         const u = new URL(url);
         if (u.origin === CHATGPT_ORIGIN && CONVERSATION_PATH_RE.test(u.pathname))
-          this.conversationUrl = url;
+          matchedPath = `${u.origin}${u.pathname}`;
       } catch {
         /* not a well-formed URL; ignore */
+      }
+      // A-116 (ChatGPT Pro redesign review, 2026-09-18, §3.1): reproduced live — without a lock,
+      // this block kept rebinding conversationUrl to whatever the current URL happened to be on
+      // every tick, so a navigation to a *different* conversation with a coincidentally-matching
+      // assistant count could get silently accepted as this request's own completed answer.
+      // Exactly one update is allowed (the transient-id-to-real-id settle right after dispatch);
+      // any divergence after that is treated as drift, not a rebind.
+      let mismatch: string | null = null;
+      if (matchedPath) {
+        if (!this.conversationUrlLocked) {
+          this.conversationUrl = url;
+          this.conversationUrlLocked = true;
+        } else if (matchedPath !== sanitiseConversationUrl(this.conversationUrl)) {
+          mismatch = url;
+        }
+      } else if (this.conversationUrlLocked) {
+        mismatch = url;
+      }
+      if (mismatch !== null) {
+        const wasObserving = this.observing;
+        await this.dispatch({
+          type: "VERDICT_CONVERSATION_MISMATCH",
+          cause: `expected ${sanitiseConversationUrl(this.conversationUrl) ?? "(none)"}, observed ${mismatch}`,
+        });
+        if (!wasObserving || !this.observing) return;
+        await this.ports.clock.sleep(interval);
+        continue;
       }
       const verdict = judge(this.history, baseline, cfg);
       const wasObserving = this.observing;
@@ -772,6 +806,8 @@ export function messageFor(code: ErrorCode, cause: string | null): string {
       return "回答の生成が timeoutMs 内に終わりませんでした（停止ボタンは既に消えており、ページは停止しているように見えます）。conversationUrl を開いて確認してから再送してください。新しい requestId を使う場合も、artifacts の screenshot で本当に生成が止まっているかを先に確認してください。";
     case "GENERATION_TIMEOUT_ACTIVE":
       return "回答の生成が timeoutMs 内に終わりませんでしたが、タイムアウト時点でまだ生成中でした（停止ボタンが表示されていた）。CLI が待つのを諦めただけで、ChatGPT 側の生成はブラウザ上で続いている可能性が高いです。⚠️ このまま新しい requestId で再送すると、同じ専有プロファイルの中で生成が並走し、他セッション（人間の手動操作を含む）と衝突します。再送する前に必ず (1) artifacts/<requestId>/screenshot.png で本当に止まっているか確認する (2) chatgpt-bridge doctor の profile.free/lock を見る (3) それでも不明なら人間に確認する、のいずれかを行ってください。timeoutMs を伸ばして待つ方が安全な場合もあります。";
+    case "CONVERSATION_MISMATCH":
+      return `送信した会話とは別の会話が開かれたため、回答の回収を中止しました（${cause ?? "unknown"}）。他のセッション（人間の手動操作を含む）がブラウザで別のチャットを開いた可能性があります。conversationUrl を開いて本来の会話の状態を確認してから、新しい requestId で再送してください。`;
     case "CHAT_ERROR":
       return `ChatGPT 側でエラーが発生しました（${cause ?? "unknown"}）。conversationUrl を開いて確認してください。`;
     case "DOM_CHANGED":
