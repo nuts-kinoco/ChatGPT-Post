@@ -73,6 +73,25 @@ describe("attachment guard (A-068, SEC)", () => {
       if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err; // no symlink privilege
     }
   });
+  it("A-125 (Phase 0-C-4, ChatGPT Pro redesign review §2.14): scans a large file with a non-text extension too, instead of skipping content inspection entirely", async () => {
+    // > old 2 MiB content-scan threshold, extension not in the old text-extension allow-list —
+    // this exact combination used to skip straight past with zero content inspection.
+    const padding = "x".repeat(3 * 1024 * 1024);
+    await writeFile(join(dir, "notes.dat"), `${padding}\nAuthorization: Bearer abcdefghijklmnop\n`);
+    const r = await checkAttachments(["notes.dat"], dir);
+    expect(r.ok).toBe(false);
+    expect(r.errors.join()).toMatch(/notes\.dat.*secret pattern/);
+  });
+
+  it("still allows a large genuine binary file through unscanned (no regression)", async () => {
+    const bin = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]),
+      Buffer.alloc(3 * 1024 * 1024, 0), // NUL bytes -> not text-like
+    ]);
+    await writeFile(join(dir, "large.bin"), bin);
+    expect((await checkAttachments(["large.bin"], dir)).ok).toBe(true);
+  });
+
   it("rejects non-string entries and too many files", async () => {
     expect((await checkAttachments([1], dir)).ok).toBe(false);
     expect((await checkAttachments(new Array(21).fill("ok.ts"), dir)).ok).toBe(false);
