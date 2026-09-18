@@ -197,13 +197,14 @@ export type DaemonHealth =
  * C-2 (Codex High): a bare `isProcessAlive(pid)` trusts PID reuse — some unrelated process that
  * happens to reclaim the recorded PID would be treated as "our daemon". Guard it the same way
  * lock.ts's judgeStale() does: the live process's own creation time must not postdate what we
- * recorded when the daemon started (Windows-only; processStartedAt() returns null elsewhere, in
- * which case we fall back to the plain liveness check).
+ * recorded when the daemon started. A-122 (Phase 0-B-6): processStartedAt() now works on
+ * macOS/Linux too (via `ps -o lstart=`), not just Windows (WMI) — it still returns null on a
+ * genuine lookup failure, in which case we fall back to the plain liveness check.
  */
 async function verifyOwnedProcess(state: DaemonState): Promise<boolean> {
   if (!defaultLockDeps.isProcessAlive(state.pid)) return false;
   const created = await defaultLockDeps.processStartedAt(state.pid);
-  if (!created) return true; // unknown (non-Windows): best effort, can't rule out reuse
+  if (!created) return true; // lookup failed: best effort, can't rule out reuse
   const recorded = new Date(state.startedAt);
   if (Number.isNaN(recorded.getTime())) return true;
   return created.getTime() <= recorded.getTime() + 2000;

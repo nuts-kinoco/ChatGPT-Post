@@ -48,25 +48,38 @@ export const defaultLockDeps: LockDeps = {
       return (err as NodeJS.ErrnoException).code === "EPERM";
     }
   },
+  // A-122 (Phase 0-B-6, ChatGPT Pro redesign review §3): this used to unconditionally return null
+  // on macOS/Linux, so verifyOwnedProcess()/judgeStale() on those platforms fell back to a bare
+  // "PID is alive" check that cannot distinguish our own process from an unrelated one that has
+  // since reused the same PID. `ps -o lstart=` (supported by both BSD/macOS and Linux/procps ps)
+  // gives the same PID-reuse guard Windows already had via WMI's CreationDate.
   processStartedAt: async (pid) => {
-    if (process.platform !== "win32") return null;
     try {
       const { execFile } = await import("node:child_process");
       const { promisify } = await import("node:util");
       const run = promisify(execFile);
-      const { stdout } = await run(
-        "powershell.exe",
-        [
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          `(Get-CimInstance Win32_Process -Filter "ProcessId=${Math.floor(pid)}").CreationDate.ToUniversalTime().ToString("o")`,
-        ],
-        { timeout: 5000, windowsHide: true },
-      );
+      if (process.platform === "win32") {
+        const { stdout } = await run(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(Get-CimInstance Win32_Process -Filter "ProcessId=${Math.floor(pid)}").CreationDate.ToUniversalTime().ToString("o")`,
+          ],
+          { timeout: 5000, windowsHide: true },
+        );
+        const s = stdout.trim();
+        if (!s) return null;
+        const d = new Date(s);
+        return Number.isNaN(d.getTime()) ? null : d;
+      }
+      const { stdout } = await run("ps", ["-o", "lstart=", "-p", String(Math.floor(pid))], {
+        timeout: 5000,
+      });
       const s = stdout.trim();
       if (!s) return null;
-      const d = new Date(s);
+      const d = new Date(s); // `ps -o lstart=` has no timezone offset; parsed as local time
       return Number.isNaN(d.getTime()) ? null : d;
     } catch {
       return null;
