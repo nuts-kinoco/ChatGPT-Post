@@ -83,9 +83,19 @@ function sha1(text: string): string {
   return createHash("sha1").update(text).digest("hex");
 }
 
-/** Whitespace-insensitive comparison key: FR-024 guards against loss, not layout differences. */
-function normalisePrompt(text: string): string {
-  return text.normalize("NFKC").replace(/\s+/gu, "");
+/**
+ * Comparison key for verifying the composer received the prompt: FR-024 guards against *loss*,
+ * not layout differences.
+ *
+ * A-128 (Phase 0-D-1, ChatGPT Pro self-review §2.3): stripping ALL whitespace (the previous
+ * implementation) meant `print("a b")` and `print("ab")`, or differently-indented code, compared
+ * as identical — masking loss of exactly the whitespace-sensitive content (string literals,
+ * indentation) this check exists to catch. Limited to line-ending normalisation, NBSP/full-width
+ * normalisation (via NFKC), and trimming only the string's own leading/trailing whitespace; all
+ * other internal whitespace — including indentation — is preserved and compared literally.
+ */
+export function normalisePrompt(text: string): string {
+  return text.normalize("NFKC").replace(/\r\n?/g, "\n").trim();
 }
 
 export class ChatGptPage implements ChatGptPort {
