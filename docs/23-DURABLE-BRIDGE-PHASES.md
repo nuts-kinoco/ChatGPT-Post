@@ -84,6 +84,10 @@
 
 次へ進む条件: タブ入替・タブ消失・担当失効が起きても誤配送しないこと。
 
+**実装状況(A-136)**: POの判断で「生成枠 = Page枠」とみなす最小スコープを選択(§6.1が推す生成枠・Page枠・browser枠の3分離は不採用)。着手前にdaemon(`login`でattach)を使ったライブ検証を行い、(1)同一プロファイル内の複数タブでの並行生成は問題なし(2)思考量(effort)設定はタブごとに完全に独立、の2点を実機で確認済み(§3.8が懸念した「並列化で顕在化する共有設定の競合」は解消と判断)。実装: `CHATGPT_BRIDGE_MAX_CONCURRENCY`(既定1、上限8。無効値は1、超過値は8へ警告付きで安全側に丸める)をNに設定すると、`state/slot-lock.ts`が既存`ProcessLock`をそのままN個の独立ロックファイル(`bridge.lock.slot0`..`slot{N-1}`)として再利用する生成枠プールへ切り替わる。`run`(`cli/main.ts cmdRun`)のみが対象で、`login`/`doctor`/`inspect-ui`は常に従来どおり`bridge.lock`単一排他のまま(`adapters.ts buildPorts`の`pooled`引数で分岐)。daemon接続時、プール有効時は`BrowserSession`が`getUsablePage()`(「使えるページを何でも再利用」)ではなく必ず新規タブを開き(`createDedicatedPage`)、detach時に閉じる(`close()`)ため、複数`run`プロセスが同じタブを取り合う競合を構造的に排除。各jobは必ず新規チャットを開く前提のため、会話の使い回し・会話排他制御はスコープ外のまま(§6.1のフル対応はPhase 4以降または追加フェーズへ)。daemonのkeepalive(`daemon-worker.ts`)も、自分のページが死んだ際の復旧を「`context.pages()`から適当な生存ページを拾う」から「常に新規ページを開く」へ変更(並列下では他jobの実行中タブを誤って触るリスクがあったため)。**未実装のまま残るもの**: 生成枠・Page枠・browser枠の分離、会話の同時利用時の排他制御(§6.4のlease/所有権)、daemonなし(フレッシュlaunch)でのプール利用時の安全側フォールバック以上の対応(Windowsの2件目以降はbrowser起動前のプロファイル確認で`PROFILE_IN_USE`。他プラットフォームではbrowser launch failureとなる場合がある)
+
+**A-137(Opus独立レビューと修正)**: A-136初版に対しフェーズの区切りとしてOpusレビューを実施、High 2件・Medium 5件を修正(Low 2件は見送り、詳細はDECISION-LOG参照)。要旨: (1) pooled `run`が`bridge.lock`自体を触らなくなったことで`login`/`doctor`/`inspect-ui`・daemon keepaliveが並行中のpooled生成と排他されなくなっていた穴を、`state/slot-lock.ts`の`acquireAllSlots`(全slot一括取得のbarrier)で塞いだ。daemonの実際のpool sizeは`daemon.json`(`DaemonState.maxConcurrency`)へ`daemon start`時に焼き込まれ、`run`側の設定値と食い違えば`launch()`が拒否する。(2) Playwright tracingがBrowserContext単位(複数pooled jobで共有)なため、dedicated-page(プール)モードでは`context.tracing.start()`自体を呼ばないよう変更(trace無しはresult.json.warningsへ安全に降格)。(3) `doctor`をプール対応(`checkLock`が全slotを走査)。(4) `submitJob()`が既存行`BROWSER_CRASHED`(送信未達が証明済み)限定で同一requestIdの再送を許可(読み取り専用busy pre-checkと実際のlock取得のレースで負けた側が永久にrequestIdを焼き潰す問題への対処)。(5) dedicated pageのdetach時close処理が、`status!=="completed"`の危険な曖昧状態でも証拠のタブを保持するよう変更。実機での並列submit再検証はA-137時点では未実施
+
 ## Phase 4: 複数マシンと配送強化
 
 出典: §8, §9.2。中央管理サービス+各マシンagent構成(共有ドライブへのSQLite直接配置は不採用)、端末登録、全体並列枠、ACK(`ACK <id>`程度の軽量ハンドシェイク、LLMに文章生成させない)。

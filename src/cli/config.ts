@@ -3,6 +3,8 @@ import { join, resolve } from "node:path";
 import { REPO_ROOT } from "../contracts/schema.js";
 import type { LogLevel } from "../diagnostics/logger.js";
 
+export const MAX_CONCURRENCY = 8;
+
 export interface BridgeConfig {
   repoRoot: string;
   runtimeDir: string;
@@ -15,6 +17,14 @@ export interface BridgeConfig {
   imageViaViewer: boolean;
   logLevel: LogLevel;
   bridgeVersion: string;
+  /** Phase 3 MVP (A-136): number of concurrent generation slots against a shared daemon browser.
+   * 1 (default) is the pre-Phase-3 behavior: `run` keeps its exclusive `bridge.lock` and reuses the
+   * daemon's single page, byte-for-byte unchanged. >1 switches `run` (never `login`/`doctor`) to a
+   * slot pool (`state/slot-lock.ts`) and a dedicated Page per slot; see `docs/23-DURABLE-BRIDGE-PHASES.md`
+   * Phase 3. On Windows, without a daemon a second concurrent slot holder is stopped by the profile
+   * guard before launch with `PROFILE_IN_USE`; other platforms can instead report a browser launch
+   * failure when their browser rejects the already-used profile. */
+  maxConcurrency: number;
 }
 
 export interface CliOverrides {
@@ -42,6 +52,23 @@ export function loadConfig(
   )
     ? (levelRaw as LogLevel)
     : "info";
+  const maxConcurrencyEnv = env.CHATGPT_BRIDGE_MAX_CONCURRENCY;
+  const maxConcurrencyRaw = Number(maxConcurrencyEnv ?? "1");
+  let maxConcurrency = 1;
+  if (!Number.isInteger(maxConcurrencyRaw) || maxConcurrencyRaw < 1) {
+    if (maxConcurrencyEnv !== undefined) {
+      process.stderr.write(
+        `warning: CHATGPT_BRIDGE_MAX_CONCURRENCY=${JSON.stringify(maxConcurrencyEnv)} is not a positive integer; using 1\n`,
+      );
+    }
+  } else if (maxConcurrencyRaw > MAX_CONCURRENCY) {
+    maxConcurrency = MAX_CONCURRENCY;
+    process.stderr.write(
+      `warning: CHATGPT_BRIDGE_MAX_CONCURRENCY=${maxConcurrencyRaw} exceeds the maximum ${MAX_CONCURRENCY}; using ${MAX_CONCURRENCY}\n`,
+    );
+  } else {
+    maxConcurrency = maxConcurrencyRaw;
+  }
   let bridgeVersion = "0.0.0";
   try {
     bridgeVersion =
@@ -62,5 +89,6 @@ export function loadConfig(
     imageViaViewer: env.CHATGPT_BRIDGE_IMAGE_VIA_VIEWER === "1",
     logLevel,
     bridgeVersion,
+    maxConcurrency,
   };
 }

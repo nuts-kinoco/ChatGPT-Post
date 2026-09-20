@@ -14,6 +14,12 @@ export interface BrowserConfig {
   profileDir: string;
   channel: "chrome" | "chromium";
   closeTimeoutMs?: number;
+  /** Phase 3 MVP (A-136): when attaching to a daemon, always claim a brand-new Page instead of
+   * `getUsablePage()`'s "reuse whatever's already open" — required once more than one `run` can be
+   * attached to the same daemon context at once, so two concurrent attaches never grab the same
+   * Page. Closed again on detach (see `close()`) instead of left open, so slots don't accumulate
+   * stray tabs across many jobs. No effect on `launch()` (a fresh, exclusively-owned browser). */
+  dedicatedPage?: boolean;
 }
 
 export interface LaunchOptions {
@@ -35,6 +41,9 @@ export class BrowserSession {
   /** true when `context` belongs to an external daemon reached via CDP: close() must detach
    * instead of tearing the browser down (A-103). */
   private attached = false;
+  /** True when `this.page` was created by `createDedicatedPage()` for this attach() and therefore
+   * belongs solely to this session — `close()` must close it, not just detach (A-136). */
+  private ownsDedicatedPage = false;
   /** Set only in attached mode: the CDP `Browser` handle from connectOverCDP(), so close() can
    * disconnect it cleanly (C-6, Codex Medium). Per Playwright's docs, closing a Browser obtained
    * via connectOverCDP() only ends that connection — it does not terminate the remote browser. */
@@ -103,6 +112,19 @@ export class BrowserSession {
     return fresh;
   }
 
+  /** A-136 (Phase 3 MVP pool mode): unlike `getUsablePage()`, never looks at `context.pages()` —
+   * under concurrency those may include tabs other slots are actively using mid-generation, and
+   * touching (or worse, closing) one of those would corrupt that job. */
+  private async createDedicatedPage(context: BrowserContext): Promise<Page> {
+    const fresh = await context.newPage();
+    await withTimeout(
+      fresh.evaluate(() => true),
+      PAGE_LIVENESS_TIMEOUT_MS,
+      "new page liveness check (dedicated)",
+    );
+    return fresh;
+  }
+
   async launch(opts: LaunchOptions): Promise<{ ok: true } | { ok: false; cause: string }> {
     await mkdir(this.cfg.profileDir, { recursive: true });
     try {
@@ -144,25 +166,38 @@ export class BrowserSession {
       // Resolved (and verified live, with a bounded timeout) before committing `this.context`/
       // `this.cdpBrowser` — if this throws, the catch below closes `browser` and this.* stays
       // exactly as it was, rather than pointing at a half-attached session (A-110).
-      const page = await this.getUsablePage(context);
+      const page = this.cfg.dedicatedPage
+        ? await this.createDedicatedPage(context)
+        : await this.getUsablePage(context);
       this.context = context;
       this.attached = true;
+      this.ownsDedicatedPage = Boolean(this.cfg.dedicatedPage);
       this.cdpBrowser = browser;
       await this.attachHandlers(context, opts, page);
-      try {
-        await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
-        this.tracing = true;
-      } catch {
-        // Not fatal: expected when a previous command's close() didn't detach cleanly (e.g. it
-        // crashed) and tracing is still active from that command. This command proceeds without
-        // its own trace chunk rather than treating a benign, expected condition as a crash
-        // (deliberately NOT routed through opts.onCrash — that would wrongly abort this command).
-        this.tracing = false;
+      // A-136 (Phase 3 MVP, Opus review High#2): Playwright tracing is per-BrowserContext, not
+      // per-Page — it records every page in the context. In dedicated-page (pool) mode, more than
+      // one `run` can be attached to this same daemon context at once, so a shared trace.zip would
+      // capture other concurrent jobs' prompts/responses too (their tabs, not just this session's).
+      // `stopTrace()`'s existing "tracing not active" throw is already a BEST_EFFORT_EFFECTS entry
+      // (machine.ts) — controller.ts turns it into a result.json warning, never a failure — so
+      // simply never starting a trace here degrades safely instead of risking a cross-request leak.
+      if (!this.cfg.dedicatedPage) {
+        try {
+          await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+          this.tracing = true;
+        } catch {
+          // Not fatal: expected when a previous command's close() didn't detach cleanly (e.g. it
+          // crashed) and tracing is still active from that command. This command proceeds without
+          // its own trace chunk rather than treating a benign, expected condition as a crash
+          // (deliberately NOT routed through opts.onCrash — that would wrongly abort this command).
+          this.tracing = false;
+        }
       }
       return { ok: true };
     } catch (err) {
       this.context = null;
       this.attached = false;
+      this.ownsDedicatedPage = false;
       this.cdpBrowser = null;
       if (browser) await browser.close().catch(() => undefined);
       return { ok: false, cause: (err as Error).message };
@@ -200,16 +235,28 @@ export class BrowserSession {
    * contexts expose no process handle, so there is nothing to literally kill from here; the
    * achievable guarantee is that `close()` itself always returns within a bound, even if the
    * underlying Playwright call is still hung in the background. */
-  async close(): Promise<void> {
+  async close(opts?: { keepPage?: boolean }): Promise<void> {
     const ctx = this.context;
     if (!ctx) return;
+    // A-136: captured before this.page is nulled below — only closed once detach (tracing.stop)
+    // has run, only when this session itself created it (never a Page some other slot or the
+    // daemon's own keepalive still owns), and never when the caller asked to keep it (Opus review
+    // Medium#3: a non-"completed" outcome's own tab is the human's only evidence of what actually
+    // happened — see controller.ts's CLOSE_BROWSER handler for what decides `keepPage`).
+    const dedicatedPage = this.ownsDedicatedPage && !opts?.keepPage ? this.page : null;
     this.context = null;
     this.page = null;
     if (this.attached) {
       this.attached = false;
+      this.ownsDedicatedPage = false;
       if (this.tracing) {
         this.tracing = false;
         await withTimeout(ctx.tracing.stop(), 10_000, "tracing.stop() (detach)").catch(
+          () => undefined,
+        );
+      }
+      if (dedicatedPage) {
+        await withTimeout(dedicatedPage.close(), 5_000, "page.close() (dedicated)").catch(
           () => undefined,
         );
       }

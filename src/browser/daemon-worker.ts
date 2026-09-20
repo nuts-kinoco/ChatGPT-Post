@@ -9,6 +9,7 @@ import { hostname as osHostname } from "node:os";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
 import { ProcessLock } from "../state/lock.js";
+import { type AcquiredBarrier, acquireAllSlots, releaseAllSlots } from "../state/slot-lock.js";
 import { withTimeout } from "./timeout.js";
 
 const { values } = parseArgs({
@@ -21,6 +22,7 @@ const { values } = parseArgs({
     "keepalive-ms": { type: "string" },
     hostname: { type: "string" },
     "profile-id": { type: "string" },
+    "max-concurrency": { type: "string" },
   },
 });
 if (!values["profile-dir"] || !values["state-path"] || !values["profile-id"]) {
@@ -42,6 +44,11 @@ const hostname = values.hostname ?? osHostname();
 // A-105: ChatGPT's own guidance is that an idle session needs interaction roughly every
 // 15-30 minutes; default to the low end of that window with margin to spare.
 const keepAliveMs = Number(values["keepalive-ms"] ?? 15 * 60 * 1000);
+// A-136 (Phase 3 MVP, Opus review High#1): the generation-slot pool size this daemon's keepalive
+// barrier-locks against for its whole lifetime — see DaemonState.maxConcurrency's doc comment.
+const maxConcurrencyRaw = Number(values["max-concurrency"] ?? "1");
+const maxConcurrency =
+  Number.isInteger(maxConcurrencyRaw) && maxConcurrencyRaw >= 1 ? maxConcurrencyRaw : 1;
 
 const context = await chromium.launchPersistentContext(profileDir, {
   ...(channel === "chrome" ? { channel: "chrome" as const } : {}),
@@ -85,8 +92,45 @@ async function shutdown(): Promise<void> {
  * *file existed* (`access()`), never actually acquire it — a client could acquire the real lock
  * in the window between that check and keepalive touching the page. Now keepalive is a genuine
  * participant in the same lock protocol every other command uses, closing the TOCTOU entirely
- * instead of narrowing it with a second re-check. */
-const keepaliveLock = lockPath ? new ProcessLock(lockPath) : null;
+ * instead of narrowing it with a second re-check.
+ *
+ * A-136 (Phase 3 MVP, Opus review High#1): when maxConcurrency > 1, `cli/adapters.ts`'s pooled
+ * `run` never touches this single `bridge.lock` file at all — it uses `bridge.lock.slot0..N-1`
+ * instead. Acquiring only the plain lock here would mean keepalive stops being excluded from any
+ * pooled generation, exactly the TOCTOU A-120 closed reopening for the new pool. Barrier-locking
+ * every slot (same primitive `cli/adapters.ts fileLock()` uses for login/doctor) restores it: this
+ * tick can't run while any pooled `run` is in flight, matching pre-Phase-3 behavior at N=1. */
+interface KeepaliveLock {
+  acquire(command: string, requestId: string | null): Promise<{ kind: "ok" } | { kind: "busy" }>;
+  release(): Promise<void>;
+}
+function buildKeepaliveLock(path: string, concurrency: number): KeepaliveLock {
+  if (concurrency <= 1) {
+    const lock = new ProcessLock(path);
+    return {
+      acquire: async (command, requestId) => {
+        const r = await lock.acquire(command, requestId);
+        return { kind: r.kind };
+      },
+      release: () => lock.release(),
+    };
+  }
+  let barrier: AcquiredBarrier | null = null;
+  return {
+    acquire: async (command, requestId) => {
+      const r = await acquireAllSlots(path, concurrency, command, requestId);
+      if (r.kind !== "ok") return { kind: "busy" };
+      barrier = r.barrier;
+      return { kind: "ok" };
+    },
+    release: async () => {
+      const b = barrier;
+      barrier = null;
+      if (b) await releaseAllSlots(b);
+    },
+  };
+}
+const keepaliveLock = lockPath ? buildKeepaliveLock(lockPath, maxConcurrency) : null;
 
 /**
  * A-110: a Mac session reported the daemon's single tracked `page` going unusable (closed /
@@ -132,12 +176,19 @@ async function keepAliveTick(): Promise<void> {
       return;
     }
     acquired = true;
-    // A-110: prefer a page a client already opened (via BrowserSession.getUsablePage()) over the
-    // one this loop last knew about, if that one is now closed — avoids piling up an extra blank
-    // tab here on top of whatever the client already recovered to.
+    // A-136 (Phase 3 MVP): used to fall back to "any non-closed page in context.pages()" here, but
+    // now that more than one `run` can hold a dedicated Page concurrently (state/slot-lock.ts), any
+    // of those pages may belong to a generation actively in flight — navigating (or worse, later
+    // closing) one out from under it would corrupt that job. Always open a fresh page of our own
+    // instead; the old A-110 rationale (avoid piling up a stray blank tab) no longer applies once
+    // concurrent jobs routinely open and close their own dedicated tabs anyway.
     if (page.isClosed()) {
-      const alive = context.pages().find((p) => !p.isClosed());
-      if (alive) page = alive;
+      try {
+        page = await context.newPage();
+      } catch (err) {
+        log(`could not open a replacement page: ${(err as Error).message}`);
+        return; // try again next tick rather than letting this throw out of keepAliveTick()
+      }
     }
     try {
       await withTimeout(
@@ -198,6 +249,7 @@ await writeFile(
     profileDir,
     hostname,
     profileId,
+    maxConcurrency,
   }),
   "utf8",
 );

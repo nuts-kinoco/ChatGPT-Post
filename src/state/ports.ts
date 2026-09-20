@@ -75,7 +75,13 @@ export interface BrowserPort {
   capture(artifactsDir: string): Promise<string>;
   /** Stop + sanitize trace; returns absolute path. */
   stopTrace(artifactsDir: string): Promise<string>;
-  close(): Promise<void>;
+  /** A-136 (Phase 3 MVP, Opus review Medium#3): in dedicated-page (pool) mode, `keepPage: true`
+   * leaves the job's own tab open on the daemon instead of closing it — the only human-inspectable
+   * evidence of what actually happened in a non-`completed` outcome (the same tab A-135's own
+   * `SUBMIT_STATE_UNKNOWN` guidance and `GENERATION_TIMEOUT_ACTIVE`'s message tell the operator to
+   * go look at). No effect outside dedicated-page mode (the daemon's shared page is never closed
+   * either way; a fresh non-daemon launch's own browser closing is unaffected). */
+  close(opts?: { keepPage?: boolean }): Promise<void>;
 }
 
 export type AuthObservation =

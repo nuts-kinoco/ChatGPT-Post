@@ -67,6 +67,14 @@ options:
   --profile-dir <path>       専用プロファイル（CHATGPT_BRIDGE_PROFILE_DIR より優先）
   --log-level <level>        debug | info | warn | error
   --allow-unverified         verifiedOn の無い selector 候補も使う（Phase 4 の実画面確認専用）
+
+環境変数:
+  CHATGPT_BRIDGE_MAX_CONCURRENCY  （Phase 3 MVP）run が daemon 経由で同時に使える生成枠の数。既定 1
+                             （従来どおり単一実行・bridge.lock 排他）。2 以上にすると run は
+                             daemon の共有ブラウザ上で専用タブを毎回新規に開き、終了時に閉じる
+                             （タブを使い回さない）。上限 8。無効値は 1、超過値は 8 に丸めて警告する。
+                             daemon が起動していない場合、Windows の 2 件目以降はプロファイル確認で
+                             PROFILE_IN_USE となる（他プラットフォームでは browser launch failure の場合がある）
 `;
 
 async function waitForEnter(prompt: string): Promise<void> {
@@ -251,7 +259,9 @@ async function cmdRun(
   json: boolean,
 ): Promise<number> {
   const logger = createLogger(cfg.logLevel);
-  const ports = buildPorts(cfg, logger, verifiedOnly);
+  // A-136 (Phase 3 MVP): only `run` ever pools — `pooled: true` takes effect only when
+  // cfg.maxConcurrency > 1 (buildPorts falls back to the unchanged single-lock path otherwise).
+  const ports = buildPorts(cfg, logger, verifiedOnly, true);
   const controller = new RunController(ports, {
     requestPath: resolve(requestPath),
     artifactsRoot: cfg.artifactsDir,
@@ -532,7 +542,7 @@ async function cmdDaemon(cfg: BridgeConfig, action: string | undefined): Promise
     }
     try {
       if (action === "start") {
-        const r = await startDaemon(daemonCfg);
+        const r = await startDaemon(daemonCfg, cfg.maxConcurrency);
         if (!r.ok) {
           process.stderr.write(`DAEMON_START_FAILED: ${r.cause}\n`);
           return 1;

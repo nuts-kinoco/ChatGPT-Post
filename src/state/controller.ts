@@ -524,7 +524,13 @@ export class RunController {
         if (this.browserUp) {
           await this.restoreEffortBestEffort(); // no-op when WRITE_RESULT already did it
           this.browserUp = false;
-          await browser.close();
+          // A-136 (Phase 3 MVP, Opus review Medium#3): WRITE_RESULT always runs before
+          // CLOSE_BROWSER (see its own comment above), so `this.result` is set here on every path
+          // except the rare case a result could never be written at all -- treat that as the most
+          // ambiguous outcome of all and keep the page too. Only a clean "completed" run closes its
+          // dedicated page; anything else leaves it open as the operator's evidence (no effect
+          // outside dedicated-page mode -- see BrowserPort.close()'s doc comment).
+          await browser.close({ keepPage: this.result?.status !== "completed" });
         }
         return null;
       case "RELEASE_LOCK":

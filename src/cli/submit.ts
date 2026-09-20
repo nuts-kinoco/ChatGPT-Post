@@ -32,6 +32,7 @@ import {
   readLockRecord,
 } from "../state/lock.js";
 import { markerExists, markerPath } from "../state/marker.js";
+import { checkSlotsBusy } from "../state/slot-lock.js";
 import type { BridgeConfig } from "./config.js";
 
 /**
@@ -144,44 +145,63 @@ export async function submitJob(
   const store = await openJobStore(jobStorePath(cfg));
   try {
     const existing = store.get(requestId);
-    if (existing) return checkExisting(existing, inputHash);
+    const retryingBrowserCrash =
+      existing?.inputHash === inputHash &&
+      existing.status === "failed" &&
+      existing.errorCode === "BROWSER_CRASHED";
+    if (existing && !retryingBrowserCrash) return checkExisting(existing, inputHash);
 
     // A-132 Opus review, Medium #6: ALREADY_RUNNING writes no result.json (it's in
     // contracts/types.ts's NO_RESULT_CODES) and exits fast — spawning into a busy lock just
     // produces a dead-pid-no-result job that reconcileJob can only describe as INTERNAL_ERROR,
     // telling the caller the bridge broke when actually nothing was ever submitted. Check first
     // and fail closed with a plain, retryable "busy" instead of spawning a doomed child.
-    const lockBusy = await checkLockBusy(cfg, deps);
+    // A-136 (Phase 3 MVP): >1 generation slot -> a single busy bridge.lock no longer means "all
+    // slots taken" (cmdRun no longer touches bridge.lock itself in that mode — it acquires one of
+    // the N slot locks instead; see adapters.ts poolLock). Check the pool instead so submit only
+    // refuses when every slot genuinely looks busy.
+    const lockBusy =
+      cfg.maxConcurrency > 1
+        ? await checkSlotsBusy(join(cfg.locksDir, "bridge.lock"), cfg.maxConcurrency, deps)
+        : await checkLockBusy(cfg, deps);
     if (lockBusy) {
       return { ok: false, cause: `ALREADY_RUNNING: ${lockBusy} — retry submit in a moment` };
     }
 
     const now = deps.now().toISOString();
-    try {
-      store.insert({
-        requestId,
-        status: "queued",
-        requestPath: abs,
-        requestDir: read.requestDir,
-        inputHash,
-        pid: null,
-        hostname: deps.hostname,
-        submittedAt: now,
-        updatedAt: now,
-        resultPath: null,
-        errorCode: null,
-        exitCode: null,
-      });
-    } catch (err) {
-      // A-132 Opus review, Medium #4: two near-simultaneous submits of the same brand-new
-      // requestId can both pass the `store.get()` check above before either inserts. The loser
-      // gets a typed error here instead of an opaque native exception — fall back to the same
-      // idempotent path as if the row had already existed.
-      if (err instanceof JobAlreadyExistsError) {
-        const winner = store.get(requestId);
-        if (winner) return checkExisting(winner, inputHash);
+    const queuedPatch = {
+      status: "queued" as const,
+      requestPath: abs,
+      requestDir: read.requestDir,
+      inputHash,
+      pid: null,
+      hostname: deps.hostname,
+      submittedAt: now,
+      updatedAt: now,
+      resultPath: null,
+      errorCode: null,
+      exitCode: null,
+    };
+    const queuedJob = { requestId, ...queuedPatch };
+    if (retryingBrowserCrash) {
+      // A-136 follow-up: reconcileJob proves BROWSER_CRASHED means no submit.marker was ever
+      // written, so no request was dispatched. This narrow terminal state is safe to retry under
+      // the same requestId; reset every hand-off field before following the ordinary submit path.
+      store.update(requestId, queuedPatch);
+    } else {
+      try {
+        store.insert(queuedJob);
+      } catch (err) {
+        // A-132 Opus review, Medium #4: two near-simultaneous submits of the same brand-new
+        // requestId can both pass the `store.get()` check above before either inserts. The loser
+        // gets a typed error here instead of an opaque native exception — fall back to the same
+        // idempotent path as if the row had already existed.
+        if (err instanceof JobAlreadyExistsError) {
+          const winner = store.get(requestId);
+          if (winner) return checkExisting(winner, inputHash);
+        }
+        throw err;
       }
-      throw err;
     }
 
     // A-132 Opus review, High #1: a submit that dies here (spawn throws, or the child reports no

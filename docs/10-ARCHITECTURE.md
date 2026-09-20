@@ -209,6 +209,7 @@ runtime/
 | `CHATGPT_BRIDGE_TRACE_ON_SUCCESS` | `0` | `1` で成功時も trace 保存 | A-010 |
 | `CHATGPT_BRIDGE_LOG_LEVEL` / `--log-level` | `info` | `debug` で観測ループを出力（本文は redaction 済み） | SEC-005 |
 | `BRIDGE_LIVE` | 未設定 | `1` で Live テストを有効化（テスト専用） | NFR-008 |
+| `CHATGPT_BRIDGE_MAX_CONCURRENCY` | `1` | Phase 3 MVP（A-136）。`run` が daemon 経由で同時に使える生成枠の数。2〜8で `state/slot-lock.ts` の N 枠プールへ切り替わる（`login`/`doctor`/`inspect-ui` は対象外、常に排他）。無効値は警告して 1、8 超過は警告して 8 にする | `docs/23-DURABLE-BRIDGE-PHASES.md` Phase 3 |
 
 定数（A-029。Live で調整し、変更時は本表を更新）:
 

@@ -6,6 +6,7 @@ import { checkDaemon, type DaemonHealth } from "../browser/daemon.js";
 import { checkProfileFree, checkProfilePath } from "../browser/profile-guard.js";
 import type { BridgeConfig } from "../cli/config.js";
 import { defaultLockDeps, judgeStale, readLockRecord } from "../state/lock.js";
+import { slotPath } from "../state/slot-lock.js";
 
 const run = promisify(execFile);
 
@@ -177,7 +178,7 @@ export async function checkDaemonStatus(
       ? {
           name: "daemon",
           ok: true,
-          detail: `running: pid=${health.state.pid} port=${health.state.port}`,
+          detail: `running: pid=${health.state.pid} port=${health.state.port} pool=${health.state.maxConcurrency} (this process=${cfg.maxConcurrency})`,
         }
       : health.foreign
         ? {
@@ -192,6 +193,34 @@ export async function checkDaemonStatus(
 
 export async function checkLock(cfg: BridgeConfig): Promise<DoctorItem> {
   const path = join(cfg.locksDir, "bridge.lock");
+  if (cfg.maxConcurrency > 1) {
+    const details: string[] = [];
+    let hasHeld = false;
+    let hasStale = false;
+    for (let index = 0; index < cfg.maxConcurrency; index++) {
+      const slot = slotPath(path, index);
+      try {
+        await stat(slot);
+      } catch {
+        details.push(`slot${index} free`);
+        continue;
+      }
+      const rec = await readLockRecord(slot);
+      const verdict = await judgeStale(slot, rec, defaultLockDeps);
+      if (verdict.stale) {
+        hasStale = true;
+        details.push(`slot${index} stale (${verdict.reason}); safe to delete ${slot}`);
+      } else {
+        hasHeld = true;
+        details.push(
+          `slot${index} held: pid=${rec?.pid ?? "?"} command=${rec?.command ?? "?"} (${verdict.reason})`,
+        );
+      }
+    }
+    if (hasHeld) return { name: "lock", ok: false, detail: details.join("; ") };
+    if (hasStale) return { name: "lock", ok: true, warn: true, detail: details.join("; ") };
+    return { name: "lock", ok: true, detail: details.join("; ") };
+  }
   try {
     await stat(path);
   } catch {

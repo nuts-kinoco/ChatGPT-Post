@@ -55,6 +55,14 @@ export interface DaemonState {
   profileDir: string;
   hostname: string;
   profileId: string;
+  /** Phase 3 MVP (A-136, Opus review High#1): the generation-slot pool size this daemon's own
+   * keepalive barrier-locks against (`daemon-worker.ts`). `run`/`submit` read this back (see
+   * `cli/adapters.ts`) and refuse to use the pool if their own `CHATGPT_BRIDGE_MAX_CONCURRENCY`
+   * doesn't match — the barrier size and the pool size must agree, or slots outside the daemon's
+   * barrier range would never actually be excluded from a concurrent login/doctor/keepalive touch.
+   * Missing on daemon.json files written before this field existed; treated as 1 (the only value
+   * that could have been true then). */
+  maxConcurrency: number;
 }
 
 const PROFILE_ID_FILE = ".chatgpt-bridge-profile-id";
@@ -120,7 +128,9 @@ export function daemonStatePath(cfg: DaemonCfg, hostname: string = osHostname())
   return join(cfg.runtimeDir, `daemon.${sanitizeHostname(hostname)}.json`);
 }
 
-function isValidState(parsed: Partial<DaemonState>): parsed is DaemonState {
+/** `maxConcurrency` is checked separately in `readStateFile` (not required here) so daemon.json
+ * files written before A-136 — which never had the field — are still recognized. */
+function isValidState(parsed: Partial<DaemonState>): parsed is Omit<DaemonState, "maxConcurrency"> {
   return (
     typeof parsed.pid === "number" &&
     Number.isSafeInteger(parsed.pid) &&
@@ -142,7 +152,13 @@ async function readStateFile(path: string): Promise<DaemonState | null> {
   try {
     const text = await readFile(path, "utf8");
     const parsed = JSON.parse(text) as Partial<DaemonState>;
-    return isValidState(parsed) ? parsed : null;
+    const rawMaxConcurrency = parsed.maxConcurrency;
+    if (!isValidState(parsed)) return null;
+    const maxConcurrency =
+      Number.isInteger(rawMaxConcurrency) && (rawMaxConcurrency as number) >= 1
+        ? (rawMaxConcurrency as number)
+        : 1;
+    return { ...parsed, maxConcurrency };
   } catch {
     return null;
   }
@@ -306,6 +322,11 @@ export async function stopDaemon(cfg: DaemonCfg): Promise<{ ok: boolean; detail:
 
 export async function startDaemon(
   cfg: DaemonCfg,
+  /** Phase 3 MVP (A-136): the pool size this daemon's own keepalive should barrier-lock against
+   * for its whole lifetime (persisted into daemon.json; see `DaemonState.maxConcurrency`). Ignored
+   * when a daemon is already running (`alreadyRunning: true`) — its own recorded value stands;
+   * changing the pool size requires `daemon stop` + `daemon start` with the new value. */
+  maxConcurrency = 1,
 ): Promise<
   { ok: true; state: DaemonState; alreadyRunning: boolean } | { ok: false; cause: string }
 > {
@@ -346,6 +367,8 @@ export async function startDaemon(
       profileId,
       "--lock-path",
       join(cfg.runtimeDir, "locks", "bridge.lock"),
+      "--max-concurrency",
+      String(maxConcurrency),
       ...(process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS
         ? ["--keepalive-ms", process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS]
         : []),

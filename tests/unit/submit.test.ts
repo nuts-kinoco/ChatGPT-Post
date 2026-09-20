@@ -28,6 +28,7 @@ beforeEach(async () => {
     imageViaViewer: false,
     logLevel: "error",
     bridgeVersion: "test",
+    maxConcurrency: 1,
   };
 });
 afterEach(async () => {
@@ -191,6 +192,147 @@ describe("submitJob (Phase 1, A-132)", () => {
     } finally {
       store.close();
     }
+  });
+
+  it("Phase 3 MVP (A-136): with maxConcurrency > 1, a busy bridge.lock alone no longer refuses to spawn -- only all slots busy does", async () => {
+    const pooled: BridgeConfig = { ...cfg, maxConcurrency: 2 };
+    const reqPath = await writeRequest("20260919T000001Z-aaaaaaab");
+    await mkdir(pooled.locksDir, { recursive: true });
+    // plain bridge.lock (no .slot suffix) held live -- irrelevant once pooled, since cmdRun never
+    // touches it in that mode (adapters.ts poolLock uses bridge.lock.slot0/.slot1 instead).
+    await writeFile(
+      join(pooled.locksDir, "bridge.lock"),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+        token: "t",
+        command: "run",
+        requestId: null,
+        hostname: osHostname(),
+      }),
+    );
+    let calls = 0;
+    const out = await submitJob(pooled, reqPath, async () => {
+      calls++;
+      return 1;
+    });
+    expect(out.ok).toBe(true); // both slots free -> not busy, spawns normally
+    expect(calls).toBe(1);
+  });
+
+  it("Phase 3 MVP (A-136): with maxConcurrency > 1, refuses to spawn once every slot is genuinely held", async () => {
+    const pooled: BridgeConfig = { ...cfg, maxConcurrency: 2 };
+    await mkdir(pooled.locksDir, { recursive: true });
+    for (const suffix of [0, 1]) {
+      await writeFile(
+        join(pooled.locksDir, `bridge.lock.slot${suffix}`),
+        JSON.stringify({
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+          token: "t",
+          command: "run",
+          requestId: null,
+          hostname: osHostname(),
+        }),
+      );
+    }
+    const reqPath = await writeRequest("20260919T000002Z-aaaaaaac");
+    let calls = 0;
+    const out = await submitJob(pooled, reqPath, async () => {
+      calls++;
+      return 1;
+    });
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.cause).toMatch(/ALREADY_RUNNING/);
+    expect(calls).toBe(0);
+  });
+
+  it("retries a same-content BROWSER_CRASHED job under the same requestId", async () => {
+    const id = "20260920T000001Z-browser1";
+    const reqPath = await writeRequest(id);
+    await submitJob(cfg, reqPath, async () => 111);
+    const store = await openJobStore(jobStorePath(cfg));
+    try {
+      store.update(id, {
+        status: "failed",
+        pid: 111,
+        submittedAt: "2000-01-01T00:00:00.000Z",
+        updatedAt: "2000-01-01T00:00:00.000Z",
+        errorCode: "BROWSER_CRASHED",
+      });
+    } finally {
+      store.close();
+    }
+
+    let calls = 0;
+    const out = await submitJob(
+      cfg,
+      reqPath,
+      async () => {
+        calls++;
+        return 222;
+      },
+      {
+        isProcessAlive: () => true,
+        processStartedAt: async () => new Date("2026-09-20T00:00:00.000Z"),
+        now: () => new Date("2026-09-20T00:00:00.000Z"),
+        pid: process.pid,
+        hostname: osHostname(),
+      },
+    );
+
+    expect(calls).toBe(1);
+    expect(out).toMatchObject({ ok: true, alreadySubmitted: false });
+    if (!out.ok) return;
+    expect(out.job.status).toBe("running");
+    expect(out.job.pid).toBe(222);
+    expect(out.job.submittedAt).toBe("2026-09-20T00:00:00.000Z");
+    expect(out.job.updatedAt).toBe("2026-09-20T00:00:00.000Z");
+    expect(out.job.errorCode).toBeNull();
+  });
+
+  it("does not retry a same-content SUBMIT_STATE_UNKNOWN job", async () => {
+    const id = "20260920T000002Z-unknown1";
+    const reqPath = await writeRequest(id);
+    await submitJob(cfg, reqPath, async () => 111);
+    const store = await openJobStore(jobStorePath(cfg));
+    try {
+      store.update(id, { status: "failed", errorCode: "SUBMIT_STATE_UNKNOWN" });
+    } finally {
+      store.close();
+    }
+
+    let calls = 0;
+    const out = await submitJob(cfg, reqPath, async () => {
+      calls++;
+      return 222;
+    });
+
+    expect(calls).toBe(0);
+    expect(out).toMatchObject({ ok: true, alreadySubmitted: true });
+    if (out.ok) expect(out.job.errorCode).toBe("SUBMIT_STATE_UNKNOWN");
+  });
+
+  it("keeps a completed same-content job idempotent", async () => {
+    const id = "20260920T000003Z-complete1";
+    const reqPath = await writeRequest(id);
+    await submitJob(cfg, reqPath, async () => 111);
+    const store = await openJobStore(jobStorePath(cfg));
+    try {
+      store.update(id, { status: "completed" });
+    } finally {
+      store.close();
+    }
+
+    let calls = 0;
+    const out = await submitJob(cfg, reqPath, async () => {
+      calls++;
+      return 222;
+    });
+
+    expect(calls).toBe(0);
+    expect(out).toMatchObject({ ok: true, alreadySubmitted: true });
+    if (out.ok) expect(out.job.status).toBe("completed");
   });
 });
 
