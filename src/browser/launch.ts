@@ -1,7 +1,13 @@
 import { mkdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Browser, type BrowserContext, chromium, type Page } from "playwright";
+import {
+  type Browser,
+  type BrowserContext,
+  chromium,
+  type Disposable,
+  type Page,
+} from "playwright";
 import { COPY_CAPTURE_SHIM } from "../extraction/copy-capture.js";
 import { withTimeout } from "./timeout.js";
 import { sanitizeTraceZip } from "./trace-sanitizer.js";
@@ -48,6 +54,10 @@ export class BrowserSession {
    * disconnect it cleanly (C-6, Codex Medium). Per Playwright's docs, closing a Browser obtained
    * via connectOverCDP() only ends that connection — it does not terminate the remote browser. */
   private cdpBrowser: Browser | null = null;
+  /** The exact init-script registration made by this session.  Unlike a new local context, a
+   * daemon context outlives this process, so it must be disposed on detach rather than left to
+   * accumulate in the daemon. */
+  private copyCaptureShim: Disposable | null = null;
 
   constructor(private readonly cfg: BrowserConfig) {}
 
@@ -65,7 +75,7 @@ export class BrowserSession {
     opts: LaunchOptions,
     page: Page,
   ): Promise<Page> {
-    if (opts.copyCaptureShim) await context.addInitScript(COPY_CAPTURE_SHIM);
+    if (opts.copyCaptureShim) this.copyCaptureShim = await context.addInitScript(COPY_CAPTURE_SHIM);
     this.page = page;
     context.on("close", () => {
       if (this.context) opts.onCrash("browser context closed");
@@ -75,6 +85,18 @@ export class BrowserSession {
       if (this.context) opts.onCrash("page closed");
     });
     return page;
+  }
+
+  /** `addInitScript()` returns a Disposable in Playwright 1.63.  This must be called while the
+   * CDP connection is still live: the daemon context persists after this session detaches. */
+  private async disposeCopyCaptureShim(): Promise<void> {
+    const shim = this.copyCaptureShim;
+    this.copyCaptureShim = null;
+    if (shim) {
+      await withTimeout(shim.dispose(), 5_000, "copy-capture init script dispose").catch(
+        () => undefined,
+      );
+    }
   }
 
   /**
@@ -143,6 +165,7 @@ export class BrowserSession {
       this.tracing = true;
       return { ok: true };
     } catch (err) {
+      await this.disposeCopyCaptureShim();
       this.context = null;
       return { ok: false, cause: (err as Error).message };
     }
@@ -156,6 +179,9 @@ export class BrowserSession {
     // Codex review of A-110, Medium: kept outside the try's local scope so the catch below can
     // always close a connected-but-not-yet-committed CDP session instead of leaking it.
     let browser: Browser | undefined;
+    // This is deliberately local to the attempt. `this.page` can be reset before the catch, and
+    // must never cause us to close a reused daemon page from another session.
+    let createdDedicatedPage: Page | null = null;
     try {
       browser = await chromium.connectOverCDP(cdpUrl);
       const context = browser.contexts()[0];
@@ -166,9 +192,13 @@ export class BrowserSession {
       // Resolved (and verified live, with a bounded timeout) before committing `this.context`/
       // `this.cdpBrowser` — if this throws, the catch below closes `browser` and this.* stays
       // exactly as it was, rather than pointing at a half-attached session (A-110).
-      const page = this.cfg.dedicatedPage
-        ? await this.createDedicatedPage(context)
-        : await this.getUsablePage(context);
+      let page: Page;
+      if (this.cfg.dedicatedPage) {
+        createdDedicatedPage = await this.createDedicatedPage(context);
+        page = createdDedicatedPage;
+      } else {
+        page = await this.getUsablePage(context);
+      }
       this.context = context;
       this.attached = true;
       this.ownsDedicatedPage = Boolean(this.cfg.dedicatedPage);
@@ -195,6 +225,14 @@ export class BrowserSession {
       }
       return { ok: true };
     } catch (err) {
+      if (createdDedicatedPage) {
+        await withTimeout(
+          createdDedicatedPage.close(),
+          5_000,
+          "page.close() (failed dedicated attach)",
+        ).catch(() => undefined);
+      }
+      await this.disposeCopyCaptureShim();
       this.context = null;
       this.attached = false;
       this.ownsDedicatedPage = false;
@@ -236,6 +274,7 @@ export class BrowserSession {
    * achievable guarantee is that `close()` itself always returns within a bound, even if the
    * underlying Playwright call is still hung in the background. */
   async close(opts?: { keepPage?: boolean }): Promise<void> {
+    await this.disposeCopyCaptureShim();
     const ctx = this.context;
     if (!ctx) return;
     // A-136: captured before this.page is nulled below — only closed once detach (tracing.stop)
