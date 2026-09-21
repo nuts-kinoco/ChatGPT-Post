@@ -76,3 +76,19 @@ describe("BrowserSession.attach() cleanup", () => {
     expect(browser.close).toHaveBeenCalledOnce();
   });
 });
+
+describe("BrowserSession experimental extension mode", () => {
+  it("fails closed on the installed Chrome channel instead of pretending its launch flags worked", async () => {
+    const chromeSession = new BrowserSession({
+      channel: "chrome",
+      experimentalStealth: "extension",
+      profileDir: "unused-in-unit-test",
+      stealthExtensionDir: "unused-in-unit-test",
+    });
+
+    await expect(chromeSession.launch(launchOptions)).resolves.toEqual({
+      ok: false,
+      cause: expect.stringContaining("unavailable with channel=chrome"),
+    });
+  });
+});

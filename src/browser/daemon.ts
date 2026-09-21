@@ -47,6 +47,7 @@ import { hostname as osHostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultLockDeps } from "../state/lock.js";
+import type { ExperimentalStealthMode } from "./stealth-signals.js";
 
 export interface DaemonState {
   pid: number;
@@ -63,6 +64,8 @@ export interface DaemonState {
    * Missing on daemon.json files written before this field existed; treated as 1 (the only value
    * that could have been true then). */
   maxConcurrency: number;
+  /** A-140 experiment mode, fixed at daemon startup so attached clients cannot mix mechanisms. */
+  experimentalStealth: ExperimentalStealthMode;
 }
 
 const PROFILE_ID_FILE = ".chatgpt-bridge-profile-id";
@@ -114,6 +117,8 @@ export interface DaemonCfg {
   runtimeDir: string;
   profileDir: string;
   channel: "chrome" | "chromium";
+  experimentalStealth?: ExperimentalStealthMode;
+  stealthExtensionDir?: string;
 }
 
 /** Filesystem-safe encoding of a hostname for use in a filename. */
@@ -128,9 +133,10 @@ export function daemonStatePath(cfg: DaemonCfg, hostname: string = osHostname())
   return join(cfg.runtimeDir, `daemon.${sanitizeHostname(hostname)}.json`);
 }
 
-/** `maxConcurrency` is checked separately in `readStateFile` (not required here) so daemon.json
- * files written before A-136 — which never had the field — are still recognized. */
-function isValidState(parsed: Partial<DaemonState>): parsed is Omit<DaemonState, "maxConcurrency"> {
+/** Optional fields retain safe defaults so daemon state written before an experiment stays off. */
+function isValidState(
+  parsed: Partial<DaemonState>,
+): parsed is Omit<DaemonState, "maxConcurrency" | "experimentalStealth"> {
   return (
     typeof parsed.pid === "number" &&
     Number.isSafeInteger(parsed.pid) &&
@@ -153,12 +159,17 @@ async function readStateFile(path: string): Promise<DaemonState | null> {
     const text = await readFile(path, "utf8");
     const parsed = JSON.parse(text) as Partial<DaemonState>;
     const rawMaxConcurrency = parsed.maxConcurrency;
+    const rawExperimentalStealth = parsed.experimentalStealth;
     if (!isValidState(parsed)) return null;
     const maxConcurrency =
       Number.isInteger(rawMaxConcurrency) && (rawMaxConcurrency as number) >= 1
         ? (rawMaxConcurrency as number)
         : 1;
-    return { ...parsed, maxConcurrency };
+    const experimentalStealth =
+      rawExperimentalStealth === "initscript" || rawExperimentalStealth === "extension"
+        ? rawExperimentalStealth
+        : "off";
+    return { ...parsed, maxConcurrency, experimentalStealth };
   } catch {
     return null;
   }
@@ -330,6 +341,14 @@ export async function startDaemon(
 ): Promise<
   { ok: true; state: DaemonState; alreadyRunning: boolean } | { ok: false; cause: string }
 > {
+  const experimentalStealth = cfg.experimentalStealth ?? "off";
+  if (experimentalStealth === "extension" && cfg.channel === "chrome") {
+    return {
+      ok: false,
+      cause:
+        "experimental extension mode is unavailable with channel=chrome: current Chrome ignores --load-extension/--disable-extensions-except. See docs/24-EXPERIMENTAL-STEALTH-SIGNALS.md.",
+    };
+  }
   const health = await checkDaemon(cfg);
   if (health.alive) return { ok: true, state: health.state, alreadyRunning: true };
   if (health.foreign) {
@@ -369,6 +388,10 @@ export async function startDaemon(
       join(cfg.runtimeDir, "locks", "bridge.lock"),
       "--max-concurrency",
       String(maxConcurrency),
+      "--experimental-stealth",
+      experimentalStealth,
+      "--stealth-extension-dir",
+      cfg.stealthExtensionDir ?? "",
       ...(process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS
         ? ["--keepalive-ms", process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS]
         : []),

@@ -62,6 +62,7 @@ commands:
   inspect-ui [--dump-dom] [--walk-effort]
                              UI 要素の検出状況を出力する（送信しない）。--walk-effort は
                              思考量スライダーを全段階なめてラベルを記録し、元の段階に戻す
+  stealth-signals            A-140 experimental fingerprint diagnostic (no prompt is sent)
 
 options:
   --profile-dir <path>       専用プロファイル（CHATGPT_BRIDGE_PROFILE_DIR より優先）
@@ -524,6 +525,8 @@ async function cmdDaemon(cfg: BridgeConfig, action: string | undefined): Promise
     runtimeDir: cfg.runtimeDir,
     profileDir: cfg.profileDir,
     channel: cfg.channel,
+    experimentalStealth: cfg.experimentalStealth,
+    stealthExtensionDir: join(cfg.repoRoot, "experimental", "stealth-extension"),
   };
   // C-3 (Codex High): daemon start/stop must not bypass the same profile-path safety border and
   // bridge-lock exclusion every other command goes through.
@@ -607,6 +610,23 @@ async function cmdInspectUi(
     return 0;
   });
   return typeof r === "number" ? r : 1;
+}
+
+/** A-140 follow-up: diagnostic-only comparison point. It sends no prompt or page interaction. */
+async function cmdStealthSignals(cfg: BridgeConfig): Promise<number> {
+  const r = await withBrowser(cfg, "stealth-signals", true, async (ports, crash) => {
+    const page = ports.session.currentPage;
+    await page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 30_000 });
+    if (crash.cause) {
+      process.stderr.write(`browser crashed: ${crash.cause}\n`);
+      return 1;
+    }
+    const webdriver = await page.evaluate(() => String(navigator.webdriver));
+    process.stdout.write(`experimentalStealth=${cfg.experimentalStealth}\n`);
+    process.stdout.write(`navigator.webdriver=${webdriver}\n`);
+    return 0;
+  });
+  return typeof r === "number" ? r : r;
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -719,6 +739,8 @@ export async function main(argv: string[]): Promise<number> {
         values["walk-effort"] ?? false,
         verifiedOnly,
       );
+    case "stealth-signals":
+      return cmdStealthSignals(cfg);
     default:
       process.stderr.write(`unknown command: ${command}\n${USAGE}`);
       return EXIT_CODES.invalidInput;

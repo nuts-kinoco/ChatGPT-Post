@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  type ExperimentalStealthMode,
+  parseExperimentalStealthMode,
+} from "../browser/stealth-signals.js";
 import { REPO_ROOT } from "../contracts/schema.js";
 import type { LogLevel } from "../diagnostics/logger.js";
 
@@ -25,6 +29,8 @@ export interface BridgeConfig {
    * guard before launch with `PROFILE_IN_USE`; other platforms can instead report a browser launch
    * failure when their browser rejects the already-used profile. */
   maxConcurrency: number;
+  /** A-140 follow-up experiment only. Off unless explicitly selected through its env var. */
+  experimentalStealth: ExperimentalStealthMode;
 }
 
 export interface CliOverrides {
@@ -69,6 +75,8 @@ export function loadConfig(
   } else {
     maxConcurrency = maxConcurrencyRaw;
   }
+  const experimentalStealth = parseExperimentalStealthMode(env.CHATGPT_BRIDGE_EXPERIMENTAL_STEALTH);
+  if (experimentalStealth.warning) process.stderr.write(experimentalStealth.warning);
   let bridgeVersion = "0.0.0";
   try {
     bridgeVersion =
@@ -90,5 +98,6 @@ export function loadConfig(
     logLevel,
     bridgeVersion,
     maxConcurrency,
+    experimentalStealth: experimentalStealth.mode,
   };
 }

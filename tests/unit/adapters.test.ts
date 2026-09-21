@@ -25,6 +25,7 @@ beforeEach(async () => {
     logLevel: "error",
     bridgeVersion: "test",
     maxConcurrency: 1,
+    experimentalStealth: "off",
   };
 });
 afterEach(async () => {
@@ -34,7 +35,13 @@ afterEach(async () => {
 async function writeForeignDaemonState(): Promise<void> {
   await writeFile(
     daemonStatePath(
-      { runtimeDir: cfg.runtimeDir, profileDir: cfg.profileDir, channel: "chrome" },
+      {
+        runtimeDir: cfg.runtimeDir,
+        profileDir: cfg.profileDir,
+        channel: "chrome",
+        experimentalStealth: "off",
+        stealthExtensionDir: join(dir, "experimental", "stealth-extension"),
+      },
       "mac-mini.local",
     ),
     JSON.stringify({

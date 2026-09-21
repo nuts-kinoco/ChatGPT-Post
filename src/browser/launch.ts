@@ -9,6 +9,7 @@ import {
   type Page,
 } from "playwright";
 import { COPY_CAPTURE_SHIM } from "../extraction/copy-capture.js";
+import { type ExperimentalStealthMode, STEALTH_SIGNAL_PATCH } from "./stealth-signals.js";
 import { withTimeout } from "./timeout.js";
 import { sanitizeTraceZip } from "./trace-sanitizer.js";
 
@@ -26,6 +27,10 @@ export interface BrowserConfig {
    * Page. Closed again on detach (see `close()`) instead of left open, so slots don't accumulate
    * stray tabs across many jobs. No effect on `launch()` (a fresh, exclusively-owned browser). */
   dedicatedPage?: boolean;
+  /** A-140 follow-up: opt-in experiment; off preserves the normal no-stealth launch. */
+  experimentalStealth?: ExperimentalStealthMode;
+  /** Absolute path to the committed, generated unpacked-extension artifact. */
+  stealthExtensionDir?: string;
 }
 
 export interface LaunchOptions {
@@ -58,6 +63,7 @@ export class BrowserSession {
    * daemon context outlives this process, so it must be disposed on detach rather than left to
    * accumulate in the daemon. */
   private copyCaptureShim: Disposable | null = null;
+  private stealthSignalPatch: Disposable | null = null;
 
   constructor(private readonly cfg: BrowserConfig) {}
 
@@ -74,8 +80,12 @@ export class BrowserSession {
     context: BrowserContext,
     opts: LaunchOptions,
     page: Page,
+    registerStealthSignalPatch: boolean,
   ): Promise<Page> {
     if (opts.copyCaptureShim) this.copyCaptureShim = await context.addInitScript(COPY_CAPTURE_SHIM);
+    if (registerStealthSignalPatch && this.cfg.experimentalStealth === "initscript") {
+      this.stealthSignalPatch = await context.addInitScript(STEALTH_SIGNAL_PATCH);
+    }
     this.page = page;
     context.on("close", () => {
       if (this.context) opts.onCrash("browser context closed");
@@ -94,6 +104,16 @@ export class BrowserSession {
     this.copyCaptureShim = null;
     if (shim) {
       await withTimeout(shim.dispose(), 5_000, "copy-capture init script dispose").catch(
+        () => undefined,
+      );
+    }
+  }
+
+  private async disposeStealthSignalPatch(): Promise<void> {
+    const patch = this.stealthSignalPatch;
+    this.stealthSignalPatch = null;
+    if (patch) {
+      await withTimeout(patch.dispose(), 5_000, "stealth-signals init script dispose").catch(
         () => undefined,
       );
     }
@@ -148,6 +168,16 @@ export class BrowserSession {
   }
 
   async launch(opts: LaunchOptions): Promise<{ ok: true } | { ok: false; cause: string }> {
+    // Chrome 137+ ignores the unpacked-extension switches used below (confirmed locally on the
+    // installed Chrome channel). Refuse instead of claiming that extension mode changed a signal.
+    // The Chromium launch path retains the flags for later direct validation with a suitable binary.
+    if (this.cfg.experimentalStealth === "extension" && this.cfg.channel === "chrome") {
+      return {
+        ok: false,
+        cause:
+          "experimental extension mode is unavailable with channel=chrome: current Chrome ignores --load-extension/--disable-extensions-except. See docs/24-EXPERIMENTAL-STEALTH-SIGNALS.md.",
+      };
+    }
     await mkdir(this.cfg.profileDir, { recursive: true });
     try {
       const context = await chromium.launchPersistentContext(this.cfg.profileDir, {
@@ -155,17 +185,26 @@ export class BrowserSession {
         headless: false,
         viewport: null,
         acceptDownloads: true,
-        args: DARWIN_COOKIE_STORE_ARGS,
+        args: [
+          ...DARWIN_COOKIE_STORE_ARGS,
+          ...(this.cfg.experimentalStealth === "extension" && this.cfg.stealthExtensionDir
+            ? [
+                `--disable-extensions-except=${this.cfg.stealthExtensionDir}`,
+                `--load-extension=${this.cfg.stealthExtensionDir}`,
+              ]
+            : []),
+        ],
       });
       this.context = context;
       this.attached = false;
       const page = context.pages()[0] ?? (await context.newPage());
-      await this.attachHandlers(context, opts, page);
+      await this.attachHandlers(context, opts, page, true);
       await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
       this.tracing = true;
       return { ok: true };
     } catch (err) {
       await this.disposeCopyCaptureShim();
+      await this.disposeStealthSignalPatch();
       this.context = null;
       return { ok: false, cause: (err as Error).message };
     }
@@ -203,7 +242,9 @@ export class BrowserSession {
       this.attached = true;
       this.ownsDedicatedPage = Boolean(this.cfg.dedicatedPage);
       this.cdpBrowser = browser;
-      await this.attachHandlers(context, opts, page);
+      // The daemon registers its own experimental patch once at daemon startup. Attaching a
+      // client must not add another context-wide script to that long-lived context.
+      await this.attachHandlers(context, opts, page, false);
       // A-136 (Phase 3 MVP, Opus review High#2): Playwright tracing is per-BrowserContext, not
       // per-Page — it records every page in the context. In dedicated-page (pool) mode, more than
       // one `run` can be attached to this same daemon context at once, so a shared trace.zip would
@@ -233,6 +274,7 @@ export class BrowserSession {
         ).catch(() => undefined);
       }
       await this.disposeCopyCaptureShim();
+      await this.disposeStealthSignalPatch();
       this.context = null;
       this.attached = false;
       this.ownsDedicatedPage = false;
@@ -275,6 +317,7 @@ export class BrowserSession {
    * underlying Playwright call is still hung in the background. */
   async close(opts?: { keepPage?: boolean }): Promise<void> {
     await this.disposeCopyCaptureShim();
+    await this.disposeStealthSignalPatch();
     const ctx = this.context;
     if (!ctx) return;
     // A-136: captured before this.page is nulled below — only closed once detach (tracing.stop)

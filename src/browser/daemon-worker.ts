@@ -10,6 +10,7 @@ import { parseArgs } from "node:util";
 import { chromium } from "playwright";
 import { ProcessLock } from "../state/lock.js";
 import { type AcquiredBarrier, acquireAllSlots, releaseAllSlots } from "../state/slot-lock.js";
+import { type ExperimentalStealthMode, STEALTH_SIGNAL_PATCH } from "./stealth-signals.js";
 import { withTimeout } from "./timeout.js";
 
 const { values } = parseArgs({
@@ -23,6 +24,8 @@ const { values } = parseArgs({
     hostname: { type: "string" },
     "profile-id": { type: "string" },
     "max-concurrency": { type: "string" },
+    "experimental-stealth": { type: "string" },
+    "stealth-extension-dir": { type: "string" },
   },
 });
 if (!values["profile-dir"] || !values["state-path"] || !values["profile-id"]) {
@@ -49,6 +52,17 @@ const keepAliveMs = Number(values["keepalive-ms"] ?? 15 * 60 * 1000);
 const maxConcurrencyRaw = Number(values["max-concurrency"] ?? "1");
 const maxConcurrency =
   Number.isInteger(maxConcurrencyRaw) && maxConcurrencyRaw >= 1 ? maxConcurrencyRaw : 1;
+const experimentalStealth: ExperimentalStealthMode =
+  values["experimental-stealth"] === "initscript" || values["experimental-stealth"] === "extension"
+    ? values["experimental-stealth"]
+    : "off";
+const stealthExtensionDir = values["stealth-extension-dir"];
+if (experimentalStealth === "extension" && channel === "chrome") {
+  process.stderr.write(
+    "daemon-worker: extension mode is unavailable with channel=chrome; current Chrome ignores unpacked-extension launch flags\n",
+  );
+  process.exit(1);
+}
 
 const context = await chromium.launchPersistentContext(profileDir, {
   ...(channel === "chrome" ? { channel: "chrome" as const } : {}),
@@ -64,8 +78,17 @@ const context = await chromium.launchPersistentContext(profileDir, {
     // A-108: keep cookie storage consistent with scripts/manual-login.mjs and browser/launch.ts
     // on macOS (Keychain-encrypted cookies from one invocation aren't readable by another).
     ...(process.platform === "darwin" ? ["--password-store=basic", "--use-mock-keychain"] : []),
+    ...(experimentalStealth === "extension" && stealthExtensionDir
+      ? [
+          `--disable-extensions-except=${stealthExtensionDir}`,
+          `--load-extension=${stealthExtensionDir}`,
+        ]
+      : []),
   ],
 });
+// Registered before the first page is used, once for this daemon-owned context. Attached clients
+// deliberately do not register it again (see BrowserSession.attach()).
+if (experimentalStealth === "initscript") await context.addInitScript(STEALTH_SIGNAL_PATCH);
 let page = context.pages()[0] ?? (await context.newPage());
 
 let shuttingDown = false;
@@ -250,6 +273,9 @@ await writeFile(
     hostname,
     profileId,
     maxConcurrency,
+    // Preserve the pre-experiment daemon.json shape for the default path. Readers treat a missing
+    // field as off; only an explicitly selected experiment is persisted for attach-time matching.
+    ...(experimentalStealth === "off" ? {} : { experimentalStealth }),
   }),
   "utf8",
 );

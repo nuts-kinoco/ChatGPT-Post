@@ -24,3 +24,31 @@ describe("loadConfig max concurrency", () => {
     expect(stderr).not.toHaveBeenCalled();
   });
 });
+
+describe("loadConfig experimental stealth mode", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("is off unless explicitly selected", () => {
+    expect(loadConfig({}).experimentalStealth).toBe("off");
+    expect(loadConfig({ CHATGPT_BRIDGE_EXPERIMENTAL_STEALTH: "0" }).experimentalStealth).toBe(
+      "off",
+    );
+  });
+
+  it("selects each mechanism independently", () => {
+    expect(loadConfig({ CHATGPT_BRIDGE_EXPERIMENTAL_STEALTH: "1" }).experimentalStealth).toBe(
+      "initscript",
+    );
+    expect(
+      loadConfig({ CHATGPT_BRIDGE_EXPERIMENTAL_STEALTH: "extension" }).experimentalStealth,
+    ).toBe("extension");
+  });
+
+  it("warns and fails closed for an unknown value", () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    expect(loadConfig({ CHATGPT_BRIDGE_EXPERIMENTAL_STEALTH: "yes" }).experimentalStealth).toBe(
+      "off",
+    );
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("not one of"));
+  });
+});

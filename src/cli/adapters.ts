@@ -183,11 +183,15 @@ export function playwrightBrowser(
     profileDir: cfg.profileDir,
     channel: cfg.channel,
     dedicatedPage,
+    experimentalStealth: cfg.experimentalStealth,
+    stealthExtensionDir: join(cfg.repoRoot, "experimental", "stealth-extension"),
   });
   const daemonCfg = {
     runtimeDir: cfg.runtimeDir,
     profileDir: cfg.profileDir,
     channel: cfg.channel,
+    experimentalStealth: cfg.experimentalStealth,
+    stealthExtensionDir: join(cfg.repoRoot, "experimental", "stealth-extension"),
   };
   return {
     session,
@@ -226,6 +230,12 @@ export function playwrightBrowser(
           return {
             ok: false,
             cause: `CHATGPT_BRIDGE_MAX_CONCURRENCY mismatch: this process asked for ${cfg.maxConcurrency}, but the running daemon was started with ${daemon.state.maxConcurrency} (daemon start bakes it in for the lifetime of the daemon). Run "daemon stop" then "daemon start" with CHATGPT_BRIDGE_MAX_CONCURRENCY=${cfg.maxConcurrency} set, or unset it here to match the daemon's ${daemon.state.maxConcurrency}`,
+          };
+        }
+        if (daemon.state.experimentalStealth !== cfg.experimentalStealth) {
+          return {
+            ok: false,
+            cause: `CHATGPT_BRIDGE_EXPERIMENTAL_STEALTH mismatch: this process requested ${cfg.experimentalStealth}, but the running daemon was started with ${daemon.state.experimentalStealth}. Run "daemon stop" then "daemon start" with the desired experimental mode; it is fixed for the daemon lifetime.`,
           };
         }
         const attached = await session.attach(`http://127.0.0.1:${daemon.state.port}`, opts);
