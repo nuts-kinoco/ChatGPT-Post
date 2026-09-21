@@ -615,6 +615,23 @@ export class ChatGptPage implements ChatGptPort {
 
   // ---------- prompt ----------
 
+  /**
+   * A failed prompt entry must not leave an unsent draft for a later run to inherit. Cleanup is
+   * deliberately best-effort: the original failure remains the useful result if the page is no
+   * longer actionable.
+   */
+  private async clearComposerAfterFailedPrompt(composer: Locator): Promise<void> {
+    try {
+      await composer.fill("");
+    } catch (err) {
+      try {
+        this.opts.log?.(`prompt cleanup failed: ${(err as Error).message}`);
+      } catch {
+        // Logging must not turn the original prompt-entry failure into a new failure.
+      }
+    }
+  }
+
   async enterPrompt(
     text: string,
     attachments: string[],
@@ -647,9 +664,12 @@ export class ChatGptPage implements ChatGptPort {
           return this.attachFiles(attachments);
         }
       } catch (err) {
-        return { kind: "retry", cause: (err as Error).message };
+        const cause = (err as Error).message;
+        await this.clearComposerAfterFailedPrompt(composer);
+        return { kind: "retry", cause };
       }
     }
+    await this.clearComposerAfterFailedPrompt(composer);
     return {
       kind: "mismatch",
       cause: `composer content differs (expected ${expected.length} chars, saw ${lastSeen.length} chars)`,

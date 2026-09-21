@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Browser, chromium, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { ChatGptPage } from "../../src/chatgpt/page.js";
 import {
   countMatches,
   exists,
@@ -99,5 +100,35 @@ describe("selectors on the 2026-09-15 fixture", () => {
       /```typescript\nfunction hello_bridge\(\) \{\n {2}console\.log\("hello"\);\n\}\n```/,
     );
     expect(md).not.toMatch(/コピーする/);
+  });
+});
+
+describe("ChatGptPage prompt cleanup on a fixture", () => {
+  it("clears a mismatched composer before returning", async ({ skip }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const fixturePage = await browser.newPage();
+    try {
+      await fixturePage.setContent(`
+        <form><div id="prompt-textarea" contenteditable="true" role="textbox"></div></form>
+        <script>
+          const composer = document.querySelector('#prompt-textarea');
+          composer.addEventListener('input', () => {
+            if (composer.textContent) queueMicrotask(() => { composer.textContent = 'mismatch'; });
+          });
+        </script>
+      `);
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: true });
+
+      await expect(chat.enterPrompt("expected prompt", [])).resolves.toEqual({
+        kind: "mismatch",
+        cause: "composer content differs (expected 15 chars, saw 8 chars)",
+      });
+      await expect(fixturePage.locator("#prompt-textarea").textContent()).resolves.toBe("");
+    } finally {
+      await fixturePage.close();
+    }
   });
 });
