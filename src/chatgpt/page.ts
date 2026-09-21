@@ -98,6 +98,23 @@ export function normalisePrompt(text: string): string {
   return text.normalize("NFKC").replace(/\r\n?/g, "\n").trim();
 }
 
+/**
+ * ChatGPT's ProseMirror composer turns each newline inserted through Playwright's contenteditable
+ * path into a block boundary. Chromium's `innerText()` renders each such boundary as two newlines;
+ * an empty source line is an empty block between two boundaries and therefore renders as five.
+ *
+ * A-142's saved trace proves the mapping for the live composer: a source run of `n` newlines is
+ * read back as `3n - 1` newlines (1 -> 2, 2 -> 5). Undo only those exact runs on the observed
+ * value. In particular, this is not a general whitespace-insensitive comparison: unexpected
+ * runs, indentation, spaces, and every non-whitespace character remain literal and fail closed.
+ */
+function normaliseComposerInnerText(text: string): string {
+  return normalisePrompt(text).replace(/\n+/g, (run) => {
+    const sourceNewlines = (run.length + 1) / 3;
+    return Number.isInteger(sourceNewlines) ? "\n".repeat(sourceNewlines) : run;
+  });
+}
+
 export class ChatGptPage implements ChatGptPort {
   private locale: Locale = "ja";
   private sendButton: Locator | null = null;
@@ -657,7 +674,7 @@ export class ChatGptPage implements ChatGptPort {
         await composer.fill("");
         await composer.fill(text);
         await this.page.waitForTimeout(150);
-        const seen = normalisePrompt(await composer.innerText());
+        const seen = normaliseComposerInnerText(await composer.innerText());
         lastSeen = seen;
         if (seen === expected) {
           if (attachments.length === 0) return { kind: "ok" };

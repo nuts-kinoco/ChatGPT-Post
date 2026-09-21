@@ -17,3 +17,4 @@
 | 2026-09-17 | research | Flet 0.24 → 1.0 移行 | ft.run、単一イベントループ（最重要）、FilePicker は await、Ref/label_style/on_secondary_tap 存続、ネイティブ D&D は core に無い、flet pack 可 | 20260917T040610Z-250e9290 | adopted（Windows 版 Phase 0/1） |
 | 2026-09-17 | second-opinion | UI 応答性 13 フェーズの取捨 | 10（実機計測）を先に、11〜13 は後回し。render の single-flight 化と lock 内 I/O 分離を追加提案 | 20260916T145411Z-6fe9aa79 | pending（Mac 版は保守のみ） |
 | 2026-09-17 | second-opinion | center_panel.py 分割手順 | characterization test を先に固定し、葉（設定プリセット）から抽出。Ref は返さずコールバック注入 | 20260916T145412Z-3dbac23b | adopted（Windows 版 Phase 3） |
+- 20260920T200837Z-9b60f1ef | EMAKINOCO-Win: WAI-Illustrious v17 配布元推奨（steps15-30/CFG5-7/Euler a/Hires1.5x 20steps Anime6B denoise.35-.5）、18vs20 steps は根拠なし、Tiled VAE は OOM fallback。~~ブリッジは送信成功を失敗と誤報+下書き残留で composer_not_empty（要修正）~~ → 両方修正済み（A-139: 下書き残留、A-143: 送信成功の誤報。根本原因はProseMirrorの改行ブロックレンダリングと`innerText()`読み戻しのズレ）

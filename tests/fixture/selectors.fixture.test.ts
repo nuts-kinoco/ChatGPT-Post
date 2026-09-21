@@ -131,4 +131,69 @@ describe("ChatGptPage prompt cleanup on a fixture", () => {
       await fixturePage.close();
     }
   });
+
+  it("accepts the ProseMirror block rendering that caused A-142 without accepting wrong text", async ({
+    skip,
+  }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const fixturePage = await browser.newPage();
+    const numberedListPrompt = [
+      "Introduction",
+      "",
+      "Situation:",
+      "- first item",
+      "- second item",
+      "",
+      "Questions:",
+      "1. first question",
+      "2. second question",
+      "",
+      "Conclusion",
+    ].join("\n");
+    try {
+      await fixturePage.setContent(`
+        <form><div id="prompt-textarea" contenteditable="true" role="textbox"></div></form>
+        <script>
+          const composer = document.querySelector('#prompt-textarea');
+          let corrupt = false;
+          let transformTimer;
+          composer.addEventListener('input', () => {
+            clearTimeout(transformTimer);
+            transformTimer = setTimeout(() => {
+              // Chromium's raw contenteditable insertion represents one blank line as three
+              // newlines. ProseMirror normalizes it back to one empty paragraph.
+              const lines = composer.innerText.replace(/\\n{3}/g, '\\n\\n').split('\\n');
+              composer.replaceChildren(...lines.map((line) => {
+                const paragraph = document.createElement('p');
+                paragraph.textContent = corrupt ? line.replace('second', 'broken') : line;
+                if (!line) paragraph.append(document.createElement('br'));
+                return paragraph;
+              }));
+            }, 0);
+          });
+          window.setComposerCorrupt = () => { corrupt = true; };
+        </script>
+      `);
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: true });
+
+      // Real Chromium renders the block tree as 1 -> 2 and 2 -> 5 newlines, as in A-142's trace.
+      await expect(chat.enterPrompt(numberedListPrompt, [])).resolves.toEqual({ kind: "ok" });
+      await expect(fixturePage.locator("#prompt-textarea").innerText()).resolves.toContain(
+        "\n\n\n\n\nSituation:",
+      );
+
+      await fixturePage.evaluate(() => {
+        (window as typeof window & { setComposerCorrupt: () => void }).setComposerCorrupt();
+      });
+      await expect(chat.enterPrompt(numberedListPrompt, [])).resolves.toMatchObject({
+        kind: "mismatch",
+      });
+      await expect(fixturePage.locator("#prompt-textarea").textContent()).resolves.toBe("");
+    } finally {
+      await fixturePage.close();
+    }
+  });
 });
