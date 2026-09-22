@@ -197,3 +197,80 @@ describe("ChatGptPage prompt cleanup on a fixture", () => {
     }
   });
 });
+
+describe("A-144 Project resolve-or-create fixture", () => {
+  async function projectFixture(existingNames: string[]): Promise<Page> {
+    if (!browser) throw new Error("browser unavailable");
+    const fixturePage = await browser.newPage();
+    const rows = existingNames
+      .map(
+        (name, i) =>
+          `<a data-testid="project-sidebar-item" href="/g/g-p-existing-${i}/project">${name}</a>`,
+      )
+      .join("");
+    const content = `
+      <aside data-testid="projects-sidebar-list">${rows}</aside>
+      <button>New project</button>
+      <input name="project-name" />
+      <button>Create project</button>
+      <script>
+        document.querySelector('button:last-of-type').addEventListener('click', () => {
+          const name = document.querySelector('input').value;
+          const item = document.createElement('a');
+          item.dataset.testid = 'project-sidebar-item';
+          item.href = '/g/g-p-created/project';
+          item.textContent = name;
+          document.querySelector('[data-testid="projects-sidebar-list"]').append(item);
+        });
+      </script>
+    `;
+    await fixturePage.route("https://chatgpt.com/", (route) =>
+      route.fulfill({ contentType: "text/html", body: content }),
+    );
+    return fixturePage;
+  }
+
+  it("uses one exact existing match without creating", async ({ skip }) => {
+    if (!browser) return skip();
+    const fixturePage = await projectFixture(["EMAKINOCO-Win"]);
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Win")).resolves.toEqual({
+        kind: "ok",
+        url: "https://chatgpt.com/g/g-p-existing-0/project",
+        created: false,
+      });
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("creates only after no exact match and returns the created Project URL", async ({ skip }) => {
+    if (!browser) return skip();
+    const fixturePage = await projectFixture(["Other Project"]);
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Win")).resolves.toEqual({
+        kind: "ok",
+        url: "https://chatgpt.com/g/g-p-created/project",
+        created: true,
+      });
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("fails closed when more than one Project has the exact requested name", async ({ skip }) => {
+    if (!browser) return skip();
+    const fixturePage = await projectFixture(["EMAKINOCO-Win", "EMAKINOCO-Win"]);
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Win")).resolves.toMatchObject({
+        kind: "dom_unexpected",
+        element: "projectSidebarItem",
+      });
+    } finally {
+      await fixturePage.close();
+    }
+  });
+});

@@ -52,7 +52,12 @@ export type ElementKey =
   | "turnImage"
   | "imageViewer"
   | "imageSaveButton"
-  | "imageViewerClose";
+  | "imageViewerClose"
+  | "projectSidebarList"
+  | "projectSidebarItem"
+  | "newProjectButton"
+  | "newProjectNameInput"
+  | "newProjectConfirmButton";
 
 /**
  * 14-SELECTOR-STRATEGY §3. Candidates carry `verifiedOn` only after confirmation on the real
@@ -389,6 +394,49 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
       },
     ],
   },
+  // A-144: all candidates below are intentionally unverified. They are inert in normal runs
+  // (verifiedOnly:true) until a live session records verifiedOn after inspecting the real UI.
+  projectSidebarList: {
+    key: "projectSidebarList",
+    purpose: "ChatGPT sidebar Project list",
+    mode: "unique",
+    candidates: [{ kind: "css", selector: '[data-testid="projects-sidebar-list"]' }],
+  },
+  projectSidebarItem: {
+    key: "projectSidebarItem",
+    purpose: "A Project link inside the sidebar Project list",
+    mode: "count",
+    scope: "projectSidebarList",
+    candidates: [{ kind: "css", selector: '[data-testid="project-sidebar-item"]' }],
+  },
+  newProjectButton: {
+    key: "newProjectButton",
+    purpose: "Open the New Project flow from the sidebar",
+    mode: "unique",
+    candidates: [
+      { kind: "text", text: "New project" },
+      { kind: "text", text: "新しいプロジェクト" },
+    ],
+  },
+  newProjectNameInput: {
+    key: "newProjectNameInput",
+    purpose: "New Project name input",
+    mode: "unique",
+    candidates: [
+      { kind: "css", selector: 'input[name="project-name"]' },
+      { kind: "placeholder", text: "Project name" },
+      { kind: "placeholder", text: "プロジェクト名" },
+    ],
+  },
+  newProjectConfirmButton: {
+    key: "newProjectConfirmButton",
+    purpose: "Confirm creation of the named Project",
+    mode: "unique",
+    candidates: [
+      { kind: "text", text: "Create project" },
+      { kind: "text", text: "プロジェクトを作成" },
+    ],
+  },
   attachmentChip: {
     key: "attachmentChip",
     purpose:
@@ -648,6 +696,39 @@ export async function exists(
     }
   }
   return false;
+}
+
+/**
+ * Returns every visible match from the first eligible candidate with a visible match. This is for
+ * registry-defined list elements whose callers must inspect every item (for example, duplicate
+ * Project-name detection), rather than silently choosing a DOM-order match.
+ */
+export async function all(
+  root: Page | Locator,
+  key: ElementKey,
+  opts: { verifiedOnly?: boolean } = {},
+): Promise<Locator[]> {
+  const def = ELEMENTS[key];
+  let eligible = false;
+  const tried: string[] = [];
+  for (const c of def.candidates) {
+    if (opts.verifiedOnly && !c.verifiedOn) continue;
+    eligible = true;
+    try {
+      const loc = build(root, c);
+      const matches: Locator[] = [];
+      for (let i = 0; i < (await loc.count()); i++) {
+        const item = loc.nth(i);
+        if (await item.isVisible().catch(() => false)) matches.push(item);
+      }
+      if (matches.length > 0) return matches;
+      tried.push(`${describeCandidate(c)} -> 0`);
+    } catch {
+      tried.push(`${describeCandidate(c)} -> error`);
+    }
+  }
+  if (!eligible) throw new DomUnexpected(key, def.candidates.map(describeCandidate));
+  return [];
 }
 
 /** count: max attached matches across candidates. */

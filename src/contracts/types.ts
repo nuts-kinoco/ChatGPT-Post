@@ -29,9 +29,7 @@ export interface BridgeRequest {
   newChat: boolean;
   /** 1.2 (A-096): required when newChat is false. */
   conversationUrl?: string;
-  /** 1.3 (A-106): only valid when newChat is true. Opens this ChatGPT Project's home
-   * (`https://chatgpt.com/g/g-p-<id>-<slug>/project`) and starts the new chat there instead of
-   * at the plain chatgpt.com root, so it lands inside the project. */
+  /** A-144: a Project URL opens that home; any other string is its exact name to resolve or create. */
   project?: string;
   timeoutMs?: number;
   responseFormat: "markdown";
@@ -114,6 +112,15 @@ export interface BridgeError {
   cause: string | null;
 }
 
+/** A-144: visible Project-routing evidence for callers that requested a Project. */
+export interface ProjectHandshake {
+  requested: string;
+  /** null when resolution failed before a Project URL was known. */
+  resolvedUrl: string | null;
+  /** null when resolution failed before creation status was known. */
+  created: boolean | null;
+}
+
 export interface BridgeResult {
   schemaVersion: "1.2";
   bridgeVersion: string;
@@ -126,6 +133,8 @@ export interface BridgeResult {
   /** data-message-model-slug of the extracted assistant turn (post-hoc evidence, not a gate). */
   observedModelSlug: string | null;
   submitted: Submitted;
+  /** Absent only when request.json did not specify project. */
+  project?: ProjectHandshake;
   conversationUrl: string | null;
   responseFile: string | null;
   extractionMethod: ExtractionMethod | null;

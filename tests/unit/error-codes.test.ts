@@ -48,6 +48,11 @@ function harness(): Harness {
     openNewChat: async () => ({ kind: "ok" }),
     openConversation: async () => ({ kind: "ok" }),
     openProject: async () => ({ kind: "ok" }),
+    resolveOrCreateProject: async () => ({
+      kind: "ok",
+      url: "https://chatgpt.com/g/g-p-project/project",
+      created: false,
+    }),
     resolvePreset: async () => ({
       kind: "observed",
       preset: "high",

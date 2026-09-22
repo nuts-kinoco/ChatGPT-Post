@@ -104,6 +104,12 @@ export type PresetResolution =
   | { kind: "dom_unexpected"; element: string; tried: string[] }
   | { kind: "retry"; cause: string };
 
+export type ProjectResolution =
+  | { kind: "ok"; url: string; created: boolean }
+  | { kind: "failed"; cause: NewChatFailure }
+  | { kind: "retry"; cause: string }
+  | { kind: "dom_unexpected"; element: string; tried: string[] };
+
 export interface Baseline {
   assistantCount: number;
   url: string;
@@ -146,6 +152,8 @@ export interface ChatGptPort {
     | { kind: "retry"; cause: string }
     | { kind: "dom_unexpected"; element: string; tried: string[] }
   >;
+  /** A-144: exact-name lookup in the sidebar, creating only after a no-match result. */
+  resolveOrCreateProject(name: string): Promise<ProjectResolution>;
   /** Selects model (in-page radio) then effort (persisted slider); observes both; fails closed. */
   resolvePreset(requested: RequestedPreset, model: RequestedModel): Promise<PresetResolution>;
   /** Types the prompt, then attaches files and waits for their upload (send button re-enabled). */

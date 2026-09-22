@@ -5,24 +5,9 @@
   "description": "Single-request input contract. See docs/12-IO-CONTRACT.md.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schemaVersion",
-    "requestId",
-    "promptFile",
-    "preset",
-    "newChat",
-    "responseFormat"
-  ],
+  "required": ["schemaVersion", "requestId", "promptFile", "preset", "newChat", "responseFormat"],
   "properties": {
-    "schemaVersion": {
-      "type": "string",
-      "enum": [
-        "1.0",
-        "1.1",
-        "1.2",
-        "1.3"
-      ]
-    },
+    "schemaVersion": { "type": "string", "enum": ["1.0", "1.1", "1.2", "1.3"] },
     "requestId": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$",
@@ -36,32 +21,17 @@
     "attachments": {
       "type": "array",
       "maxItems": 20,
-      "items": {
-        "type": "string",
-        "minLength": 1
-      },
+      "items": { "type": "string", "minLength": 1 },
       "description": "1.1 (A-068): files to attach via the composer file input. Relative paths resolve against the request.json directory. Secret-looking names/contents are refused before the browser starts."
     },
     "preset": {
       "type": "string",
-      "enum": [
-        "current",
-        "instant",
-        "medium",
-        "high",
-        "extra_high",
-        "pro"
-      ],
+      "enum": ["current", "instant", "medium", "high", "extra_high", "pro"],
       "description": "Effort slider level (5 levels). current = do not touch, observe and reverse-map the label."
     },
     "model": {
       "type": "string",
-      "enum": [
-        "current",
-        "latest",
-        "gpt-5.6-sol",
-        "gpt-5.5"
-      ],
+      "enum": ["current", "latest", "gpt-5.6-sol", "gpt-5.5"],
       "default": "current",
       "description": "1.1 (A-067): model radio in the picker. Optional; current = observe only. preset remains the effort slider level."
     },
@@ -72,12 +42,11 @@
     "conversationUrl": {
       "type": "string",
       "pattern": "^https://chatgpt\\.com/(c/[A-Za-z0-9-]+|g/g-p-[A-Za-z0-9-]+/c/[A-Za-z0-9-]+)$",
-      "description": "1.2: required when newChat is false. Taken from a previous result.json. 1.3 (A-106): also accepts the nested form for a conversation started inside a Project (g/g-p-<id>/c/<id>)."
+      "description": "1.2: required when newChat is false. Taken from a previous result.json. 1.3 (A-106): accepts the nested form for a conversation started inside a Project."
     },
     "project": {
       "type": "string",
-      "pattern": "^https://chatgpt\\.com/g/g-p-[A-Za-z0-9-]+/project$",
-      "description": "Added in 1.3 (A-106), but accepted at any schemaVersion (same as model/attachments/conversationUrl — schemaVersion here is documentation, not an enforced gate). Only valid when newChat is true. Opens this ChatGPT Project's home and starts the new chat there. Get the URL from the project's sidebar \"プロジェクトのホームを開く\" (open project home) icon."
+      "description": "A-144: only valid when newChat is true. A full https://chatgpt.com/g/g-p-<id>/project URL opens that Project exactly as before. Any other string is an exact Project name: the bridge resolves it, or creates it if absent, then opens its home. schemaVersion remains documentation, not an enforced gate."
     },
     "timeoutMs": {
       "type": "integer",
@@ -86,59 +55,26 @@
       "default": 900000,
       "description": "Upper bound from submit to completion. Optional; the bridge applies 900000 when omitted (A-030)."
     },
-    "responseFormat": {
-      "type": "string",
-      "const": "markdown"
-    }
+    "responseFormat": { "type": "string", "const": "markdown" }
   },
   "allOf": [
     {
-      "if": {
-        "properties": {
-          "newChat": {
-            "const": false
-          }
-        }
-      },
+      "if": { "properties": { "newChat": { "const": false } } },
       "then": {
-        "properties": {
-          "conversationUrl": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "conversationUrl"
-        ],
+        "properties": { "conversationUrl": { "type": "string" } },
+        "required": ["conversationUrl"],
         "not": {
-          "properties": {
-            "project": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "project"
-          ]
+          "properties": { "project": { "type": "string" } },
+          "required": ["project"]
         }
       }
     },
     {
-      "if": {
-        "properties": {
-          "newChat": {
-            "const": true
-          }
-        }
-      },
+      "if": { "properties": { "newChat": { "const": true } } },
       "then": {
         "not": {
-          "properties": {
-            "conversationUrl": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "conversationUrl"
-          ]
+          "properties": { "conversationUrl": { "type": "string" } },
+          "required": ["conversationUrl"]
         }
       }
     }

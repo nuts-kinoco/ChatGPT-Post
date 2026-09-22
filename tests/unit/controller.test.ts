@@ -61,6 +61,11 @@ function fake(
     openNewChat: async () => ({ kind: "ok" }),
     openConversation: async () => ({ kind: "ok" }),
     openProject: async () => ({ kind: "ok" }),
+    resolveOrCreateProject: async () => ({
+      kind: "ok",
+      url: "https://chatgpt.com/g/g-p-project/project",
+      created: false,
+    }),
     resolvePreset: async () => ({
       kind: "observed",
       preset: "pro",
@@ -224,6 +229,115 @@ describe("RunController", () => {
     expect(f.calls.indexOf("close")).toBeLessThan(f.calls.indexOf("release"));
     expect(f.calls.indexOf("restoreEffort")).toBeLessThan(f.calls.indexOf("close"));
     expect(f.calls).not.toContain("stopTrace"); // trace on success disabled
+  });
+
+  it("A-144: a direct Project URL keeps A-106 routing and reports its handshake", async () => {
+    const projectUrl = "https://chatgpt.com/g/g-p-existing/project";
+    const calls: string[] = [];
+    const f = fake({
+      resolveOrCreateProject: async () => {
+        calls.push("resolve");
+        return { kind: "ok", url: projectUrl, created: false };
+      },
+      openProject: async (url) => {
+        calls.push(`open:${url}`);
+        return { kind: "ok" };
+      },
+    });
+    f.ports.contracts.validate = async () => ({
+      kind: "valid",
+      request: {
+        schemaVersion: "1.3",
+        requestId: "req-00000001",
+        promptFile: "p",
+        preset: "current",
+        newChat: true,
+        project: projectUrl,
+        responseFormat: "markdown",
+      },
+      prompt: "hi",
+      timeoutMs: 60_000,
+      attachments: [],
+      attachmentBytes: 0,
+    });
+    const out = await run(f);
+    expect(calls).toEqual([`open:${projectUrl}`]);
+    expect(out.result?.project).toEqual({
+      requested: projectUrl,
+      resolvedUrl: projectUrl,
+      created: false,
+    });
+  });
+
+  it("A-144: a Project name resolves before openProject and reports creation", async () => {
+    const resolvedUrl = "https://chatgpt.com/g/g-p-created/project";
+    const calls: string[] = [];
+    const f = fake({
+      resolveOrCreateProject: async (name) => {
+        calls.push(`resolve:${name}`);
+        return { kind: "ok", url: resolvedUrl, created: true };
+      },
+      openProject: async (url) => {
+        calls.push(`open:${url}`);
+        return { kind: "ok" };
+      },
+    });
+    f.ports.contracts.validate = async () => ({
+      kind: "valid",
+      request: {
+        schemaVersion: "1.3",
+        requestId: "req-00000001",
+        promptFile: "p",
+        preset: "current",
+        newChat: true,
+        project: "EMAKINOCO-Win",
+        responseFormat: "markdown",
+      },
+      prompt: "hi",
+      timeoutMs: 60_000,
+      attachments: [],
+      attachmentBytes: 0,
+    });
+    const out = await run(f);
+    expect(calls).toEqual(["resolve:EMAKINOCO-Win", `open:${resolvedUrl}`]);
+    expect(out.result?.project).toEqual({
+      requested: "EMAKINOCO-Win",
+      resolvedUrl,
+      created: true,
+    });
+  });
+
+  it("A-144: a failed name resolution keeps a partial handshake instead of hiding the request", async () => {
+    const f = fake({
+      resolveOrCreateProject: async () => ({
+        kind: "dom_unexpected",
+        element: "projectSidebarList",
+        tried: [],
+      }),
+    });
+    f.ports.contracts.validate = async () => ({
+      kind: "valid",
+      request: {
+        schemaVersion: "1.3",
+        requestId: "req-00000001",
+        promptFile: "p",
+        preset: "current",
+        newChat: true,
+        project: "EMAKINOCO-Win",
+        responseFormat: "markdown",
+      },
+      prompt: "hi",
+      timeoutMs: 60_000,
+      attachments: [],
+      attachmentBytes: 0,
+    });
+    const out = await run(f);
+    expect(out.result?.error?.code).toBe("DOM_CHANGED");
+    expect(out.result?.project).toEqual({
+      requested: "EMAKINOCO-Win",
+      resolvedUrl: null,
+      created: null,
+    });
   });
 
   it("ALREADY_RUNNING: no browser, no result.json, exit 4", async () => {

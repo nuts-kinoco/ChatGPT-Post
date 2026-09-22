@@ -23,6 +23,7 @@ import type {
 } from "../state/ports.js";
 import type { Observation } from "./completion.js";
 import {
+  all,
   build,
   countMatches,
   DomUnexpected,
@@ -46,6 +47,14 @@ import {
 } from "./selectors.js";
 
 export const CHATGPT_ORIGIN = "https://chatgpt.com";
+/** A-144: only this full URL shape preserves A-106's existing direct-open behavior. */
+export const PROJECT_URL_RE = /^https:\/\/chatgpt\.com\/g\/g-p-[A-Za-z0-9-]+\/project$/;
+export type ProjectReference = { kind: "url"; url: string } | { kind: "name"; name: string };
+
+/** A-144: URL-shaped values retain A-106 behavior; every other string is an exact Project name. */
+export function classifyProject(value: string): ProjectReference {
+  return PROJECT_URL_RE.test(value) ? { kind: "url", url: value } : { kind: "name", name: value };
+}
 /**
  * A-106: a conversation's pathname is either the plain `/c/<id>` or, when started inside a
  * Project (openProject), nested under it: `/g/g-p-<hash>-<slug>/c/<id>` — verified live
@@ -301,10 +310,7 @@ export class ChatGptPage implements ChatGptPort {
     } catch {
       return { kind: "failed", cause: "project_not_found" };
     }
-    if (
-      target.origin !== CHATGPT_ORIGIN ||
-      !/^\/g\/g-p-[A-Za-z0-9-]+\/project$/.test(target.pathname)
-    ) {
+    if (!PROJECT_URL_RE.test(url) || target.origin !== CHATGPT_ORIGIN) {
       return { kind: "failed", cause: "project_not_found" };
     }
     try {
@@ -331,6 +337,143 @@ export class ChatGptPage implements ChatGptPort {
       await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 250);
     }
     return { kind: "retry", cause: "composer did not appear on the project page" };
+  }
+
+  /** Waits for a registry-defined element without ever bypassing verifiedOnly gating. */
+  private async waitForElement(key: ElementKey, timeoutMs = 3_000): Promise<Locator> {
+    const deadline = Date.now() + timeoutMs;
+    let last: DomUnexpected | null = null;
+    while (Date.now() < deadline) {
+      try {
+        return await resolve(this.page, key, this.sel);
+      } catch (err) {
+        if (!(err instanceof DomUnexpected)) throw err;
+        last = err;
+        await this.page.waitForTimeout(100);
+      }
+    }
+    throw last ?? new DomUnexpected(key, []);
+  }
+
+  private projectUrlFromHref(href: string | null): string | null {
+    if (!href) return null;
+    try {
+      const url = new URL(href, CHATGPT_ORIGIN);
+      return PROJECT_URL_RE.test(`${url.origin}${url.pathname}`)
+        ? `${url.origin}${url.pathname}`
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async exactProjectMatches(
+    sidebar: Locator,
+    name: string,
+  ): Promise<Array<{ item: Locator; url: string | null }>> {
+    const items = await all(sidebar, "projectSidebarItem", this.sel);
+    const matches: Array<{ item: Locator; url: string | null }> = [];
+    for (const item of items) {
+      if ((await item.innerText().catch(() => "")) !== name) continue;
+      matches.push({ item, url: this.projectUrlFromHref(await item.getAttribute("href")) });
+    }
+    return matches;
+  }
+
+  /**
+   * A-144: resolves only an exact visible-name match. A zero-match result is the sole path that
+   * enters creation; more than one exact match is never guessed. The intentionally unverified
+   * selectors make this fail closed in normal verifiedOnly runs until a live session verifies them.
+   */
+  async resolveOrCreateProject(
+    name: string,
+  ): Promise<
+    | { kind: "ok"; url: string; created: boolean }
+    | { kind: "failed"; cause: NewChatFailure }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  > {
+    try {
+      await this.page.goto(`${CHATGPT_ORIGIN}/`, { waitUntil: "domcontentloaded" });
+    } catch (err) {
+      return { kind: "retry", cause: `navigation failed: ${(err as Error).message}` };
+    }
+
+    let sidebar: Locator;
+    try {
+      sidebar = await this.waitForElement("projectSidebarList");
+    } catch (err) {
+      if (err instanceof DomUnexpected)
+        return { kind: "dom_unexpected", element: err.element, tried: err.tried };
+      return { kind: "retry", cause: (err as Error).message };
+    }
+
+    let existing: Array<{ item: Locator; url: string | null }>;
+    try {
+      existing = await this.exactProjectMatches(sidebar, name);
+    } catch (err) {
+      if (err instanceof DomUnexpected)
+        return { kind: "dom_unexpected", element: err.element, tried: err.tried };
+      return { kind: "retry", cause: (err as Error).message };
+    }
+    if (existing.length > 1) {
+      return {
+        kind: "dom_unexpected",
+        element: "projectSidebarItem",
+        tried: [`exact visible name matched ${existing.length} items`],
+      };
+    }
+    if (existing.length === 1) {
+      const url = existing[0]?.url;
+      return url
+        ? { kind: "ok", url, created: false }
+        : {
+            kind: "dom_unexpected",
+            element: "projectSidebarItem",
+            tried: ["exact visible name matched an item without a Project-home URL"],
+          };
+    }
+
+    try {
+      await (await this.waitForElement("newProjectButton")).click();
+      await (await this.waitForElement("newProjectNameInput")).fill(name);
+      await (await this.waitForElement("newProjectConfirmButton")).click();
+    } catch (err) {
+      if (err instanceof DomUnexpected)
+        return { kind: "dom_unexpected", element: err.element, tried: err.tried };
+      return { kind: "retry", cause: `Project creation flow failed: ${(err as Error).message}` };
+    }
+
+    const deadline = Date.now() + (this.opts.newChatTimeoutMs ?? 30_000);
+    while (Date.now() < deadline) {
+      let created: Array<{ item: Locator; url: string | null }>;
+      try {
+        created = await this.exactProjectMatches(sidebar, name);
+      } catch (err) {
+        if (err instanceof DomUnexpected)
+          return { kind: "dom_unexpected", element: err.element, tried: err.tried };
+        return { kind: "retry", cause: (err as Error).message };
+      }
+      if (created.length > 1) {
+        return {
+          kind: "dom_unexpected",
+          element: "projectSidebarItem",
+          tried: [`created exact visible name matched ${created.length} items`],
+        };
+      }
+      if (created.length === 1) {
+        const url = created[0]?.url;
+        return url
+          ? { kind: "ok", url, created: true }
+          : {
+              kind: "dom_unexpected",
+              element: "projectSidebarItem",
+              tried: ["created exact visible name has no Project-home URL"],
+            };
+      }
+      await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 250);
+    }
+    return { kind: "retry", cause: "created Project did not appear in the sidebar" };
   }
 
   async openNewChat(): Promise<

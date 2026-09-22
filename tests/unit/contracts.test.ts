@@ -252,17 +252,18 @@ describe("result.json schema + invariants (AC-007)", () => {
         conversationUrl: "https://chatgpt.com/c/abc1234",
       }).valid,
     ).toBe(false);
-    // wrong origin, wrong path shape, and a plain conversation URL are all rejected
+    // A-144: URL-shaped strings that are not a Project-home URL are Project names, so they remain
+    // accepted here and resolve-or-create later fails closed if the sidebar cannot confirm them.
     expect(
       validateRequest({ ...okReq, project: "https://evil.example/g/g-p-x/project" }).valid,
-    ).toBe(false);
-    expect(validateRequest({ ...okReq, project: "https://chatgpt.com/g/g-p-x" }).valid).toBe(false);
+    ).toBe(true);
+    expect(validateRequest({ ...okReq, project: "https://chatgpt.com/g/g-p-x" }).valid).toBe(true);
     expect(
       validateRequest({
         ...okReq,
         project: "https://chatgpt.com/c/6aa8f9e7-f47c-83e8-9f20-e6e71c33026f",
       }).valid,
-    ).toBe(false);
+    ).toBe(true);
   });
   it("1.3 (A-106): conversationUrl also accepts the Project-nested conversation form", () => {
     expect(

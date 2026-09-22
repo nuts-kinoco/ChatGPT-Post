@@ -35,6 +35,22 @@ const RUN_CRITICAL: ElementKey[] = [
 ];
 
 describe("selectors (14-SELECTOR-STRATEGY, AC-016)", () => {
+  it("A-144 Project candidates remain inert until live verification records verifiedOn", () => {
+    const projectKeys: ElementKey[] = [
+      "projectSidebarList",
+      "projectSidebarItem",
+      "newProjectButton",
+      "newProjectNameInput",
+      "newProjectConfirmButton",
+    ];
+    for (const key of projectKeys) {
+      expect(
+        ELEMENTS[key].candidates.every((candidate) => !candidate.verifiedOn),
+        key,
+      ).toBe(true);
+    }
+  });
+
   it("run-critical elements have a verified candidate", () => {
     for (const key of RUN_CRITICAL) {
       const verified = ELEMENTS[key].candidates.filter((c) => c.verifiedOn);

@@ -4,7 +4,7 @@ import {
   judge,
   type Observation,
 } from "../chatgpt/completion.js";
-import { CHATGPT_ORIGIN, CONVERSATION_PATH_RE } from "../chatgpt/page.js";
+import { CHATGPT_ORIGIN, CONVERSATION_PATH_RE, classifyProject } from "../chatgpt/page.js";
 import { slugMatches } from "../chatgpt/selectors.js";
 import { uploadBudgetMs } from "../contracts/attachments.js";
 import type {
@@ -112,6 +112,8 @@ export class RunController {
   private observedModel: ObservedModel | null = null;
   private observedModelSlug: string | null = null;
   private conversationUrl: string | null = null;
+  /** A-144: retained even when Project resolution/opening fails, so result.json records the request. */
+  private project: BridgeResult["project"];
   /** A-116: true once conversationUrl has been confirmed by one matching observation tick after
    * dispatch. Before that, the URL may still be a transient value ChatGPT hasn't finished
    * assigning a stable id for, so exactly one update is allowed. After that, observeLoop() must
@@ -305,13 +307,36 @@ export class RunController {
       }
       case "OPEN_NEW_CHAT": {
         const req = this.requireRequest();
-        const n = await this.withPhaseLimit(
-          req.newChat === false && req.conversationUrl
-            ? chatgpt.openConversation(req.conversationUrl)
-            : req.newChat !== false && req.project
-              ? chatgpt.openProject(req.project)
-              : chatgpt.openNewChat(),
-        );
+        let n: Awaited<ReturnType<typeof chatgpt.openNewChat>>;
+        if (req.newChat === false && req.conversationUrl) {
+          n = await this.withPhaseLimit(chatgpt.openConversation(req.conversationUrl));
+        } else if (req.newChat !== false && req.project) {
+          const project = classifyProject(req.project);
+          if (project.kind === "url") {
+            // A-106 direct URL behavior remains a direct open, with no sidebar lookup.
+            this.project = { requested: req.project, resolvedUrl: project.url, created: false };
+            n = await this.withPhaseLimit(chatgpt.openProject(project.url));
+          } else {
+            // Keep this partial handshake on every resolution failure instead of hiding a missed
+            // Project request behind a generic new-chat result.
+            this.project = { requested: project.name, resolvedUrl: null, created: null };
+            const resolved = await this.withPhaseLimit(
+              chatgpt.resolveOrCreateProject(project.name),
+            );
+            if (resolved.kind === "ok") {
+              this.project = {
+                requested: project.name,
+                resolvedUrl: resolved.url,
+                created: resolved.created,
+              };
+              n = await this.withPhaseLimit(chatgpt.openProject(resolved.url));
+            } else {
+              n = resolved;
+            }
+          }
+        } else {
+          n = await this.withPhaseLimit(chatgpt.openNewChat());
+        }
         if (n.kind === "ok") return { type: "NEW_CHAT_OK" };
         if (n.kind === "failed") return { type: "NEW_CHAT_FAILED", cause: n.cause };
         if (n.kind === "retry")
@@ -656,6 +681,7 @@ export class RunController {
       observedModel: this.observedModel,
       observedModelSlug: this.observedModelSlug,
       submitted: this.state.submitted,
+      ...(this.project ? { project: this.project } : {}),
       conversationUrl: sanitiseConversationUrl(this.conversationUrl),
       responseFile: completed ? this.responseFile : null,
       extractionMethod: completed ? (this.extraction?.method ?? null) : null,
@@ -718,6 +744,7 @@ export class RunController {
       observedModel: null,
       observedModelSlug: null,
       submitted,
+      ...(original.project ? { project: original.project } : {}),
       conversationUrl: original.conversationUrl,
       responseFile: null,
       extractionMethod: null,

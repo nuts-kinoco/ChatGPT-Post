@@ -240,6 +240,20 @@
       ],
       "pattern": "^https://chatgpt\\.com/"
     },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "resolvedUrl", "created"],
+      "description": "A-144 Project handshake. Present whenever request.json specified project; null resolution fields mean the Project could not be resolved or created.",
+      "properties": {
+        "requested": { "type": "string" },
+        "resolvedUrl": {
+          "type": ["string", "null"],
+          "pattern": "^https://chatgpt\\.com/g/g-p-[A-Za-z0-9-]+/project$"
+        },
+        "created": { "type": ["boolean", "null"] }
+      }
+    },
     "responseFile": {
       "type": [
         "string",
