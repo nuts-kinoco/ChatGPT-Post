@@ -311,7 +311,7 @@ describe("RunController", () => {
     const f = fake({
       resolveOrCreateProject: async () => ({
         kind: "dom_unexpected",
-        element: "projectSidebarList",
+        element: "projectSidebarItem",
         tried: [],
       }),
     });

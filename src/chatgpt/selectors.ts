@@ -53,8 +53,8 @@ export type ElementKey =
   | "imageViewer"
   | "imageSaveButton"
   | "imageViewerClose"
-  | "projectSidebarList"
   | "projectSidebarItem"
+  | "projectOpenHomeButton"
   | "newProjectButton"
   | "newProjectNameInput"
   | "newProjectConfirmButton";
@@ -394,47 +394,69 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
       },
     ],
   },
-  // A-144: all candidates below are intentionally unverified. They are inert in normal runs
-  // (verifiedOnly:true) until a live session records verifiedOn after inspecting the real UI.
-  projectSidebarList: {
-    key: "projectSidebarList",
-    purpose: "ChatGPT sidebar Project list",
-    mode: "unique",
-    candidates: [{ kind: "css", selector: '[data-testid="projects-sidebar-list"]' }],
-  },
+  // A-144: live-verified 2026-09-22 (ja, chatgpt.com, daemon session) — sidebar Project rows are
+  // client-routed `role="button"` divs, not `<a>` tags with an href; `projectOpenHomeButton` (the
+  // per-row "プロジェクトのホームを開く" icon SKILL.md already told callers to click by hand) is the
+  // only way to learn a row's Project-home URL. Creation dialog fields confirmed present and
+  // fillable/enabling the submit button; the submit click itself was never exercised live (that
+  // would have created a real Project in the account under test) — treat `newProjectConfirmButton`
+  // as verified-present-and-enablable, not verified-to-actually-create.
   projectSidebarItem: {
     key: "projectSidebarItem",
-    purpose: "A Project link inside the sidebar Project list",
+    purpose: "A Project row in the sidebar Project list",
     mode: "count",
-    scope: "projectSidebarList",
-    candidates: [{ kind: "css", selector: '[data-testid="project-sidebar-item"]' }],
+    candidates: [
+      {
+        kind: "css",
+        selector: 'li:has([data-testid="project-folder-icon"])',
+        verifiedOn: "2026-09-22 chatgpt.com ja",
+      },
+    ],
+  },
+  projectOpenHomeButton: {
+    key: "projectOpenHomeButton",
+    purpose: "Within a projectSidebarItem row: navigates to that Project's home",
+    mode: "unique",
+    scope: "projectSidebarItem",
+    candidates: [
+      {
+        kind: "css",
+        selector: 'button[aria-label="プロジェクトのホームを開く"]',
+        verifiedOn: "2026-09-22 chatgpt.com ja",
+      },
+    ],
   },
   newProjectButton: {
     key: "newProjectButton",
-    purpose: "Open the New Project flow from the sidebar",
+    purpose: "Open the New Project creation dialog from the sidebar",
     mode: "unique",
     candidates: [
-      { kind: "text", text: "New project" },
-      { kind: "text", text: "新しいプロジェクト" },
+      {
+        kind: "css",
+        selector: '[aria-label="プロジェクトを新規作成"]',
+        verifiedOn: "2026-09-22 chatgpt.com ja",
+      },
     ],
   },
   newProjectNameInput: {
     key: "newProjectNameInput",
-    purpose: "New Project name input",
+    purpose: "New Project name input (id/name confirmed; disables submit until non-empty)",
     mode: "unique",
     candidates: [
-      { kind: "css", selector: 'input[name="project-name"]' },
-      { kind: "placeholder", text: "Project name" },
-      { kind: "placeholder", text: "プロジェクト名" },
+      { kind: "css", selector: "#project-name", verifiedOn: "2026-09-22 chatgpt.com ja" },
     ],
   },
   newProjectConfirmButton: {
     key: "newProjectConfirmButton",
-    purpose: "Confirm creation of the named Project",
+    purpose:
+      "Submits the New Project dialog (element/enable-state verified; the click itself was not exercised live to avoid creating a real Project)",
     mode: "unique",
     candidates: [
-      { kind: "text", text: "Create project" },
-      { kind: "text", text: "プロジェクトを作成" },
+      {
+        kind: "css",
+        selector: 'form[data-testid="create-new-project-form"] button[type="submit"]',
+        verifiedOn: "2026-09-22 chatgpt.com ja",
+      },
     ],
   },
   attachmentChip: {

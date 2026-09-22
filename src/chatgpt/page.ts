@@ -355,29 +355,43 @@ export class ChatGptPage implements ChatGptPort {
     throw last ?? new DomUnexpected(key, []);
   }
 
-  private projectUrlFromHref(href: string | null): string | null {
-    if (!href) return null;
-    try {
-      const url = new URL(href, CHATGPT_ORIGIN);
-      return PROJECT_URL_RE.test(`${url.origin}${url.pathname}`)
-        ? `${url.origin}${url.pathname}`
-        : null;
-    } catch {
-      return null;
-    }
+  /**
+   * A-144 (live-verified 2026-09-22): project sidebar rows are client-routed `role="button"` divs
+   * with no `href` — the only confirmed way to learn a row's Project-home URL is to click its own
+   * "プロジェクトのホームを開く" button (scoped to that row; every row has one) and read the
+   * resulting `page.url()`. This navigates away from the sidebar list, which is fine here since
+   * every caller either uses the resolved URL immediately (via `openProject()`, which navigates
+   * again itself) or is mid-poll and will re-run `all()` against the (still-present) sidebar next
+   * iteration.
+   */
+  private async openProjectHomeUrl(item: Locator): Promise<string | null> {
+    const openHomeButton = await resolve(item, "projectOpenHomeButton", this.sel);
+    await openHomeButton.click();
+    await this.page.waitForTimeout(300);
+    const url = this.page.url();
+    return PROJECT_URL_RE.test(url) ? url : null;
   }
 
+  /**
+   * Two passes deliberately: `openProjectHomeUrl()` navigates the page away from the sidebar list,
+   * which would detach every other row's `Locator` mid-loop. Count text matches first (no
+   * navigation) so an ambiguous (>1) match is detected and reported without ever clicking anything;
+   * only a confirmed single match proceeds to the one navigation that resolves its URL.
+   */
   private async exactProjectMatches(
-    sidebar: Locator,
     name: string,
   ): Promise<Array<{ item: Locator; url: string | null }>> {
-    const items = await all(sidebar, "projectSidebarItem", this.sel);
-    const matches: Array<{ item: Locator; url: string | null }> = [];
+    const items = await all(this.page, "projectSidebarItem", this.sel);
+    const matchedItems: Locator[] = [];
     for (const item of items) {
-      if ((await item.innerText().catch(() => "")) !== name) continue;
-      matches.push({ item, url: this.projectUrlFromHref(await item.getAttribute("href")) });
+      if ((await item.innerText().catch(() => "")).trim() === name) matchedItems.push(item);
     }
-    return matches;
+    if (matchedItems.length !== 1) {
+      return matchedItems.map((item) => ({ item, url: null }));
+    }
+    const only = matchedItems[0];
+    if (!only) return [];
+    return [{ item: only, url: await this.openProjectHomeUrl(only) }];
   }
 
   /**
@@ -399,18 +413,9 @@ export class ChatGptPage implements ChatGptPort {
       return { kind: "retry", cause: `navigation failed: ${(err as Error).message}` };
     }
 
-    let sidebar: Locator;
-    try {
-      sidebar = await this.waitForElement("projectSidebarList");
-    } catch (err) {
-      if (err instanceof DomUnexpected)
-        return { kind: "dom_unexpected", element: err.element, tried: err.tried };
-      return { kind: "retry", cause: (err as Error).message };
-    }
-
     let existing: Array<{ item: Locator; url: string | null }>;
     try {
-      existing = await this.exactProjectMatches(sidebar, name);
+      existing = await this.exactProjectMatches(name);
     } catch (err) {
       if (err instanceof DomUnexpected)
         return { kind: "dom_unexpected", element: err.element, tried: err.tried };
@@ -448,7 +453,7 @@ export class ChatGptPage implements ChatGptPort {
     while (Date.now() < deadline) {
       let created: Array<{ item: Locator; url: string | null }>;
       try {
-        created = await this.exactProjectMatches(sidebar, name);
+        created = await this.exactProjectMatches(name);
       } catch (err) {
         if (err instanceof DomUnexpected)
           return { kind: "dom_unexpected", element: err.element, tried: err.tried };

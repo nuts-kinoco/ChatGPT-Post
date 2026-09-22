@@ -199,33 +199,64 @@ describe("ChatGptPage prompt cleanup on a fixture", () => {
 });
 
 describe("A-144 Project resolve-or-create fixture", () => {
+  // Mirrors the real, live-verified (2026-09-22) DOM shape: sidebar rows are `<li>`s containing a
+  // `[data-testid="project-folder-icon"]` marker (no `<a href>` -- real rows are client-routed
+  // divs), each with a "プロジェクトのホームを開く" button that navigates via `history.pushState`
+  // (this fixture's stand-in for the real client-side router) rather than exposing a URL directly.
   async function projectFixture(existingNames: string[]): Promise<Page> {
     if (!browser) throw new Error("browser unavailable");
     const fixturePage = await browser.newPage();
     const rows = existingNames
       .map(
-        (name, i) =>
-          `<a data-testid="project-sidebar-item" href="/g/g-p-existing-${i}/project">${name}</a>`,
+        (name, i) => `
+        <li>
+          <div data-testid="project-folder-icon"></div>
+          <span>${name}</span>
+          <button aria-label="プロジェクトのホームを開く" data-url="/g/g-p-existing-${i}/project" style="width:16px;height:16px;display:inline-block;"></button>
+        </li>`,
       )
       .join("");
     const content = `
-      <aside data-testid="projects-sidebar-list">${rows}</aside>
-      <button>New project</button>
-      <input name="project-name" />
-      <button>Create project</button>
+      <ul id="sidebar">${rows}</ul>
+      <button aria-label="プロジェクトを新規作成" style="width:16px;height:16px;display:inline-block;"></button>
+      <form data-testid="create-new-project-form" hidden>
+        <input id="project-name" name="projectName" />
+        <button type="submit" disabled style="width:16px;height:16px;display:inline-block;"></button>
+      </form>
       <script>
-        document.querySelector('button:last-of-type').addEventListener('click', () => {
-          const name = document.querySelector('input').value;
-          const item = document.createElement('a');
-          item.dataset.testid = 'project-sidebar-item';
-          item.href = '/g/g-p-created/project';
-          item.textContent = name;
-          document.querySelector('[data-testid="projects-sidebar-list"]').append(item);
+        document.querySelectorAll('button[aria-label="プロジェクトのホームを開く"]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            history.pushState(null, '', btn.dataset.url);
+          });
+        });
+        const form = document.querySelector('form');
+        const input = document.querySelector('#project-name');
+        const submit = form.querySelector('button[type="submit"]');
+        document.querySelector('[aria-label="プロジェクトを新規作成"]').addEventListener('click', () => {
+          form.hidden = false;
+        });
+        input.addEventListener('input', () => { submit.disabled = input.value.length === 0; });
+        submit.addEventListener('click', (e) => {
+          e.preventDefault();
+          const li = document.createElement('li');
+          li.innerHTML =
+            '<div data-testid="project-folder-icon"></div>' +
+            '<span>' + input.value + '</span>' +
+            '<button aria-label="プロジェクトのホームを開く" data-url="/g/g-p-created/project" style="width:16px;height:16px;display:inline-block;"></button>';
+          document.querySelector('#sidebar').append(li);
+          li.querySelector('button').addEventListener('click', () => {
+            history.pushState(null, '', '/g/g-p-created/project');
+          });
+          form.hidden = true;
         });
       </script>
     `;
     await fixturePage.route("https://chatgpt.com/", (route) =>
-      route.fulfill({ contentType: "text/html", body: content }),
+      // Explicit charset matters: without it, Chrome guesses the response's encoding and can
+      // misdecode the literal Japanese aria-label text below, silently breaking every CSS
+      // attribute-value selector that depends on it (confirmed live -- the same markup served via
+      // setContent() matched fine, only the HTTP-served route.fulfill() path needed this).
+      route.fulfill({ contentType: "text/html; charset=utf-8", body: content }),
     );
     return fixturePage;
   }

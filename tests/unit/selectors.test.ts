@@ -35,17 +35,22 @@ const RUN_CRITICAL: ElementKey[] = [
 ];
 
 describe("selectors (14-SELECTOR-STRATEGY, AC-016)", () => {
-  it("A-144 Project candidates remain inert until live verification records verifiedOn", () => {
+  it("A-144 Project selectors are live-verified (2026-09-22), except the creation submit click itself", () => {
+    // projectSidebarItem/projectOpenHomeButton (find+open an existing Project) and
+    // newProjectButton/newProjectNameInput (open the creation dialog, fill the name) were all
+    // confirmed against the real chatgpt.com DOM. newProjectConfirmButton's element and its
+    // enable-on-fill behavior were confirmed too, but the click was never exercised live (that
+    // would have created a real Project in the account under test) -- see its own `purpose` note.
     const projectKeys: ElementKey[] = [
-      "projectSidebarList",
       "projectSidebarItem",
+      "projectOpenHomeButton",
       "newProjectButton",
       "newProjectNameInput",
       "newProjectConfirmButton",
     ];
     for (const key of projectKeys) {
       expect(
-        ELEMENTS[key].candidates.every((candidate) => !candidate.verifiedOn),
+        ELEMENTS[key].candidates.some((candidate) => candidate.verifiedOn),
         key,
       ).toBe(true);
     }
