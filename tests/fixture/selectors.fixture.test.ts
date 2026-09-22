@@ -276,15 +276,21 @@ describe("A-144 Project resolve-or-create fixture", () => {
     }
   });
 
-  it("creates only after no exact match and returns the created Project URL", async ({ skip }) => {
+  // A-145: creation is temporarily disabled (see the doc comment in resolveOrCreateProject()) --
+  // the sidebar Project list was confirmed live to be transient, and a single-shot "not found"
+  // reading already created two real duplicate Projects before this was caught. This test now
+  // pins the disabled behavior; the follow-up retry-mechanism fix should replace it with real
+  // creation-path coverage once resolveOrCreateProject() requires consistent absence across
+  // multiple scans before ever creating anything.
+  it("no exact match: creation stays disabled rather than risk a duplicate (A-145)", async ({
+    skip,
+  }) => {
     if (!browser) return skip();
     const fixturePage = await projectFixture(["Other Project"]);
     try {
       const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
-      await expect(chat.resolveOrCreateProject("EMAKINOCO-Win")).resolves.toEqual({
-        kind: "ok",
-        url: "https://chatgpt.com/g/g-p-created/project",
-        created: true,
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Win")).resolves.toMatchObject({
+        kind: "retry",
       });
     } finally {
       await fixturePage.close();

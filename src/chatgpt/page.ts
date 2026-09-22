@@ -339,22 +339,6 @@ export class ChatGptPage implements ChatGptPort {
     return { kind: "retry", cause: "composer did not appear on the project page" };
   }
 
-  /** Waits for a registry-defined element without ever bypassing verifiedOnly gating. */
-  private async waitForElement(key: ElementKey, timeoutMs = 3_000): Promise<Locator> {
-    const deadline = Date.now() + timeoutMs;
-    let last: DomUnexpected | null = null;
-    while (Date.now() < deadline) {
-      try {
-        return await resolve(this.page, key, this.sel);
-      } catch (err) {
-        if (!(err instanceof DomUnexpected)) throw err;
-        last = err;
-        await this.page.waitForTimeout(100);
-      }
-    }
-    throw last ?? new DomUnexpected(key, []);
-  }
-
   /**
    * A-144 (live-verified 2026-09-22): project sidebar rows are client-routed `role="button"` divs
    * with no `href` — the only confirmed way to learn a row's Project-home URL is to click its own
@@ -439,46 +423,21 @@ export class ChatGptPage implements ChatGptPort {
           };
     }
 
-    try {
-      await (await this.waitForElement("newProjectButton")).click();
-      await (await this.waitForElement("newProjectNameInput")).fill(name);
-      await (await this.waitForElement("newProjectConfirmButton")).click();
-    } catch (err) {
-      if (err instanceof DomUnexpected)
-        return { kind: "dom_unexpected", element: err.element, tried: err.tried };
-      return { kind: "retry", cause: `Project creation flow failed: ${(err as Error).message}` };
-    }
-
-    const deadline = Date.now() + (this.opts.newChatTimeoutMs ?? 30_000);
-    while (Date.now() < deadline) {
-      let created: Array<{ item: Locator; url: string | null }>;
-      try {
-        created = await this.exactProjectMatches(name);
-      } catch (err) {
-        if (err instanceof DomUnexpected)
-          return { kind: "dom_unexpected", element: err.element, tried: err.tried };
-        return { kind: "retry", cause: (err as Error).message };
-      }
-      if (created.length > 1) {
-        return {
-          kind: "dom_unexpected",
-          element: "projectSidebarItem",
-          tried: [`created exact visible name matched ${created.length} items`],
-        };
-      }
-      if (created.length === 1) {
-        const url = created[0]?.url;
-        return url
-          ? { kind: "ok", url, created: true }
-          : {
-              kind: "dom_unexpected",
-              element: "projectSidebarItem",
-              tried: ["created exact visible name has no Project-home URL"],
-            };
-      }
-      await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 250);
-    }
-    return { kind: "retry", cause: "created Project did not appear in the sidebar" };
+    // A-145: creation is temporarily disabled here. The sidebar's Project list DOM was confirmed
+    // transient (present for only ~1-2s after page load, then gone -- measured live: 6 matches at
+    // ~1s, 0 matches from ~3s onward), so a single-shot "existing.length === 0" reading is not
+    // trustworthy evidence of absence. This exact race already created two real duplicate Projects
+    // in the account under test before it was caught (see DECISION-LOG A-145). The previous
+    // creation implementation (click newProjectButton -> fill newProjectNameInput -> click
+    // newProjectConfirmButton -> poll exactProjectMatches for the new row) is preserved in git
+    // history at commit c6e2907 for reference -- do not restore it as-is; the follow-up fix must
+    // require consistent absence across multiple scans, spread over several seconds, before ever
+    // proceeding to creation.
+    return {
+      kind: "retry",
+      cause:
+        "Project creation is temporarily disabled (A-145): the sidebar Project list is not reliably readable as absent yet, and a false negative here creates a real duplicate Project.",
+    };
   }
 
   async openNewChat(): Promise<
