@@ -187,7 +187,7 @@ effects の定義:
 | 状態 | 対象の一時失敗（`RETRYABLE_STEP_FAILED` を発火するもの） | 試行上限 | 上限超過 / `TIMEOUT` 時のコード | フェーズ上限（`TIMEOUT` 発火） |
 |---|---|---|---|---|
 | `BROWSER_STARTED` | ページロード失敗、`observeAuth` が判定不能（`composer` も `loginCta` も無い） | 3（各試行前に 1 s 待機。唯一の固定待機） | `INVALID_STATE` | 60 s |
-| `AUTH_CHECKED` | 新規チャット遷移後に `composer` が出現しない | 3 | `DOM_CHANGED` | 30 s |
+| `AUTH_CHECKED` | 新規チャット遷移後に `composer` が出現しない | 3 | `DOM_CHANGED` | 90 s（A-145: `project` を名前で指定した場合の約20s absence確認ウィンドウ+作成フローを収める） |
 | `NEW_CHAT_READY` | preset メニューの一時的な未出現 | 2 | `MODEL_NOT_VERIFIABLE` | 30 s |
 | `PRESET_VERIFIED` | `composer` の一時的な未解決（内容不一致は `enterPrompt` 内部で最大 2 回再入力し、超えれば `PROMPT_MISMATCH`） | 2 | `PROMPT_INPUT_FAILED` | 60 s |
 | `PROMPT_SUBMITTING` 以降 | **なし** | 0 | — | `timeoutMs`（送信後は `completion.judge` が `VERDICT_TIMEOUT` を返す） |

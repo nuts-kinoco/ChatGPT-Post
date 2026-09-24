@@ -36,6 +36,7 @@ const ALL_EVENTS: Event[] = [
   { type: "WRONG_PAGE", url: "u" },
   { type: "NEW_CHAT_OK" },
   { type: "NEW_CHAT_FAILED", cause: "generating" },
+  { type: "PROJECT_CREATION_UNCERTAIN", cause: "Project creation was submitted but not confirmed" },
   { type: "PRESET_OBSERVED", preset: "pro" },
   { type: "PRESET_NOT_AVAILABLE" },
   { type: "PRESET_NOT_VERIFIABLE", cause: "c" },
@@ -294,6 +295,17 @@ describe("state machine (11-STATE-MACHINE)", () => {
     const again = transition(t.next, { type: "VERDICT_COMPLETE" });
     expect(again.next).toBe(t.next);
     expect(again.effects).toEqual([]);
+  });
+
+  it("A-146 follow-up: uncertain Project creation is terminal and never schedules OPEN_NEW_CHAT", () => {
+    const t = transition(at("AUTH_CHECKED"), {
+      type: "PROJECT_CREATION_UNCERTAIN",
+      cause:
+        "Project creation was submitted but not confirmed; check the sidebar manually before retrying.",
+    });
+    expect(t.next.terminal?.code).toBe("MANUAL_INTERVENTION_REQUIRED");
+    expect(t.effects.map((effect) => effect.kind)).not.toContain("OPEN_NEW_CHAT");
+    expect(t.effects.map((effect) => effect.kind)).toContain("WRITE_RESULT");
   });
 
   it("initial state", () => {

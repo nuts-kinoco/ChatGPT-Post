@@ -218,7 +218,7 @@ runtime/
 | 観測間隔 | 250 ms |
 | `stabilizationMs` | 1500 |
 | `fallbackStabilizationMs` | 5000 |
-| 送信前フェーズ上限 | `11-STATE-MACHINE.md` §5（60 / 30 / 30 / 60 s） |
+| 送信前フェーズ上限 | `11-STATE-MACHINE.md` §5（60 / 90 / 30 / 60 s。A-145でAUTH_CHECKEDを30→90sへ） |
 | `context.close()` 上限 | 15 s |
 | 再試行前の固定待機 | 1 s（`BROWSER_STARTED` のみ） |
 | rename `EPERM` 再試行 | 1 回、200 ms 後 |

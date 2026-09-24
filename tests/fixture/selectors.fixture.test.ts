@@ -6,7 +6,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Browser, chromium, type Page } from "playwright";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ChatGptPage } from "../../src/chatgpt/page.js";
 import {
   countMatches,
@@ -37,7 +37,7 @@ beforeAll(async () => {
   await page.setContent(
     await readFile(join(REPO_ROOT, "tests", "fixtures", "chatgpt-2026-09-15.html"), "utf8"),
   );
-});
+}, 30_000);
 afterAll(async () => {
   await browser?.close();
 });
@@ -203,22 +203,38 @@ describe("A-144 Project resolve-or-create fixture", () => {
   // `[data-testid="project-folder-icon"]` marker (no `<a href>` -- real rows are client-routed
   // divs), each with a "プロジェクトのホームを開く" button that navigates via `history.pushState`
   // (this fixture's stand-in for the real client-side router) rather than exposing a URL directly.
-  async function projectFixture(existingNames: string[]): Promise<Page> {
+  async function projectFixture(
+    existingNames: string[],
+    options: {
+      initiallyHiddenNames?: string[];
+      revealInitiallyHiddenAfterMs?: number;
+      flickerSidebar?: boolean;
+      createdRowDelayMs?: number;
+      hideSidebarAfterCreationMs?: number;
+      bootstrapDelayMs?: number;
+      collapsedProjectSection?: boolean;
+      suppressCreatedRow?: boolean;
+    } = {},
+  ): Promise<Page> {
     if (!browser) throw new Error("browser unavailable");
     const fixturePage = await browser.newPage();
+    const initiallyHiddenNames = new Set(options.initiallyHiddenNames ?? []);
+    const collapsedAttribute = options.collapsedProjectSection === true ? " hidden" : "";
     const rows = existingNames
       .map(
         (name, i) => `
-        <li>
-          <div data-testid="project-folder-icon"></div>
-          <span>${name}</span>
-          <button aria-label="プロジェクトのホームを開く" data-url="/g/g-p-existing-${i}/project" style="width:16px;height:16px;display:inline-block;"></button>
+        <li data-project-name="${name}"${initiallyHiddenNames.has(name) ? " hidden" : ""}>
+          <div class="group/project-unfurl-row relative">
+            <div data-testid="project-folder-icon"></div>
+            <span>${name}</span>
+            <button aria-label="プロジェクトのホームを開く" data-url="/g/g-p-existing-${i}/project" style="width:16px;height:16px;display:inline-block;"></button>
+          </div>
         </li>`,
       )
       .join("");
     const content = `
-      <ul id="sidebar">${rows}</ul>
-      <button aria-label="プロジェクトを新規作成" style="width:16px;height:16px;display:inline-block;"></button>
+      <ul id="sidebar"${collapsedAttribute}>${rows}</ul>
+      <button id="new-project-button" aria-label="プロジェクトを新規作成"${collapsedAttribute} style="width:16px;height:16px;display:inline-block;"></button>
       <form data-testid="create-new-project-form" hidden>
         <input id="project-name" name="projectName" />
         <button type="submit" disabled style="width:16px;height:16px;display:inline-block;"></button>
@@ -232,25 +248,67 @@ describe("A-144 Project resolve-or-create fixture", () => {
         const form = document.querySelector('form');
         const input = document.querySelector('#project-name');
         const submit = form.querySelector('button[type="submit"]');
+        document.body.dataset.projectCreations = '0';
+        const bootstrapDelayMs = ${options.bootstrapDelayMs ?? 0};
+        if (bootstrapDelayMs > 0) {
+          const sidebar = document.querySelector('#sidebar');
+          sidebar.hidden = true;
+          const newProjectButton = document.querySelector('#new-project-button');
+          newProjectButton.hidden = true;
+          fetch('/fixture-project-bootstrap').finally(() => {
+            sidebar.hidden = false;
+            newProjectButton.hidden = false;
+          });
+        }
+        const revealAfterMs = ${options.revealInitiallyHiddenAfterMs ?? -1};
+        if (revealAfterMs >= 0) {
+          window.setTimeout(() => {
+            document.querySelectorAll('li[hidden]').forEach((li) => { li.hidden = false; });
+          }, revealAfterMs);
+        }
+        if (${options.flickerSidebar === true}) {
+          window.setInterval(() => {
+            const sidebar = document.querySelector('#sidebar');
+            sidebar.hidden = !sidebar.hidden;
+          }, 3000);
+        }
         document.querySelector('[aria-label="プロジェクトを新規作成"]').addEventListener('click', () => {
           form.hidden = false;
         });
         input.addEventListener('input', () => { submit.disabled = input.value.length === 0; });
         submit.addEventListener('click', (e) => {
           e.preventDefault();
-          const li = document.createElement('li');
-          li.innerHTML =
-            '<div data-testid="project-folder-icon"></div>' +
-            '<span>' + input.value + '</span>' +
-            '<button aria-label="プロジェクトのホームを開く" data-url="/g/g-p-created/project" style="width:16px;height:16px;display:inline-block;"></button>';
-          document.querySelector('#sidebar').append(li);
-          li.querySelector('button').addEventListener('click', () => {
-            history.pushState(null, '', '/g/g-p-created/project');
-          });
+          document.body.dataset.projectCreations = String(Number(document.body.dataset.projectCreations) + 1);
+          if (${options.hideSidebarAfterCreationMs ?? 0} > 0) {
+            const sidebar = document.querySelector('#sidebar');
+            sidebar.hidden = true;
+            window.setTimeout(() => { sidebar.hidden = false; }, ${options.hideSidebarAfterCreationMs ?? 0});
+          }
+          if (!${options.suppressCreatedRow === true}) {
+            window.setTimeout(() => {
+              const li = document.createElement('li');
+              li.innerHTML =
+                '<div class="group/project-unfurl-row relative">' +
+                '<div data-testid="project-folder-icon"></div>' +
+                '<span>' + input.value + '</span>' +
+                '<button aria-label="プロジェクトのホームを開く" data-url="/g/g-p-created/project" style="width:16px;height:16px;display:inline-block;"></button>' +
+                '</div>';
+              document.querySelector('#sidebar').append(li);
+              li.querySelector('button').addEventListener('click', () => {
+                history.pushState(null, '', '/g/g-p-created/project');
+              });
+            }, ${options.createdRowDelayMs ?? 0});
+          }
           form.hidden = true;
         });
       </script>
     `;
+    if ((options.bootstrapDelayMs ?? 0) > 0) {
+      await fixturePage.route("https://chatgpt.com/fixture-project-bootstrap", async (route) => {
+        await new Promise<void>((done) => setTimeout(done, options.bootstrapDelayMs));
+        await route.fulfill({ status: 204 });
+      });
+    }
     await fixturePage.route("https://chatgpt.com/", (route) =>
       // Explicit charset matters: without it, Chrome guesses the response's encoding and can
       // misdecode the literal Japanese aria-label text below, silently breaking every CSS
@@ -276,26 +334,228 @@ describe("A-144 Project resolve-or-create fixture", () => {
     }
   });
 
-  // A-145: creation is temporarily disabled (see the doc comment in resolveOrCreateProject()) --
-  // the sidebar Project list was confirmed live to be transient, and a single-shot "not found"
-  // reading already created two real duplicate Projects before this was caught. This test now
-  // pins the disabled behavior; the follow-up retry-mechanism fix should replace it with real
-  // creation-path coverage once resolveOrCreateProject() requires consistent absence across
-  // multiple scans before ever creating anything.
-  it("no exact match: creation stays disabled rather than risk a duplicate (A-145)", async ({
+  it("creates after six stable no-match scans and survives a transient empty sidebar while polling", async ({
     skip,
   }) => {
     if (!browser) return skip();
+    const fixturePage = await projectFixture(["Other Project"], {
+      // The row is created immediately, but the entire list disappears for the first two post-click
+      // polls. This verifies that the creation-result polling is not a single unreliable read.
+      hideSidebarAfterCreationMs: 2_100,
+    });
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Win")).resolves.toEqual({
+        kind: "ok",
+        url: "https://chatgpt.com/g/g-p-created/project",
+        created: true,
+      });
+      await expect(
+        fixturePage.evaluate(() => Number(document.body.dataset.projectCreations)),
+      ).resolves.toBe(1);
+    } finally {
+      await fixturePage.close();
+    }
+  }, 35_000);
+
+  it("A-147: a zero-Project account fails closed without a verified empty-state signal", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    const fixturePage = await projectFixture([]);
+    const originalWait = fixturePage.waitForTimeout.bind(fixturePage);
+    const waitSpy = vi
+      .spyOn(fixturePage, "waitForTimeout")
+      .mockImplementation(async (ms) => originalWait(ms === 4_000 || ms === 1_000 ? 1 : ms));
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Zero")).resolves.toMatchObject({
+        kind: "retry",
+        cause: expect.stringContaining("no visible Project rows"),
+      });
+      await expect(
+        fixturePage.evaluate(() => Number(document.body.dataset.projectCreations)),
+      ).resolves.toBe(0);
+    } finally {
+      waitSpy.mockRestore();
+      await fixturePage.close();
+    }
+  }, 30_000);
+
+  it("A-146 follow-up: a collapsed Project section fails closed without creating", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    const fixturePage = await projectFixture([], { collapsedProjectSection: true });
+    const loadStateSpy = vi.spyOn(fixturePage, "waitForLoadState").mockResolvedValue();
+    const originalWait = fixturePage.waitForTimeout.bind(fixturePage);
+    const waitSpy = vi
+      .spyOn(fixturePage, "waitForTimeout")
+      .mockImplementation(async (ms) => originalWait(ms === 4_000 || ms === 1_000 ? 1 : ms));
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Collapsed")).resolves.toMatchObject({
+        kind: "retry",
+        cause: expect.stringContaining("sidebar may be collapsed"),
+      });
+      await expect(
+        fixturePage.evaluate(() => Number(document.body.dataset.projectCreations)),
+      ).resolves.toBe(0);
+    } finally {
+      waitSpy.mockRestore();
+      loadStateSpy.mockRestore();
+      await fixturePage.close();
+    }
+  }, 30_000);
+
+  it("A-146 follow-up: a submitted create whose row times out is uncertain, never retryable", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    const fixturePage = await projectFixture(["Other Project"], { suppressCreatedRow: true });
+    const originalWait = fixturePage.waitForTimeout.bind(fixturePage);
+    const waitSpy = vi
+      .spyOn(fixturePage, "waitForTimeout")
+      .mockImplementation(async (ms) => originalWait(ms === 4_000 || ms === 1_000 ? 1 : ms));
+    try {
+      const chat = new ChatGptPage(fixturePage, {
+        verifiedOnly: false,
+        pollIntervalMs: 0,
+        newChatTimeoutMs: 1,
+      });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Timeout")).resolves.toMatchObject({
+        kind: "creation_uncertain",
+        cause: expect.stringContaining("submitted but not confirmed"),
+      });
+      await expect(
+        fixturePage.evaluate(() => Number(document.body.dataset.projectCreations)),
+      ).resolves.toBe(1);
+    } finally {
+      waitSpy.mockRestore();
+      await fixturePage.close();
+    }
+  }, 30_000);
+
+  it("A-148: an aborted name-resolution task never reaches the confirm click", async ({ skip }) => {
+    if (!browser) return skip();
     const fixturePage = await projectFixture(["Other Project"]);
+    const originalWait = fixturePage.waitForTimeout.bind(fixturePage);
+    const waitSpy = vi
+      .spyOn(fixturePage, "waitForTimeout")
+      .mockImplementation(async (ms) => originalWait(ms === 4_000 || ms === 1_000 ? 1 : ms));
+    const abort = new AbortController();
+    abort.abort();
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(
+        chat.resolveOrCreateProject("EMAKINOCO-Aborted", {
+          signal: abort.signal,
+          markSubmitted: () => {
+            throw new Error("an aborted create must not cross the submit boundary");
+          },
+        }),
+      ).resolves.toMatchObject({
+        kind: "retry",
+        cause: expect.stringContaining("aborted before confirm"),
+      });
+      await expect(
+        fixturePage.evaluate(() => Number(document.body.dataset.projectCreations)),
+      ).resolves.toBe(0);
+    } finally {
+      waitSpy.mockRestore();
+      await fixturePage.close();
+    }
+  }, 30_000);
+
+  it("A-146 follow-up: an error after the confirm click is uncertain, never retryable", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    const fixturePage = await projectFixture(["Other Project"], { suppressCreatedRow: true });
+    const originalWait = fixturePage.waitForTimeout.bind(fixturePage);
+    const waitSpy = vi.spyOn(fixturePage, "waitForTimeout").mockImplementation(async (ms) => {
+      const creations = await fixturePage.locator("body").getAttribute("data-project-creations");
+      if (creations === "1") throw new Error("simulated post-confirm failure");
+      return ms === 4_000 ? undefined : originalWait(ms);
+    });
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Thrown")).resolves.toMatchObject({
+        kind: "creation_uncertain",
+        cause: expect.stringContaining("post-confirm failure"),
+      });
+      await expect(
+        fixturePage.evaluate(() => Number(document.body.dataset.projectCreations)),
+      ).resolves.toBe(1);
+    } finally {
+      waitSpy.mockRestore();
+      await fixturePage.close();
+    }
+  }, 30_000);
+
+  it("waits for client hydration before starting the six absence scans", async ({ skip }) => {
+    if (!browser) return skip();
+    // Without the post-goto network-idle wait, scan one observes the hidden sidebar and only five
+    // later scans can establish absence, so creation must refuse. The held bootstrap request makes
+    // network-idle a concrete, fixture-controlled hydration boundary.
+    const fixturePage = await projectFixture(["Other Project"], { bootstrapDelayMs: 100 });
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Win")).resolves.toEqual({
+        kind: "ok",
+        url: "https://chatgpt.com/g/g-p-created/project",
+        created: true,
+      });
+      await expect(
+        fixturePage.evaluate(() => Number(document.body.dataset.projectCreations)),
+      ).resolves.toBe(1);
+    } finally {
+      await fixturePage.close();
+    }
+  }, 40_000);
+
+  it("does not create when an initially missing exact row reappears during A-145 confirmation", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    // The first scan sees a different, still-visible Project. The requested existing row appears
+    // before the next four-second scan. A pre-fix single scan would create a duplicate here.
+    const fixturePage = await projectFixture(["Other Project", "EMAKINOCO-Win"], {
+      initiallyHiddenNames: ["EMAKINOCO-Win"],
+      revealInitiallyHiddenAfterMs: 1_000,
+    });
+    try {
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
+      await expect(chat.resolveOrCreateProject("EMAKINOCO-Win")).resolves.toEqual({
+        kind: "ok",
+        url: "https://chatgpt.com/g/g-p-existing-1/project",
+        created: false,
+      });
+      await expect(
+        fixturePage.evaluate(() => Number(document.body.dataset.projectCreations)),
+      ).resolves.toBe(0);
+    } finally {
+      await fixturePage.close();
+    }
+  }, 15_000);
+
+  it("refuses creation when sidebar flicker never yields confident absence (A-145)", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    const fixturePage = await projectFixture(["Other Project"], { flickerSidebar: true });
     try {
       const chat = new ChatGptPage(fixturePage, { verifiedOnly: false, pollIntervalMs: 0 });
       await expect(chat.resolveOrCreateProject("EMAKINOCO-Win")).resolves.toMatchObject({
         kind: "retry",
       });
+      await expect(
+        fixturePage.evaluate(() => Number(document.body.dataset.projectCreations)),
+      ).resolves.toBe(0);
     } finally {
       await fixturePage.close();
     }
-  });
+  }, 30_000);
 
   it("fails closed when more than one Project has the exact requested name", async ({ skip }) => {
     if (!browser) return skip();

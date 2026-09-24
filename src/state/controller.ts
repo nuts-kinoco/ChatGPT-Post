@@ -24,7 +24,7 @@ import {
   type MachineState,
   transition,
 } from "./machine.js";
-import type { Baseline, Ports } from "./ports.js";
+import type { Baseline, Ports, ProjectCreateControl } from "./ports.js";
 
 /** 15 §4: result.json carries no secrets — cause/warnings are redacted and length-capped. */
 export const RESULT_TEXT_MAX = 500;
@@ -71,7 +71,13 @@ export const IMAGE_CAPTURE_BUDGET_MS = 120_000;
 
 export const DEFAULT_PHASE_LIMITS_MS: Partial<Record<StateName, number>> = {
   BROWSER_STARTED: 60_000,
-  AUTH_CHECKED: 30_000,
+  // A-145: OPEN_NEW_CHAT's project-by-name path can spend its own ~20s absence-confirmation window
+  // (PROJECT_ABSENCE_CONFIRMATION_SCANS x PROJECT_ABSENCE_CONFIRMATION_INTERVAL_MS in page.ts)
+  // before ever starting the creation click/fill/confirm + its own created-row poll -- the prior
+  // 30s budget was sized for a plain openNewChat()/openConversation()/openProject(URL) navigation
+  // and left no room for that. 90s accommodates the normal 15s hydration wait plus the 20s
+  // confirmation window and creation flow; it is not relied upon to make an unstable sidebar safe.
+  AUTH_CHECKED: 90_000,
   NEW_CHAT_READY: 30_000,
   PRESET_VERIFIED: 60_000,
 };
@@ -132,6 +138,8 @@ export class RunController {
   private startedAt: Date;
   private readonly startedMono: number;
   private phaseEnteredAt: number;
+  /** Present only while a Project name-resolution attempt is running. */
+  private projectCreateControl: { abort: AbortController; submitted: boolean } | null = null;
   private result: BridgeResult | null = null;
   private resultPath: string | null = null;
   private exitCode = 1;
@@ -173,8 +181,13 @@ export class RunController {
   private async dispatch(ev: Event): Promise<void> {
     const before = this.state.name;
     const { next, effects } = transition(this.state, ev);
-    if (next.name !== before) {
+    if (next.name !== before || ev.type === "RETRYABLE_STEP_FAILED") {
+      // A retry starts a new effect attempt, so it receives its documented full phase budget.
+      // In particular, AUTH_CHECKED's long absence confirmation must not consume the following
+      // retry's time before it can reach the Project-create safety boundary.
       this.phaseEnteredAt = this.ports.clock.monotonic();
+    }
+    if (next.name !== before) {
       this.ports.log("debug", `${before} --${ev.type}--> ${next.name}`);
     }
     this.state = next;
@@ -198,7 +211,17 @@ export class RunController {
       }
       return ev;
     } catch (err) {
-      if (err instanceof PhaseTimeout) return { type: "TIMEOUT", phase: err.phase };
+      if (err instanceof PhaseTimeout) {
+        const create = this.projectCreateControl;
+        if (create?.submitted) {
+          return {
+            type: "PROJECT_CREATION_UNCERTAIN",
+            cause:
+              "Project creation was submitted but the phase limit expired before confirmation; check the sidebar manually before retrying.",
+          };
+        }
+        return { type: "TIMEOUT", phase: err.phase };
+      }
       const message = err instanceof Error ? err.message : String(err);
       if (bestEffort) {
         this.warnings.push(`${effect.kind.toLowerCase()}_failed: ${message.slice(0, 200)}`);
@@ -209,7 +232,7 @@ export class RunController {
     }
   }
 
-  private async withPhaseLimit<T>(p: Promise<T>, extraMs = 0): Promise<T> {
+  private async withPhaseLimit<T>(p: Promise<T>, extraMs = 0, onTimeout?: () => void): Promise<T> {
     const limits = this.opts.phaseLimitsMs ?? DEFAULT_PHASE_LIMITS_MS;
     const name = this.state.name as StateName;
     const base = limits[name];
@@ -217,10 +240,16 @@ export class RunController {
     const limit = base + extraMs;
     const elapsed = this.ports.clock.monotonic() - this.phaseEnteredAt;
     const remaining = limit - elapsed;
-    if (remaining <= 0) throw new PhaseTimeout(name);
+    if (remaining <= 0) {
+      onTimeout?.();
+      throw new PhaseTimeout(name);
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new PhaseTimeout(name)), remaining);
+      timer = setTimeout(() => {
+        onTimeout?.();
+        reject(new PhaseTimeout(name));
+      }, remaining);
     });
     try {
       return await Promise.race([p, timeout]);
@@ -320,16 +349,38 @@ export class RunController {
             // Keep this partial handshake on every resolution failure instead of hiding a missed
             // Project request behind a generic new-chat result.
             this.project = { requested: project.name, resolvedUrl: null, created: null };
-            const resolved = await this.withPhaseLimit(
-              chatgpt.resolveOrCreateProject(project.name),
-            );
+            const create = { abort: new AbortController(), submitted: false };
+            const control: ProjectCreateControl = {
+              signal: create.abort.signal,
+              markSubmitted: () => {
+                create.submitted = true;
+              },
+            };
+            this.projectCreateControl = create;
+            let resolved: Awaited<ReturnType<typeof chatgpt.resolveOrCreateProject>>;
+            try {
+              resolved = await this.withPhaseLimit(
+                chatgpt.resolveOrCreateProject(project.name, control),
+                0,
+                () => create.abort.abort(),
+              );
+            } finally {
+              // Keep it through a timeout catch above, but release it on every ordinary outcome.
+              if (!create.submitted) this.projectCreateControl = null;
+            }
             if (resolved.kind === "ok") {
+              this.projectCreateControl = null;
               this.project = {
                 requested: project.name,
                 resolvedUrl: resolved.url,
                 created: resolved.created,
               };
               n = await this.withPhaseLimit(chatgpt.openProject(resolved.url));
+            } else if (resolved.kind === "creation_uncertain") {
+              this.projectCreateControl = null;
+              // Do not turn a potentially delivered create submit into RETRYABLE_STEP_FAILED:
+              // AUTH_CHECKED retries OPEN_NEW_CHAT, which could create a duplicate Project.
+              return { type: "PROJECT_CREATION_UNCERTAIN", cause: resolved.cause };
             } else {
               n = resolved;
             }

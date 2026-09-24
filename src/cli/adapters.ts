@@ -274,7 +274,7 @@ export function chatgptPort(
     openNewChat: () => get().openNewChat(),
     openConversation: (u) => get().openConversation(u),
     openProject: (u) => get().openProject(u),
-    resolveOrCreateProject: (name) => get().resolveOrCreateProject(name),
+    resolveOrCreateProject: (name, control) => get().resolveOrCreateProject(name, control),
     resolvePreset: (p, m) => get().resolvePreset(p, m),
     enterPrompt: (t, a) => get().enterPrompt(t, a),
     snapshotBaseline: (l) => get().snapshotBaseline(l),

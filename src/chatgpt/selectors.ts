@@ -406,9 +406,15 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "A Project row in the sidebar Project list",
     mode: "count",
     candidates: [
+      // A-145 follow-up (live-verified 2026-09-22): the row's `[data-testid="project-folder-icon"]`
+      // icon is itself transient -- polled every ~700ms for 20s+ against the real sidebar, it read
+      // 0 continuously from ~t=3s onward while the actual row (this `group/project-unfurl-row`
+      // wrapper) stayed present and correct (4/4 matches) for the entire window. That transience is
+      // exactly what caused A-145's duplicate-Project incident: a single-shot "0 matches" reading
+      // looked like genuine absence. This selector targets the stable wrapper instead.
       {
         kind: "css",
-        selector: 'li:has([data-testid="project-folder-icon"])',
+        selector: "li:has(div.group\\/project-unfurl-row)",
         verifiedOn: "2026-09-22 chatgpt.com ja",
       },
     ],

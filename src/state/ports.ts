@@ -106,9 +106,21 @@ export type PresetResolution =
 
 export type ProjectResolution =
   | { kind: "ok"; url: string; created: boolean }
+  /** The create submit may have reached ChatGPT; never retry this request automatically. */
+  | { kind: "creation_uncertain"; cause: string }
   | { kind: "failed"; cause: NewChatFailure }
   | { kind: "retry"; cause: string }
   | { kind: "dom_unexpected"; element: string; tried: string[] };
+
+/**
+ * A-148: the controller owns the timeout cancellation and the page owns the exact point at
+ * which a create submit can no longer be safely retried. `markSubmitted()` must be called
+ * immediately before the irreversible confirm click.
+ */
+export interface ProjectCreateControl {
+  signal: AbortSignal;
+  markSubmitted(): void;
+}
 
 export interface Baseline {
   assistantCount: number;
@@ -153,7 +165,7 @@ export interface ChatGptPort {
     | { kind: "dom_unexpected"; element: string; tried: string[] }
   >;
   /** A-144: exact-name lookup in the sidebar, creating only after a no-match result. */
-  resolveOrCreateProject(name: string): Promise<ProjectResolution>;
+  resolveOrCreateProject(name: string, control?: ProjectCreateControl): Promise<ProjectResolution>;
   /** Selects model (in-page radio) then effort (persisted slider); observes both; fails closed. */
   resolvePreset(requested: RequestedPreset, model: RequestedModel): Promise<PresetResolution>;
   /** Types the prompt, then attaches files and waits for their upload (send button re-enabled). */

@@ -48,6 +48,8 @@ export type Event =
   | { type: "WRONG_PAGE"; url: string }
   | { type: "NEW_CHAT_OK" }
   | { type: "NEW_CHAT_FAILED"; cause: NewChatFailure }
+  /** A Project create submit may have landed, so repeating OPEN_NEW_CHAT could duplicate it. */
+  | { type: "PROJECT_CREATION_UNCERTAIN"; cause: string }
   | { type: "PRESET_OBSERVED"; preset: ObservedPreset }
   | { type: "PRESET_NOT_AVAILABLE" }
   | { type: "PRESET_NOT_VERIFIABLE"; cause: string }
@@ -449,6 +451,8 @@ export function transition(s: MachineState, ev: Event): Transition {
           return move(s, "NEW_CHAT_READY", [{ kind: "RESOLVE_PRESET" }]);
         case "NEW_CHAT_FAILED":
           return fail(s, "PROMPT_SUBMIT_FAILED", { cause: ev.cause });
+        case "PROJECT_CREATION_UNCERTAIN":
+          return fail(s, "MANUAL_INTERVENTION_REQUIRED", { cause: ev.cause });
         case "RETRYABLE_STEP_FAILED":
           return retry(s, "AUTH_CHECKED", ev);
         case "TIMEOUT":

@@ -20,6 +20,7 @@ import type {
   ChatGptPort,
   Extraction,
   PresetResolution,
+  ProjectCreateControl,
 } from "../state/ports.js";
 import type { Observation } from "./completion.js";
 import {
@@ -50,6 +51,17 @@ export const CHATGPT_ORIGIN = "https://chatgpt.com";
 /** A-144: only this full URL shape preserves A-106's existing direct-open behavior. */
 export const PROJECT_URL_RE = /^https:\/\/chatgpt\.com\/g\/g-p-[A-Za-z0-9-]+\/project$/;
 export type ProjectReference = { kind: "url"; url: string } | { kind: "name"; name: string };
+
+/**
+ * A-145: a missing Project row is safety-critical evidence. Live observation found the complete
+ * sidebar list empty from about three seconds after load and still empty at least 15 seconds
+ * later. Six scans four seconds apart take 20 seconds from the first to last scan, exceeding that
+ * observed empty period instead of reusing the ordinary short element-render retry.
+ */
+const PROJECT_ABSENCE_CONFIRMATION_SCANS = 6;
+const PROJECT_ABSENCE_CONFIRMATION_INTERVAL_MS = 4_000;
+/** Poll the post-create row at a human-scale cadence even when a caller uses a zero UI poll delay. */
+const PROJECT_CREATED_ROW_POLL_INTERVAL_MS = 1_000;
 
 /** A-144: URL-shaped values retain A-106 behavior; every other string is an exact Project name. */
 export function classifyProject(value: string): ProjectReference {
@@ -339,6 +351,22 @@ export class ChatGptPage implements ChatGptPort {
     return { kind: "retry", cause: "composer did not appear on the project page" };
   }
 
+  /** Waits for a registry-defined element without ever bypassing verifiedOnly gating. */
+  private async waitForElement(key: ElementKey, timeoutMs = 3_000): Promise<Locator> {
+    const deadline = Date.now() + timeoutMs;
+    let last: DomUnexpected | null = null;
+    while (Date.now() < deadline) {
+      try {
+        return await resolve(this.page, key, this.sel);
+      } catch (err) {
+        if (!(err instanceof DomUnexpected)) throw err;
+        last = err;
+        await this.page.waitForTimeout(100);
+      }
+    }
+    throw last ?? new DomUnexpected(key, []);
+  }
+
   /**
    * A-144 (live-verified 2026-09-22): project sidebar rows are client-routed `role="button"` divs
    * with no `href` — the only confirmed way to learn a row's Project-home URL is to click its own
@@ -362,31 +390,52 @@ export class ChatGptPage implements ChatGptPort {
    * navigation) so an ambiguous (>1) match is detected and reported without ever clicking anything;
    * only a confirmed single match proceeds to the one navigation that resolves its URL.
    */
-  private async exactProjectMatches(
-    name: string,
-  ): Promise<Array<{ item: Locator; url: string | null }>> {
+  private async exactProjectMatches(name: string): Promise<{
+    matches: Array<{ item: Locator; url: string | null }>;
+    visibleProjectRowCount: number;
+  }> {
     const items = await all(this.page, "projectSidebarItem", this.sel);
     const matchedItems: Locator[] = [];
     for (const item of items) {
       if ((await item.innerText().catch(() => "")).trim() === name) matchedItems.push(item);
     }
     if (matchedItems.length !== 1) {
-      return matchedItems.map((item) => ({ item, url: null }));
+      return {
+        matches: matchedItems.map((item) => ({ item, url: null })),
+        visibleProjectRowCount: items.length,
+      };
     }
     const only = matchedItems[0];
-    if (!only) return [];
-    return [{ item: only, url: await this.openProjectHomeUrl(only) }];
+    if (!only) return { matches: [], visibleProjectRowCount: items.length };
+    return {
+      matches: [{ item: only, url: await this.openProjectHomeUrl(only) }],
+      visibleProjectRowCount: items.length,
+    };
+  }
+
+  private creationUncertain(cause: string): { kind: "creation_uncertain"; cause: string } {
+    return {
+      kind: "creation_uncertain",
+      cause:
+        "Project creation was submitted but not confirmed; check the sidebar manually before retrying. " +
+        cause,
+    };
   }
 
   /**
-   * A-144: resolves only an exact visible-name match. A zero-match result is the sole path that
-   * enters creation; more than one exact match is never guessed. The intentionally unverified
-   * selectors make this fail closed in normal verifiedOnly runs until a live session verifies them.
+   * A-144/A-145: resolves only an exact visible-name match. More than one exact match is never
+   * guessed. A zero match is not absence evidence by itself: before the irreversible creation
+   * click it must be repeated across the long A-145 confirmation window while an unrelated
+   * Project row remains visible. The New Project control is deliberately not absence evidence:
+   * it can remain visible while all Project rows flicker away. A zero-Project account has no
+   * independently verified empty-state or list-response signal yet, so it fails closed.
    */
   async resolveOrCreateProject(
     name: string,
+    control?: ProjectCreateControl,
   ): Promise<
     | { kind: "ok"; url: string; created: boolean }
+    | { kind: "creation_uncertain"; cause: string }
     | { kind: "failed"; cause: NewChatFailure }
     | { kind: "retry"; cause: string }
     | { kind: "dom_unexpected"; element: string; tried: string[] }
@@ -396,8 +445,12 @@ export class ChatGptPage implements ChatGptPort {
     } catch (err) {
       return { kind: "retry", cause: `navigation failed: ${(err as Error).message}` };
     }
+    // This bounded best-effort wait reduces avoidable early scans, but network idleness is not a
+    // SPA hydration guarantee. The visible Project rows in every scan below are the actual creation
+    // gate, and remain fail-closed if this wait times out or resolves too early.
+    await this.page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
 
-    let existing: Array<{ item: Locator; url: string | null }>;
+    let existing: Awaited<ReturnType<ChatGptPage["exactProjectMatches"]>>;
     try {
       existing = await this.exactProjectMatches(name);
     } catch (err) {
@@ -405,15 +458,15 @@ export class ChatGptPage implements ChatGptPort {
         return { kind: "dom_unexpected", element: err.element, tried: err.tried };
       return { kind: "retry", cause: (err as Error).message };
     }
-    if (existing.length > 1) {
+    if (existing.matches.length > 1) {
       return {
         kind: "dom_unexpected",
         element: "projectSidebarItem",
-        tried: [`exact visible name matched ${existing.length} items`],
+        tried: [`exact visible name matched ${existing.matches.length} items`],
       };
     }
-    if (existing.length === 1) {
-      const url = existing[0]?.url;
+    if (existing.matches.length === 1) {
+      const url = existing.matches[0]?.url;
       return url
         ? { kind: "ok", url, created: false }
         : {
@@ -423,21 +476,118 @@ export class ChatGptPage implements ChatGptPort {
           };
     }
 
-    // A-145: creation is temporarily disabled here. The sidebar's Project list DOM was confirmed
-    // transient (present for only ~1-2s after page load, then gone -- measured live: 6 matches at
-    // ~1s, 0 matches from ~3s onward), so a single-shot "existing.length === 0" reading is not
-    // trustworthy evidence of absence. This exact race already created two real duplicate Projects
-    // in the account under test before it was caught (see DECISION-LOG A-145). The previous
-    // creation implementation (click newProjectButton -> fill newProjectNameInput -> click
-    // newProjectConfirmButton -> poll exactProjectMatches for the new row) is preserved in git
-    // history at commit c6e2907 for reference -- do not restore it as-is; the follow-up fix must
-    // require consistent absence across multiple scans, spread over several seconds, before ever
-    // proceeding to creation.
-    return {
-      kind: "retry",
-      cause:
-        "Project creation is temporarily disabled (A-145): the sidebar Project list is not reliably readable as absent yet, and a false negative here creates a real duplicate Project.",
-    };
+    // A zero row count is never absence evidence. The verified New Project button cannot make it
+    // so: during A-145 it remained visible while every Project row transiently disappeared. Until
+    // a dedicated empty-state or authoritative Project-list response is verified live, a truly
+    // empty account therefore remains intentionally unsupported.
+    if (existing.visibleProjectRowCount === 0) {
+      return {
+        kind: "retry",
+        cause:
+          "Project absence was not confirmed: no visible Project rows (the sidebar may be collapsed or flickering); zero-Project creation is unsupported until a verified empty-state or authoritative list-response signal is available",
+      };
+    }
+
+    // Preserve the initial row-backed read as scan one, then require five delayed re-scans. A row
+    // disappearing at any sampled point aborts rather than merely resetting the streak: otherwise
+    // an A-145-style sidebar flicker could turn a real existing Project into apparent absence.
+    let confirmedAbsenceScans = 1;
+    for (let scan = 1; scan < PROJECT_ABSENCE_CONFIRMATION_SCANS; scan++) {
+      await this.page.waitForTimeout(PROJECT_ABSENCE_CONFIRMATION_INTERVAL_MS);
+      try {
+        existing = await this.exactProjectMatches(name);
+      } catch (err) {
+        if (err instanceof DomUnexpected)
+          return { kind: "dom_unexpected", element: err.element, tried: err.tried };
+        return { kind: "retry", cause: (err as Error).message };
+      }
+      if (existing.matches.length > 1) {
+        return {
+          kind: "dom_unexpected",
+          element: "projectSidebarItem",
+          tried: [`exact visible name matched ${existing.matches.length} items`],
+        };
+      }
+      if (existing.matches.length === 1) {
+        const url = existing.matches[0]?.url;
+        return url
+          ? { kind: "ok", url, created: false }
+          : {
+              kind: "dom_unexpected",
+              element: "projectSidebarItem",
+              tried: ["exact visible name matched an item without a Project-home URL"],
+            };
+      }
+      if (existing.visibleProjectRowCount === 0) {
+        return {
+          kind: "retry",
+          cause:
+            "Project absence was not confirmed: visible Project rows disappeared during the A-145 confirmation window",
+        };
+      }
+      confirmedAbsenceScans++;
+    }
+    if (confirmedAbsenceScans < PROJECT_ABSENCE_CONFIRMATION_SCANS) {
+      return {
+        kind: "retry",
+        cause: "Project absence was not confirmed during the A-145 confirmation window",
+      };
+    }
+
+    let confirmButton: Locator;
+    try {
+      await (await this.waitForElement("newProjectButton")).click();
+      await (await this.waitForElement("newProjectNameInput")).fill(name);
+      confirmButton = await this.waitForElement("newProjectConfirmButton");
+    } catch (err) {
+      if (err instanceof DomUnexpected)
+        return { kind: "dom_unexpected", element: err.element, tried: err.tried };
+      return { kind: "retry", cause: `Project creation flow failed: ${(err as Error).message}` };
+    }
+
+    // The controller can time out while this method is still alive because Promise.race does not
+    // cancel its loser. Check its signal at the irreversible boundary, then record that the submit
+    // may have reached ChatGPT before calling Playwright. From this point every path is uncertain.
+    if (control?.signal.aborted) {
+      return { kind: "retry", cause: "Project creation was aborted before confirm click" };
+    }
+    control?.markSubmitted();
+    try {
+      await confirmButton.click();
+    } catch (err) {
+      return this.creationUncertain(`confirm click failed: ${(err as Error).message}`);
+    }
+
+    const deadline = Date.now() + (this.opts.newChatTimeoutMs ?? 30_000);
+    while (Date.now() < deadline) {
+      let created: Awaited<ReturnType<ChatGptPage["exactProjectMatches"]>>;
+      try {
+        created = await this.exactProjectMatches(name);
+      } catch (err) {
+        return this.creationUncertain(
+          err instanceof DomUnexpected
+            ? `sidebar observation failed: ${err.element}: tried ${err.tried.join(", ")}`
+            : `sidebar observation failed: ${(err as Error).message}`,
+        );
+      }
+      if (created.matches.length > 1) {
+        return this.creationUncertain(
+          `created exact visible name matched ${created.matches.length} items`,
+        );
+      }
+      if (created.matches.length === 1) {
+        const url = created.matches[0]?.url;
+        return url
+          ? { kind: "ok", url, created: true }
+          : this.creationUncertain("created exact visible name has no Project-home URL");
+      }
+      try {
+        await this.page.waitForTimeout(PROJECT_CREATED_ROW_POLL_INTERVAL_MS);
+      } catch (err) {
+        return this.creationUncertain(`post-submit poll failed: ${(err as Error).message}`);
+      }
+    }
+    return this.creationUncertain("created Project did not appear in the sidebar");
   }
 
   async openNewChat(): Promise<

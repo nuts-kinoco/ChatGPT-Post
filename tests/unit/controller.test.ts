@@ -199,13 +199,14 @@ function fake(
   return f;
 }
 
-function run(f: Fake) {
+function run(f: Fake, extra: Partial<ConstructorParameters<typeof RunController>[1]> = {}) {
   return new RunController(f.ports, {
     requestPath: "/req/request.json",
     artifactsRoot: "/art",
     bridgeVersion: "0.1.0",
     traceOnSuccess: false,
     observationIntervalMs: 0,
+    ...extra,
   }).run();
 }
 
@@ -338,6 +339,131 @@ describe("RunController", () => {
       resolvedUrl: null,
       created: null,
     });
+  });
+
+  it("A-146 follow-up: uncertain Project creation writes an honest handshake and does not resolve again", async () => {
+    let resolveCalls = 0;
+    const f = fake({
+      resolveOrCreateProject: async () => {
+        resolveCalls++;
+        return {
+          kind: "creation_uncertain",
+          cause:
+            "Project creation was submitted but not confirmed; check the sidebar manually before retrying.",
+        };
+      },
+    });
+    f.ports.contracts.validate = async () => ({
+      kind: "valid",
+      request: {
+        schemaVersion: "1.3",
+        requestId: "req-00000001",
+        promptFile: "p",
+        preset: "current",
+        newChat: true,
+        project: "EMAKINOCO-Uncertain",
+        responseFormat: "markdown",
+      },
+      prompt: "hi",
+      timeoutMs: 60_000,
+      attachments: [],
+      attachmentBytes: 0,
+    });
+    const out = await run(f);
+    expect(resolveCalls).toBe(1);
+    expect(out.result?.status).toBe("manual_intervention_required");
+    expect(out.result?.error).toMatchObject({
+      code: "MANUAL_INTERVENTION_REQUIRED",
+      retryable: false,
+      cause: expect.stringContaining("submitted but not confirmed"),
+    });
+    expect(out.result?.project).toEqual({
+      requested: "EMAKINOCO-Uncertain",
+      resolvedUrl: null,
+      created: null,
+    });
+  });
+
+  it("A-148: a phase timeout after the create boundary aborts the abandoned task and is manual", async () => {
+    let resolveCalls = 0;
+    let lateConfirmClicks = 0;
+    const f = fake({
+      resolveOrCreateProject: async (_name, control) => {
+        resolveCalls++;
+        control?.markSubmitted();
+        await new Promise<void>((done) => control?.signal.addEventListener("abort", done));
+        // This represents the abandoned page task resuming after the controller's race. It must
+        // observe abort before attempting the irreversible confirm click.
+        if (!control?.signal.aborted) lateConfirmClicks++;
+        return { kind: "retry", cause: "aborted before confirm" };
+      },
+    });
+    f.ports.contracts.validate = async () => ({
+      kind: "valid",
+      request: {
+        schemaVersion: "1.3",
+        requestId: "req-00000001",
+        promptFile: "p",
+        preset: "current",
+        newChat: true,
+        project: "EMAKINOCO-Timeout",
+        responseFormat: "markdown",
+      },
+      prompt: "hi",
+      timeoutMs: 60_000,
+      attachments: [],
+      attachmentBytes: 0,
+    });
+    // The fake monotonic clock advances 500 ms on each read. This makes the create effect start
+    // after its AUTH_CHECKED allowance, while still proving that the already-marked boundary wins.
+    const out = await run(f, { phaseLimitsMs: { AUTH_CHECKED: 1 } });
+    await Promise.resolve(); // let the aborted, raced promise reach its guarded late-click branch
+    expect(resolveCalls).toBe(1);
+    expect(lateConfirmClicks).toBe(0);
+    expect(out.result?.status).toBe("manual_intervention_required");
+    expect(out.result?.error?.code).toBe("MANUAL_INTERVENTION_REQUIRED");
+    expect(out.result?.project).toEqual({
+      requested: "EMAKINOCO-Timeout",
+      resolvedUrl: null,
+      created: null,
+    });
+  });
+
+  it("A-148: an AUTH_CHECKED retry receives a fresh phase budget", async () => {
+    let attempts = 0;
+    const f = fake({
+      resolveOrCreateProject: async () => {
+        attempts++;
+        return attempts === 1
+          ? { kind: "retry" as const, cause: "first absence scan was inconclusive" }
+          : {
+              kind: "creation_uncertain" as const,
+              cause: "Project creation was submitted but not confirmed",
+            };
+      },
+    });
+    f.ports.contracts.validate = async () => ({
+      kind: "valid",
+      request: {
+        schemaVersion: "1.3",
+        requestId: "req-00000001",
+        promptFile: "p",
+        preset: "current",
+        newChat: true,
+        project: "EMAKINOCO-Retry-Budget",
+        responseFormat: "markdown",
+      },
+      prompt: "hi",
+      timeoutMs: 60_000,
+      attachments: [],
+      attachmentBytes: 0,
+    });
+    // One attempt consumes 500 ms in this fake clock. Without the retry reset the second call has
+    // no remaining 600 ms allowance and becomes DOM_CHANGED instead of reaching its own outcome.
+    const out = await run(f, { phaseLimitsMs: { AUTH_CHECKED: 600 } });
+    expect(attempts).toBe(2);
+    expect(out.result?.status).toBe("manual_intervention_required");
+    expect(out.result?.error?.code).toBe("MANUAL_INTERVENTION_REQUIRED");
   });
 
   it("ALREADY_RUNNING: no browser, no result.json, exit 4", async () => {
