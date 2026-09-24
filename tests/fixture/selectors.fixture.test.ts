@@ -103,6 +103,53 @@ describe("selectors on the 2026-09-15 fixture", () => {
   });
 });
 
+describe("ChatGptPage model picker readiness on a fixture", () => {
+  it("waits for a briefly absent verified model picker before resolving the preset", async ({
+    skip,
+  }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const fixturePage = await browser.newPage();
+    try {
+      await fixturePage.setContent(`
+        <form><div data-composer-transition-slot="trailing"></div></form>
+        <script>
+          const trailing = document.querySelector('[data-composer-transition-slot="trailing"]');
+          const addPicker = () => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.setAttribute('aria-haspopup', 'menu');
+            button.textContent = 'Instant';
+            button.addEventListener('click', () => {
+              const menu = document.createElement('div');
+              menu.dataset.testid = 'composer-intelligence-picker-content';
+              menu.innerHTML = '<div role="menuitem" aria-expanded="true">Models</div>' +
+                '<div role="menuitemradio" aria-checked="true">最新</div>';
+              document.body.append(menu);
+            });
+            trailing.append(button);
+          };
+          setTimeout(addPicker, 100);
+          document.addEventListener('click', (event) => {
+            if (event.target !== trailing.querySelector('button')) document.querySelector('[data-testid="composer-intelligence-picker-content"]')?.remove();
+          });
+        </script>
+      `);
+      const chat = new ChatGptPage(fixturePage, { verifiedOnly: true });
+
+      await expect(chat.resolvePreset("current", "current")).resolves.toMatchObject({
+        kind: "observed",
+        preset: "instant",
+        model: "latest",
+      });
+    } finally {
+      await fixturePage.close();
+    }
+  }, 10_000);
+});
+
 describe("ChatGptPage prompt cleanup on a fixture", () => {
   it("clears a mismatched composer before returning", async ({ skip }) => {
     if (!browser) {

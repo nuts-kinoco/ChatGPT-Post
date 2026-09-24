@@ -635,7 +635,10 @@ export class ChatGptPage implements ChatGptPort {
   private async openPicker(): Promise<Locator> {
     const menuProbe = await probe(this.page, "pickerMenu", this.sel);
     if (menuProbe.found && menuProbe.locator) return menuProbe.locator;
-    const trigger = await resolve(this.page, "modelPicker", this.sel);
+    // The Project trace in A-149 shows the composer still present while this verified trigger is
+    // briefly replaced during hydration. Keep the existing verified-only selector and bounded
+    // fail-closed behavior, but do not turn that one transient re-query into DOM_CHANGED.
+    const trigger = await this.waitForElement("modelPicker");
     await trigger.click({ timeout: 3000 });
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
