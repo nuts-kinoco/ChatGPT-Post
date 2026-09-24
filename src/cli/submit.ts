@@ -329,7 +329,10 @@ export async function reconcileJob(
   cfg: Pick<BridgeConfig, "stateDir">,
   deps: Pick<LockDeps, "isProcessAlive" | "processStartedAt" | "hostname"> = defaultLockDeps,
 ): Promise<JobRow> {
-  const resultPath = join(job.requestDir, "result.json");
+  // A-153: collect writes a separate recovered result so the original failed record remains
+  // auditable. Once the ledger points at it, it is the durable outcome; never let the older
+  // requestDir/result.json overwrite that recovered success on a later status/wait call.
+  const resultPath = job.resultPath ?? join(job.requestDir, "result.json");
   try {
     const raw = JSON.parse(await readFile(resultPath, "utf8")) as BridgeResult;
     const status = statusFromResult(raw);

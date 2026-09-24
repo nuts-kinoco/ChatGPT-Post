@@ -3,7 +3,7 @@ import { hostname as osHostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BridgeConfig } from "../../src/cli/config.js";
-import { main } from "../../src/cli/main.js";
+import { main, waitingTimeoutPayload, waitingTimeoutText } from "../../src/cli/main.js";
 import {
   jobStorePath,
   reconcileJob,
@@ -612,6 +612,15 @@ describe("reconcileJob / waitForJob (Phase 1, A-132)", () => {
       );
       expect(timedOut).toBe(true);
       expect(job?.status).toBe("running");
+      expect(waitingTimeoutPayload(job as NonNullable<typeof job>)).toMatchObject({
+        status: "waiting_timeout",
+        retryable: true,
+        job: { status: "running" },
+      });
+      expect(waitingTimeoutText(job as NonNullable<typeof job>)).toMatch(
+        /^status=waiting_timeout /,
+      );
+      expect(waitingTimeoutText(job as NonNullable<typeof job>)).not.toMatch(/^requestId=/);
     } finally {
       store.close();
     }

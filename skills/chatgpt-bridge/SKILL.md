@@ -5,6 +5,15 @@ description: ChatGPT Web（Pro）に 1 往復の質問・レビュー・調査�
 
 # chatgpt-bridge スキル
 
+## Recovery first
+
+`collect` proves the immediately preceding user prompt as well as the assistant baseline. It never
+clears or edits a saved composer draft; a detected draft is preserved and reported. It rejects a
+temporary `WEB:` route and works for direct `run` markers without jobs.db. The explicit recovery
+form needs `--prompt-file`; `--since` is recovery metadata, not a DOM-time filter.
+
+For `GENERATION_TIMEOUT`, `GENERATION_TIMEOUT_ACTIVE`, `SUBMIT_STATE_UNKNOWN`, or `CONVERSATION_MISMATCH`, do not resend. Run `chatgpt-bridge collect <requestId> --json`: it opens only the recorded conversation under the normal lock and recovers only one reply proven by the marker baseline. It never sends and preserves the original failed result in favor of a separately marked recovery. `wait` exit 6 / `status: "waiting_timeout"` is retryable, not final; call `wait` again or `collect`.
+
 他プロジェクトの Claude Code / Codex から ChatGPT Web を「外部アドバイザー」として使うための手順。このスキルは **`chatgpt-bridge` が `npm link` 済みで、専用プロファイルにログイン済み**であることを前提にする（`chatgpt-bridge doctor` で確認）。詳細は `S:\Projects\chatgpt-web-bridge\docs\20-COMMAND-REFERENCE.md`。
 
 ## 使いどころ

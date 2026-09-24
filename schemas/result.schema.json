@@ -328,6 +328,14 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "recoveredBy": {
+      "type": "string",
+      "const": "collect"
+    },
+    "recoveredFromSubmittedAt": {
+      "type": "string",
+      "format": "date-time"
     }
   },
   "allOf": [
@@ -354,7 +362,13 @@
             "type": "string"
           },
           "observedPreset": {
-            "$ref": "#/$defs/observedPreset"
+            "oneOf": [
+              { "$ref": "#/$defs/observedPreset" },
+              {
+                "type": "null",
+                "description": "Allowed only for a collect recovery where the original run ended before preset observation was persisted."
+              }
+            ]
           },
           "submitted": {
             "const": "yes"
@@ -376,6 +390,21 @@
             "type": "null"
           }
         }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": { "const": "completed" },
+          "observedPreset": { "type": "null" }
+        },
+        "required": ["status", "observedPreset"]
+      },
+      "then": {
+        "properties": {
+          "recoveredBy": { "const": "collect" }
+        },
+        "required": ["recoveredBy"]
       }
     },
     {

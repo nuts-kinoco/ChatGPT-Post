@@ -154,6 +154,18 @@ export interface ChatGptPort {
     | { kind: "retry"; cause: string }
     | { kind: "dom_unexpected"; element: string; tried: string[] }
   >;
+  /**
+   * Recovery-only variant of openConversation. It validates the same conversation and generation
+   * state, but deliberately never inspects, clears, or changes a saved composer draft.
+   */
+  openConversationForCollect(
+    url: string,
+  ): Promise<
+    | { kind: "ok"; draftPresent: boolean }
+    | { kind: "failed"; cause: NewChatFailure }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  >;
   openNewChat(): Promise<
     | { kind: "ok" }
     | { kind: "failed"; cause: NewChatFailure }
@@ -199,6 +211,11 @@ export interface ChatGptPort {
   >;
   observe(t: number): Promise<Observation>;
   currentUrl(): Promise<string>;
+  /** Proves that the user turn immediately before the latest assistant turn is this request. */
+  verifyLatestReplyOwnership(
+    prompt: string,
+    attachmentNames: string[],
+  ): Promise<{ kind: "match" } | { kind: "mismatch"; cause: string }>;
   extractLatest(): Promise<Extraction | { kind: "empty"; cause: "empty" | "canvas" }>;
   /**
    * A-091: saves images rendered in the latest assistant turn (generated images) into `dir`.

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -24,6 +25,7 @@ import {
 // load; only `submit`/`status`/`wait`/`result` themselves require the newer engines.node floor.
 import type { JobRow } from "../state/jobstore.js";
 import { unlockReclaimableStale } from "../state/lock.js";
+import { markerPath, readMarker } from "../state/marker.js";
 import { slotPath } from "../state/slot-lock.js";
 import { buildPorts } from "./adapters.js";
 import { type BridgeConfig, loadConfig } from "./config.js";
@@ -47,6 +49,9 @@ commands:
   wait <requestId> [--timeout-ms <n>] [--json]
                              （Phase 1）jobが終端状態になるかタイムアウトするまで待つ。タイムアウトしても
                              jobそのものは止まらない
+  collect <requestId> [--json]
+  collect --conversation-url <url> --since <ISO> --prompt-file <path> --baseline-assistant-count <n> [--out <dir>] [--json]
+                             送信せず、baseline と会話を照合して 1 件だけの回答を回収する
   result <requestId> [--out <path>] [--json]
                              （Phase 1）完了したjobのresponse.mdを取得する
   usage [--json] [--queue <dir>]
@@ -358,6 +363,15 @@ function printJob(job: JobRow, json: boolean): void {
       "⚠️ 送信状態が不明です。プロンプトがChatGPTへ実際に届いている可能性があります。このrequestIdを再送しないでください。人間がconversationUrl（result.jsonまたはブラウザ）を確認してください。\n",
     );
   }
+  if (
+    ["GENERATION_TIMEOUT", "GENERATION_TIMEOUT_ACTIVE", "CONVERSATION_MISMATCH"].includes(
+      job.errorCode ?? "",
+    )
+  ) {
+    process.stdout.write(
+      "Recovery: do not resubmit yet; run chatgpt-bridge collect <requestId> to prove and recover a visible reply without sending.\n",
+    );
+  }
 }
 
 /** JSON mode is a protocol, including failures: stdout contains exactly one object a caller can
@@ -424,21 +438,246 @@ async function cmdWait(
       return EXIT_CODES.invalidInput;
     }
     if (json) {
-      process.stdout.write(`${JSON.stringify({ ...job, timedOut })}\n`);
+      process.stdout.write(
+        timedOut
+          ? `${JSON.stringify(waitingTimeoutPayload(job))}\n`
+          : `${JSON.stringify({ ...job, timedOut: false })}\n`,
+      );
     } else {
-      printJob(job, false);
       if (timedOut) {
         // The CLI's own wait gave up; the detached run keeps going regardless
         // (11-STATE-MACHINE §5.4: CLI待機期限は「CLIだけ終了」— the job itself is untouched,
         // poll status/wait again later.
-        process.stdout.write("(wait timed out; the job itself is still running)\n");
+        process.stdout.write(`${waitingTimeoutText(job)}\n`);
+      } else {
+        printJob(job, false);
       }
     }
-    if (timedOut) return 1;
+    if (timedOut) return EXIT_CODES.waitingTimeout;
     return job.status === "completed" ? 0 : job.status === "manual_intervention_required" ? 3 : 1;
   } finally {
     store.close();
   }
+}
+
+export function waitingTimeoutPayload(job: JobRow) {
+  return {
+    status: "waiting_timeout" as const,
+    requestId: job.requestId,
+    retryable: true,
+    guidance:
+      "The job is still non-terminal. Call wait again, or collect <requestId> if a reply may already be visible.",
+    job,
+  };
+}
+
+export function waitingTimeoutText(job: JobRow): string {
+  return `status=waiting_timeout requestId=${job.requestId} retryable=true (current job status=${job.status}; this is not a final result). Run wait again or collect <requestId>.`;
+}
+
+async function readResultIfPresent(
+  path: string,
+): Promise<import("../contracts/types.js").BridgeResult | null> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as import("../contracts/types.js").BridgeResult;
+  } catch {
+    return null;
+  }
+}
+
+async function cmdCollect(
+  cfg: BridgeConfig,
+  requestId: string | undefined,
+  v: {
+    conversationUrl?: string | undefined;
+    since?: string | undefined;
+    baselineAssistantCount?: string | undefined;
+    promptFile?: string | undefined;
+    out?: string | undefined;
+    json: boolean;
+  },
+): Promise<number> {
+  const {
+    buildRecoveredResult,
+    collectLatestReply,
+    confirmedConversationUrl,
+    requestPathForCollect,
+    writeRecoveredResult,
+  } = await import("./collect.js");
+  const { jobStorePath, reconcileJob } = await import("./submit.js");
+  const { openJobStore } = await import("../state/jobstore.js");
+  const explicit = Boolean(
+    v.conversationUrl || v.since || v.baselineAssistantCount || v.promptFile,
+  );
+  if (requestId && explicit) {
+    printCommandError(
+      v.json,
+      "INVALID_REQUEST",
+      "collect accepts either <requestId> or explicit recovery evidence, not both",
+    );
+    return EXIT_CODES.invalidInput;
+  }
+  let identity: import("./collect.js").CollectIdentity;
+  let job: JobRow | null = null;
+  let requestDir: string | null = null;
+  if (requestId) {
+    const store = await openJobStore(jobStorePath(cfg));
+    try {
+      job = store.get(requestId);
+      if (job) job = await reconcileJob(store, job, cfg);
+      if (job?.status === "completed") {
+        printCommandError(v.json, "INVALID_REQUEST", `job ${requestId} is already completed`);
+        return EXIT_CODES.invalidInput;
+      }
+      const marker = await readMarker(markerPath(cfg.stateDir, requestId));
+      if (!marker || !Number.isInteger(marker.baselineAssistantCount)) {
+        printCommandError(
+          v.json,
+          "INVALID_REQUEST",
+          `collect requires a readable submit.marker for ${requestId}`,
+        );
+        return EXIT_CODES.invalidInput;
+      }
+      const resolvedRequestPath =
+        job?.requestPath ?? requestPathForCollect(marker.requestPath, cfg.runtimeDir, requestId);
+      requestDir = job?.requestDir ?? dirname(resolvedRequestPath);
+      const original = await readResultIfPresent(
+        job?.resultPath ?? join(requestDir, "result.json"),
+      );
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await readFile(resolvedRequestPath, "utf8"));
+      } catch (err) {
+        printCommandError(
+          v.json,
+          "INVALID_REQUEST",
+          `collect requires the request.json recorded by the marker: ${(err as Error).message}`,
+        );
+        return EXIT_CODES.invalidInput;
+      }
+      const { validateAndLoad } = await import("../contracts/request.js");
+      const loaded = await validateAndLoad(raw, requestDir);
+      if (loaded.kind !== "valid" || loaded.request.requestId !== requestId) {
+        printCommandError(
+          v.json,
+          "INVALID_REQUEST",
+          `request cannot support collect: ${loaded.kind === "valid" ? "requestId does not match marker" : loaded.errors.join("; ")}`,
+        );
+        return EXIT_CODES.invalidInput;
+      }
+      const conversationUrl = confirmedConversationUrl(
+        original?.conversationUrl,
+        marker.urlAfter,
+        loaded.request.conversationUrl,
+      );
+      if (!conversationUrl) {
+        printCommandError(
+          v.json,
+          "INVALID_REQUEST",
+          "no confirmed real conversation URL is available; refusing to navigate to a temporary or guessed id",
+        );
+        return EXIT_CODES.invalidInput;
+      }
+      identity = {
+        requestId,
+        conversationUrl,
+        submittedAt: marker.dispatchedAt ?? marker.writtenAt,
+        baselineAssistantCount: marker.baselineAssistantCount,
+        request: loaded.request,
+        original,
+        submittedPrompt: loaded.prompt,
+        attachmentNames: loaded.attachments.map((path) => basename(path)),
+      };
+    } finally {
+      store.close();
+    }
+  } else {
+    const baseline = Number(v.baselineAssistantCount);
+    if (
+      !v.conversationUrl ||
+      !v.since ||
+      !v.promptFile ||
+      !Number.isInteger(baseline) ||
+      baseline < 0 ||
+      Number.isNaN(Date.parse(v.since))
+    ) {
+      printCommandError(
+        v.json,
+        "INVALID_REQUEST",
+        "explicit collect requires --conversation-url, --since <ISO>, --prompt-file <path>, and --baseline-assistant-count <non-negative integer>",
+      );
+      return EXIT_CODES.invalidInput;
+    }
+    let submittedPrompt: string;
+    try {
+      submittedPrompt = await readFile(resolve(v.promptFile), "utf8");
+    } catch (err) {
+      printCommandError(
+        v.json,
+        "INVALID_REQUEST",
+        `cannot read --prompt-file: ${(err as Error).message}`,
+      );
+      return EXIT_CODES.invalidInput;
+    }
+    identity = {
+      requestId: null,
+      conversationUrl: v.conversationUrl,
+      submittedAt: new Date(v.since).toISOString(),
+      baselineAssistantCount: baseline,
+      submittedPrompt,
+    };
+  }
+  const outputDir = requestId
+    ? join(requestDir as string, "recovered")
+    : v.out
+      ? resolve(v.out)
+      : join(
+          cfg.runtimeDir,
+          "recovered",
+          `collect-${createHash("sha256").update(`${identity.conversationUrl}\0${identity.submittedAt}`).digest("hex").slice(0, 16)}`,
+        );
+  const ports = buildPorts(cfg, createLogger(cfg.logLevel), true, false);
+  const attempt = await collectLatestReply(identity, ports, join(outputDir, "images"));
+  if (!attempt.ok) {
+    printCommandError(
+      v.json,
+      attempt.code,
+      `${attempt.message}. No prompt was sent and no result was written.`,
+    );
+    return attempt.code === "COLLECT_LOCK_BUSY"
+      ? EXIT_CODES.beforeBrowser
+      : EXIT_CODES.afterBrowser;
+  }
+  const responsePath = join(outputDir, "response.md");
+  const recovered = buildRecoveredResult(
+    identity,
+    attempt.extraction,
+    responsePath,
+    cfg.bridgeVersion,
+    new Date(),
+    attempt.images,
+    attempt.warnings,
+  );
+  const written = await writeRecoveredResult(outputDir, recovered, attempt.extraction.markdown);
+  if (job) {
+    const store = await openJobStore(jobStorePath(cfg));
+    try {
+      store.update(job.requestId, {
+        status: "completed",
+        resultPath: written.resultPath,
+        errorCode: null,
+        updatedAt: new Date().toISOString(),
+      });
+    } finally {
+      store.close();
+    }
+  }
+  if (v.json)
+    process.stdout.write(
+      `${JSON.stringify({ result: recovered, resultPath: written.resultPath })}\n`,
+    );
+  else process.stdout.write(`recovered result: ${written.resultPath}\n`);
+  return EXIT_CODES.completed;
 }
 
 async function cmdResult(
@@ -469,7 +708,10 @@ async function cmdResult(
     );
     return EXIT_CODES.invalidInput;
   }
-  const responsePath = join(job.requestDir, "response.md");
+  const storedResult = await readResultIfPresent(
+    job.resultPath ?? join(job.requestDir, "result.json"),
+  );
+  const responsePath = storedResult?.responseFile ?? join(job.requestDir, "response.md");
   let markdown: string;
   try {
     markdown = await readFile(responsePath, "utf8");
@@ -724,6 +966,10 @@ export async function main(argv: string[]): Promise<number> {
       diff: { type: "string" },
       "allow-unverified": { type: "boolean", default: false },
       "timeout-ms": { type: "string" },
+      "conversation-url": { type: "string" },
+      since: { type: "string" },
+      "prompt-file": { type: "string" },
+      "baseline-assistant-count": { type: "string" },
       help: { type: "boolean", default: false },
     },
   });
@@ -786,6 +1032,15 @@ export async function main(argv: string[]): Promise<number> {
       }
       return cmdWait(cfg, positionals[1], timeoutMs, values.json ?? false);
     }
+    case "collect":
+      return cmdCollect(cfg, positionals[1], {
+        conversationUrl: values["conversation-url"],
+        since: values.since,
+        promptFile: values["prompt-file"],
+        baselineAssistantCount: values["baseline-assistant-count"],
+        out: values.out,
+        json: values.json ?? false,
+      });
     case "result":
       if (!positionals[1]) {
         printCommandError(values.json ?? false, "INVALID_REQUEST", "result requires <requestId>");

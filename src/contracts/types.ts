@@ -147,6 +147,10 @@ export interface BridgeResult {
   images: string[];
   warnings: string[];
   error: BridgeError | null;
+  /** A-153: result was recovered without sending a second prompt. */
+  recoveredBy?: "collect";
+  /** ISO time supplied by the durable submit marker or explicit collect invocation. */
+  recoveredFromSubmittedAt?: string;
 }
 
 export const EXIT_CODES = {
@@ -157,6 +161,8 @@ export const EXIT_CODES = {
   beforeBrowser: 4,
   /** submit handed no live runner off; distinct from an invalid request or a busy bridge. */
   spawnFailure: 5,
+  /** wait reached its caller deadline; the job itself remains non-terminal and retryable. */
+  waitingTimeout: 6,
 } as const;
 
 export function exitCodeFor(code: ErrorCode): number {

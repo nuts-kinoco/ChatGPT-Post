@@ -30,7 +30,8 @@ export function checkResultInvariants(result: BridgeResult): string[] {
   if (result.status === "completed") {
     if (err !== null) problems.push("completed must have error == null");
     if (result.submitted !== "yes") problems.push("completed must have submitted == yes");
-    if (result.observedPreset === null) problems.push("completed must have observedPreset");
+    if (result.observedPreset === null && result.recoveredBy !== "collect")
+      problems.push("completed must have observedPreset unless recoveredBy=collect");
     return problems;
   }
   if (err === null) {

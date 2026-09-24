@@ -4,6 +4,8 @@ import { atomicWriteFile } from "../contracts/atomic-write.js";
 
 export interface SubmitMarker {
   requestId: string;
+  /** Absolute request.json path, retained so direct `run` recovery does not require jobs.db. */
+  requestPath?: string;
   writtenAt: string;
   urlBefore: string;
   baselineAssistantCount: number;

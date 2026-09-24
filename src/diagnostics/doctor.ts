@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { access, constants, mkdir, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { access, constants, mkdir, readdir, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { checkDaemon, type DaemonHealth } from "../browser/daemon.js";
@@ -9,6 +11,8 @@ import { defaultLockDeps, judgeStale, readLockRecord } from "../state/lock.js";
 import { slotPath } from "../state/slot-lock.js";
 
 const run = promisify(execFile);
+const TEMP_ARTIFACT_MAX_FILES = 1_000;
+const TEMP_ARTIFACT_SCAN_BUDGET_MS = 250;
 
 export interface DoctorItem {
   name: string;
@@ -320,6 +324,72 @@ export async function checkRuntimeDirs(cfg: BridgeConfig): Promise<DoctorItem[]>
   return items;
 }
 
+/** Informational only: killed Playwright runs can leave multi-GB folders under %TEMP%. */
+export async function checkTemporaryArtifacts(
+  tempRoot = tmpdir(),
+  now = Date.now(),
+): Promise<DoctorItem> {
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(tempRoot, { withFileTypes: true });
+  } catch (err) {
+    return {
+      name: "temp.artifacts",
+      ok: true,
+      warn: true,
+      detail: `unable to inspect ${tempRoot}: ${(err as Error).message}`,
+    };
+  }
+  const candidates = entries.filter(
+    (entry) => entry.isDirectory() && /^(playwright-artifacts-|bridge-trace-)/i.test(entry.name),
+  );
+  if (candidates.length === 0)
+    return {
+      name: "temp.artifacts",
+      ok: true,
+      detail: "no leftover playwright-artifacts-* or bridge-trace-* folders",
+    };
+  let bytes = 0;
+  let oldest = now;
+  let filesSeen = 0;
+  let capped = false;
+  const deadline = Date.now() + TEMP_ARTIFACT_SCAN_BUDGET_MS;
+  const sizeOf = async (dir: string): Promise<void> => {
+    if (capped) return;
+    let children: Dirent<string>[];
+    try {
+      children = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const child of children) {
+      if (filesSeen >= TEMP_ARTIFACT_MAX_FILES || Date.now() >= deadline) {
+        capped = true;
+        return;
+      }
+      filesSeen++;
+      const path = join(dir, child.name);
+      try {
+        const info = await stat(path);
+        oldest = Math.min(oldest, info.mtimeMs);
+        if (child.isDirectory()) await sizeOf(path);
+        else bytes += info.size;
+      } catch {
+        /* raced with a cleanup; omit the entry */
+      }
+    }
+  };
+  for (const entry of candidates) await sizeOf(join(tempRoot, entry.name));
+  const ageHours = Math.max(0, Math.floor((now - oldest) / 3_600_000));
+  const gib = (bytes / 1024 ** 3).toFixed(bytes >= 10 * 1024 ** 3 ? 1 : 2);
+  return {
+    name: "temp.artifacts",
+    ok: true,
+    warn: true,
+    detail: `${candidates.length} leftover folder(s), ${gib} GiB${capped ? ` minimum from first ${filesSeen} entries (scan capped)` : ""}, oldest ${ageHours}h; inspect then clean ${tempRoot} manually (doctor never deletes them)`,
+  };
+}
+
 export async function runDoctor(deps: DoctorDeps): Promise<DoctorItem[]> {
   const items: DoctorItem[] = [];
   items.push(await checkNode());
@@ -331,6 +401,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorItem[]> {
   items.push(await checkLock(deps.cfg));
   items.push(...(await checkRuntimeDirs(deps.cfg)));
   items.push(await checkRuntimeLocation(deps.cfg.runtimeDir));
+  items.push(await checkTemporaryArtifacts());
   if (deps.loginProbe) {
     const lockOk = items.find((i) => i.name === "lock")?.ok;
     const profileOk = items.find((i) => i.name === "profile.exists")?.ok;

@@ -1,5 +1,23 @@
 # 17 — Operations（運用手順）
 
+## REL-2 recovery operations
+
+The request-ID form also supports direct `run` markers without a jobs.db row. It never changes a
+saved composer draft; a draft is reported as a result warning. Collection requires both exactly one
+new non-streaming reply and a matching preceding user prompt. It rejects temporary `WEB:` routes.
+For explicit recovery, `--since` is result metadata rather than a DOM timestamp filter, so provide
+the submitted text with `--prompt-file` for ownership proof. Generated images are captured with the
+normal bounded capture path.
+
+```powershell
+chatgpt-bridge collect <requestId> --json
+chatgpt-bridge collect --conversation-url https://chatgpt.com/c/... --since 2026-09-24T00:00:00Z --prompt-file .\prompt.md --baseline-assistant-count 12
+```
+
+`collect` takes the ordinary barrier lock and uses the daemon-aware browser path, but never enters, sends, clears, or edits a prompt. The request-ID form derives prompt, URL, submit time, and baseline from the request/marker (including direct `run` without a jobs.db row); the explicit form supplies its prompt with `--prompt-file`. `--since` is recovery metadata, not an unenforced DOM-time filter. Only one new non-streaming assistant reply whose preceding user turn matches that prompt is accepted. A saved composer draft is left untouched and reported in warnings. Success is written under `recovered/` with `recoveredBy: "collect"`, including bounded generated-image capture; the original result remains intact. A missing, multiple, URL-mismatched, prompt-mismatched, streaming, temporary `WEB:` URL, or unreadable-identity candidate fails closed.
+
+`doctor` now reports residual `%TEMP%\playwright-artifacts-*` and `%TEMP%\bridge-trace-*` folders with aggregate size and age. It suggests manual cleanup and never deletes them.
+
 | 項目 | 値 |
 |---|---|
 | 文書版 | 2.0（Phase 7 全面改訂、2026-09-15。契約 1.2） |

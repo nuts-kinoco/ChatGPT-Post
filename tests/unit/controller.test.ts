@@ -607,6 +607,30 @@ describe("RunController", () => {
     expect(out.exitCode).toBe(1);
   });
 
+  it("A-153: a stable rendered reply with a stuck stop button is rechecked by fresh navigation", async () => {
+    let reloaded = false;
+    let reopenCalls = 0;
+    const f = fake({
+      openConversation: async () => {
+        reloaded = true;
+        reopenCalls++;
+        return { kind: "ok" };
+      },
+      observe: async (t) =>
+        observation({
+          t,
+          assistantCount: 1,
+          streaming: !reloaded,
+          composerReady: reloaded,
+          copyAvailable: reloaded,
+        }),
+    });
+    const out = await run(f);
+    expect(reopenCalls).toBe(1);
+    expect(out.result?.status).toBe("completed");
+    expect(out.result?.warnings).toContain("stuck_stop_recovered_by_fresh_navigation");
+  });
+
   it("empty extraction: EXTRACTION_FAILED", async () => {
     const f = fake({ extractLatest: async () => ({ kind: "empty", cause: "empty" }) });
     const out = await run(f);

@@ -150,6 +150,65 @@ describe("ChatGptPage model picker readiness on a fixture", () => {
   }, 10_000);
 });
 
+describe("ChatGptPage recovery ownership fixtures (A-154)", () => {
+  it("matches only the user turn immediately preceding the recovered reply", async ({ skip }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const recovery = await browser.newPage();
+    try {
+      await recovery.setContent(`
+        <div data-message-author-role="user">older prompt</div>
+        <div data-message-author-role="assistant">older reply</div>
+        <div data-message-author-role="user">Submitted\r\nprompt</div>
+        <div data-message-author-role="assistant">candidate reply</div>
+      `);
+      const chatgpt = new ChatGptPage(recovery, { verifiedOnly: true });
+      await expect(chatgpt.verifyLatestReplyOwnership("Submitted\nprompt", [])).resolves.toEqual({
+        kind: "match",
+      });
+      await expect(
+        chatgpt.verifyLatestReplyOwnership("different prompt", []),
+      ).resolves.toMatchObject({
+        kind: "mismatch",
+      });
+    } finally {
+      await recovery.close();
+    }
+  });
+
+  it("opens collect with a saved draft without altering its text", async ({ skip }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const recovery = await browser.newPage();
+    const url = "https://chatgpt.com/c/recovery-proof";
+    try {
+      await recovery.route(url, (route) =>
+        route.fulfill({
+          contentType: "text/html",
+          body: `
+            <section data-turn="assistant">existing reply</section>
+            <div id="prompt-textarea" contenteditable="true">human saved draft</div>
+          `,
+        }),
+      );
+      const chatgpt = new ChatGptPage(recovery, { verifiedOnly: true, newChatTimeoutMs: 2_000 });
+      await expect(chatgpt.openConversationForCollect(url)).resolves.toEqual({
+        kind: "ok",
+        draftPresent: true,
+      });
+      await expect(recovery.locator("#prompt-textarea").innerText()).resolves.toBe(
+        "human saved draft",
+      );
+    } finally {
+      await recovery.close();
+    }
+  });
+});
+
 describe("ChatGptPage prompt cleanup on a fixture", () => {
   it("clears a mismatched composer before returning", async ({ skip }) => {
     if (!browser) {

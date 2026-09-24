@@ -1,5 +1,18 @@
 # 13 — Error Model
 
+## REL-2 recovery update
+
+REL-2b strengthens this proof: `collect` requires the user turn immediately before the candidate
+reply to match the submitted prompt, uses only a real `/c/<id>` URL (never a temporary `WEB:`
+route), and leaves any existing composer draft untouched while recording a warning. Direct `run`
+markers are recoverable without a jobs.db row. `--since` is recovery metadata, not a DOM timestamp
+filter; explicit recovery therefore also supplies `--prompt-file`. Generated images use the normal
+bounded capture path.
+
+For terminal `GENERATION_TIMEOUT`, `GENERATION_TIMEOUT_ACTIVE`, `SUBMIT_STATE_UNKNOWN`, and `CONVERSATION_MISMATCH`, the first recovery step is `chatgpt-bridge collect <requestId>`, not resubmission. It reopens only a confirmed real recorded conversation and fails closed unless the assistant baseline proves exactly one new non-streaming reply whose immediately preceding user turn matches the submitted prompt. A saved composer draft is preserved and reported as a warning. It writes a separately marked recovered result and preserves the original failure record.
+
+`wait` deadline is not terminal: it returns exit code 6 with `status: "waiting_timeout"`, `retryable: true`, and the nested job. Call `wait` again or use `collect` when a reply may already be visible.
+
 | 項目 | 値 |
 |---|---|
 | 文書版 | 1.3 (Phase 3、Codex レビュー反映。FROZEN FOR MVP v1.0、2026-09-15) |
@@ -29,7 +42,7 @@ type BridgeError = {
 | `INVALID_CONFIG` | failed | 2 | 前 | 書く | no | PRIOR_RESULT_CHECKED | プロファイルパスが通常の User Data を指す（realpath 比較）、または symlink / junction を含む。`CHATGPT_BRIDGE_PROFILE_DIR` / `--profile-dir` を修正 |
 | `ALREADY_PROCESSED` | — | 4 | 前 | **書かない**（既存を保持） | — | REQUEST_RECEIVED | 既存 result.json を読む |
 | `ALREADY_RUNNING` | — | 4 | 前 / 後（`lock_lost`） | **書かない** | — | VALIDATED, PROMPT_ENTERED（`cause: lock_lost`。marker 未書込・送信なし） | 実行中のブリッジ終了後に再実行。stale なら `doctor` の案内に従う |
-| `SUBMIT_STATE_UNKNOWN` | failed | 1 | 前 | 書く | unknown | LOCK_ACQUIRED | 前回、送信直前〜終端前にプロセスが終了した（または同じ requestId を別ディレクトリで再実行した）。ChatGPT の会話一覧を人間が確認。再送は新 requestId で |
+| `SUBMIT_STATE_UNKNOWN` | failed | 1 | 前 | 書く | unknown | LOCK_ACQUIRED | `collect <requestId>` を先に実行する。marker の URL/baseline で 1 件だけを証明できた場合のみ回収する。再送しない |
 | `PROFILE_IN_USE` | failed | 4 | 前 | 書く | no | MARKER_CHECKED | 専用プロファイルを開いている Chrome を閉じる |
 | `BROWSER_LAUNCH_FAILED` | failed | 4 | 前（起動失敗） | 書く（trace 無し） | no | PROFILE_CHECKED | Chrome / Chromium の起動失敗。`doctor` でブラウザ実行ファイルを確認 |
 | `INVALID_STATE` | failed | 1 | 後 | 書く | no | BROWSER_STARTED | chatgpt.com 以外のページ／ページロード失敗の上限超過。専用プロファイルの状態を `login` で確認 |
@@ -41,9 +54,9 @@ type BridgeError = {
 | `MODEL_NOT_VERIFIABLE` | failed | 1 | 後 | 書く | no | NEW_CHAT_READY, PROMPT_ENTERED, PROMPT_SUBMITTING（`cause: preset_changed`、click 前に中止） | 表示ラベルを preset に一意に逆引きできない／選択後の表示が不一致／送信直前・click 直前に表示が変わった。`inspect-ui` |
 | `PROMPT_INPUT_FAILED` | failed | 1 | 後 | 書く | no | PRESET_VERIFIED | 入力欄内容が prompt と不一致（長さ上限等） |
 | `PROMPT_SUBMIT_FAILED` | failed | 1 | 後 | 書く | no / **unknown** | AUTH_CHECKED（新規チャット失敗・生成中・既存会話）, PROMPT_SUBMITTING（クリック失敗・解決済み送信ボタンの消失・無効化） | 送信状態不明の場合は会話一覧を人間が確認 |
-| `GENERATION_TIMEOUT` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | 真にスタール（`streaming === false`）。`conversationUrl` を人間が確認。再送しない |
-| `GENERATION_TIMEOUT_ACTIVE` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | タイムアウト到達時点で `streaming === true`（2026-09-17 #124）。生成が継続中の可能性が高い。screenshot / `doctor` の profile.free・lock を確認するか人間に聞いてから判断。同じプロファイルへ即座に再送しない |
-| `CONVERSATION_MISMATCH` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | A-116（2026-09-18、ChatGPT Pro 再設計レビュー §3.1 で実証）: 送信直後に束縛した会話 URL と現在のブラウザの URL が食い違った。他セッション（人間の手動操作を含む）が同じブラウザで別のチャットを開いた可能性が高い。`conversationUrl` で本来の会話を確認してから、新しい requestId で再送 |
+| `GENERATION_TIMEOUT` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | `collect <requestId>` を先に実行する。元の失敗結果を残したまま、baseline+1 の唯一の返信だけ回収する。再送しない |
+| `GENERATION_TIMEOUT_ACTIVE` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | 生成継続の可能性が高い。`collect <requestId>` は stop が消えた後だけ回収する。screenshot / `doctor` を確認し、即時再送しない |
+| `CONVERSATION_MISMATCH` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | `collect <requestId>` は元の locked URL を再オープンして baseline+1 を検証する。証明不能なら fail closed。再送しない |
 | `CHAT_ERROR` | failed | 1 | 後 | 書く | yes | WAITING/GENERATING/STABILIZING | `cause`: `banner`（エラーバナー）/ `network` / `output_truncated`（「続きを生成」表示）/ `multiple_responses`（A/B 等）。`conversationUrl` を確認 |
 | `DOM_CHANGED` | failed | 1 | 後 | 書く | no | BROWSER_STARTED 〜 PROMPT_ENTERED | UI 変更。`artifacts` の `inspect-ui.json` を基に selectors を更新。**`PROMPT_SUBMITTING` 以降は発生させない**（送信ボタンは境界前に解決済み、抽出は降格で扱う） |
 | `EXTRACTION_FAILED` | failed | 1 | 後 | 書く | yes | EXTRACTING | `cause`: `empty` / `canvas`。回答は生成された可能性。`conversationUrl` から手動取得 |

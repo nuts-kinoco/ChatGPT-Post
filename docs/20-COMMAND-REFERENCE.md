@@ -1,5 +1,14 @@
 # ChatGPT Web Bridge — コマンドリファレンス（貼り付け用）
 
+## `collect` (REL-2)
+
+```powershell
+chatgpt-bridge collect <requestId> [--json]
+chatgpt-bridge collect --conversation-url <url> --since <ISO> --prompt-file <path> --baseline-assistant-count <n> [--out <dir>] [--json]
+```
+
+Recovery only; it never submits, clears, or edits the composer. It accepts exactly `baseline + 1` non-streaming assistant turn only when its immediately preceding user turn matches the submitted prompt; a saved draft is left untouched and recorded as a warning. The request-ID form works for both `submit` and direct `run` markers, prefers a real result URL over a temporary `WEB:` marker URL, and fails closed without one. The explicit form requires `--prompt-file` for the same ownership proof. `--since` is retained recovery metadata for result timing; it is not a DOM timestamp filter. Recovered generated images are captured with the normal bounded capture path. `wait ... --timeout-ms` emits exit 6 and JSON `status: "waiting_timeout"` at its caller deadline; this is retryable and never a final `running` result.
+
 対象バージョン: 0.1.0（Phase 6 時点、2026-09-15、契約 1.2）。このファイルは単体で他の文書やチャットに貼り付けられるよう、前提を含めて自己完結させている。
 
 ## 0. 前提

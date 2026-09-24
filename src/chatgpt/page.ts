@@ -172,6 +172,58 @@ export class ChatGptPage implements ChatGptPort {
     return this.page.url();
   }
 
+  /**
+   * Recovery has no right to infer reply ownership from a count alone. ChatGPT renders turns in
+   * conversation order, so inspect the user turn immediately before the candidate assistant turn.
+   * Attachments are UI chips outside the prompt body on some variants; when they are rendered into
+   * the turn text, require the exact normalised prompt prefix and every submitted file name.
+   */
+  async verifyLatestReplyOwnership(
+    prompt: string,
+    attachmentNames: string[],
+  ): Promise<{ kind: "match" } | { kind: "mismatch"; cause: string }> {
+    const expected = normalisePrompt(prompt);
+    const observed = await this.page
+      .evaluate(() => {
+        const turns: Array<{ role: string; text: string }> = [];
+        const messageNodes = document.querySelectorAll(
+          '[data-message-author-role="user"], [data-message-author-role="assistant"]',
+        );
+        const nodes =
+          messageNodes.length > 0
+            ? messageNodes
+            : document.querySelectorAll(
+                'section[data-turn="user"], section[data-turn="assistant"]',
+              );
+        for (const node of Array.from(nodes)) {
+          const role =
+            node.getAttribute("data-message-author-role") ?? node.getAttribute("data-turn");
+          if (role === "user" || role === "assistant")
+            turns.push({ role, text: node.textContent ?? "" });
+        }
+        const assistant = turns.length - 1;
+        if (assistant < 1 || turns[assistant]?.role !== "assistant") return null;
+        const user = turns[assistant - 1];
+        return user?.role === "user" ? user.text : null;
+      })
+      .catch(() => null);
+    if (observed === null)
+      return { kind: "mismatch", cause: "candidate reply has no preceding readable user turn" };
+    const actual = normalisePrompt(observed);
+    if (attachmentNames.length === 0)
+      return actual === expected
+        ? { kind: "match" }
+        : { kind: "mismatch", cause: "preceding user turn does not match submitted prompt" };
+    const names = attachmentNames.map((name) => normalisePrompt(name));
+    const hasAllNames = names.every((name) => actual.includes(name));
+    return actual === expected || (actual.startsWith(expected) && hasAllNames)
+      ? { kind: "match" }
+      : {
+          kind: "mismatch",
+          cause: "preceding user turn does not match submitted prompt and attachment evidence",
+        };
+  }
+
   private async detectLocale(): Promise<void> {
     const lang = await this.page
       .evaluate(() => document.documentElement.lang || "")
@@ -265,6 +317,32 @@ export class ChatGptPage implements ChatGptPort {
     | { kind: "retry"; cause: string }
     | { kind: "dom_unexpected"; element: string; tried: string[] }
   > {
+    const opened = await this.openConversationInternal(url, false);
+    if (opened.kind !== "ok") return opened;
+    return { kind: "ok" };
+  }
+
+  /** Read-only recovery open: a human's unsent draft is evidence to preserve, never a blocker. */
+  async openConversationForCollect(
+    url: string,
+  ): Promise<
+    | { kind: "ok"; draftPresent: boolean }
+    | { kind: "failed"; cause: NewChatFailure }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  > {
+    return this.openConversationInternal(url, true);
+  }
+
+  private async openConversationInternal(
+    url: string,
+    allowDraft: boolean,
+  ): Promise<
+    | { kind: "ok"; draftPresent: boolean }
+    | { kind: "failed"; cause: NewChatFailure }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  > {
     let target: URL;
     try {
       target = new URL(url);
@@ -295,8 +373,8 @@ export class ChatGptPage implements ChatGptPort {
         if (await exists(this.page, "stopButton", this.sel))
           return { kind: "failed", cause: "generating" };
         const text = (await composer.locator.innerText().catch(() => "")).trim();
-        if (text.length > 0) return { kind: "failed", cause: "composer_not_empty" };
-        return { kind: "ok" };
+        if (text.length > 0 && !allowDraft) return { kind: "failed", cause: "composer_not_empty" };
+        return { kind: "ok", draftPresent: text.length > 0 };
       }
       await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 250);
     }

@@ -88,6 +88,12 @@ export const DEFAULT_PHASE_LIMITS_MS: Partial<Record<StateName, number>> = {
 };
 
 const BROWSER_RETRY_WAIT_MS = 1_000;
+/**
+ * A-153: a rendered answer with a permanently stuck stop button was observed after 203 s.
+ * Fifteen seconds of unchanged assistant text is deliberately much longer than normal DOM paint
+ * gaps, yet bounded so a truly still-changing response keeps the existing active-timeout safety.
+ */
+export const STUCK_STOP_STABILITY_MS = 15_000;
 
 /**
  * The pre-submit watchdog spans every documented phase allowance at every permitted attempt,
@@ -536,6 +542,7 @@ export class RunController {
         try {
           await lock.writeMarker(this.requireId(), {
             requestId: this.requireId(),
+            requestPath: this.opts.requestPath,
             writtenAt: this.ports.clock.now().toISOString(),
             urlBefore: b.url,
             baselineAssistantCount: b.assistantCount,
@@ -731,6 +738,7 @@ export class RunController {
   private rawRequest: unknown = null;
   private history: Observation[] = [];
   private dispatchedAt = 0;
+  private stuckStopRecoveryAttempted = false;
 
   private async observeLoop(): Promise<void> {
     const cfg: CompletionConfig = {
@@ -814,11 +822,88 @@ export class RunController {
         continue;
       }
       const verdict = judge(this.history, baseline, cfg);
+      if (verdict.type === "VERDICT_TIMEOUT_ACTIVE" && this.stableStuckStopCandidate(baseline)) {
+        const recovered = await this.recheckStuckStopAfterNavigation(baseline, url);
+        if (recovered) {
+          this.observing = false;
+          await this.dispatch({ type: "VERDICT_COMPLETE" });
+          return;
+        }
+      }
       const wasObserving = this.observing;
       await this.dispatch(verdict);
       if (!wasObserving || !this.observing) return;
       await this.ports.clock.sleep(interval);
     }
+  }
+
+  private stableStuckStopCandidate(baseline: number): boolean {
+    if (this.stuckStopRecoveryAttempted || this.history.length === 0) return false;
+    const latest = this.history[this.history.length - 1];
+    if (
+      !latest ||
+      latest.assistantCount !== baseline + 1 ||
+      !latest.streaming ||
+      latest.lastAssistantEmpty
+    )
+      return false;
+    let changedAt: number | null = null;
+    let previous: string | null = null;
+    for (const observation of this.history) {
+      if (observation.assistantCount <= baseline) continue;
+      if (observation.lastAssistantHash !== previous) {
+        previous = observation.lastAssistantHash;
+        changedAt = observation.t;
+      }
+    }
+    return changedAt !== null && latest.t - changedAt >= STUCK_STOP_STABILITY_MS;
+  }
+
+  /** Fresh navigation is the only automatic recovery action: it never enters or dispatches text. */
+  private async recheckStuckStopAfterNavigation(
+    baseline: number,
+    observedUrl: string,
+  ): Promise<boolean> {
+    this.stuckStopRecoveryAttempted = true;
+    const target = sanitiseConversationUrl(this.conversationUrl);
+    if (!target) return false;
+    const opened = await this.ports.chatgpt.openConversation(target).catch(() => null);
+    if (opened?.kind !== "ok") {
+      this.warnings.push("stuck_stop_recheck_failed: conversation reopen failed");
+      return false;
+    }
+    const actual = sanitiseConversationUrl(await this.ports.chatgpt.currentUrl().catch(() => ""));
+    if (actual !== target) {
+      this.warnings.push(
+        `stuck_stop_recheck_failed: expected ${target}, observed ${actual ?? observedUrl}`,
+      );
+      return false;
+    }
+    const fresh = await this.ports.chatgpt
+      .observe(this.ports.clock.monotonic() - this.dispatchedAt)
+      .catch(() => null);
+    if (!fresh) {
+      this.warnings.push("stuck_stop_recheck_failed: observation failed");
+      return false;
+    }
+    const complete =
+      fresh.assistantCount === baseline + 1 &&
+      !fresh.streaming &&
+      !fresh.lastAssistantEmpty &&
+      fresh.composerReady &&
+      fresh.copyAvailable &&
+      !fresh.truncated &&
+      fresh.errorBanner === "none" &&
+      fresh.challenge === "none";
+    if (!complete) {
+      this.warnings.push(
+        "stuck_stop_recheck_incomplete: fresh conversation still does not prove completion",
+      );
+      return false;
+    }
+    this.history.push(fresh);
+    this.warnings.push("stuck_stop_recovered_by_fresh_navigation");
+    return true;
   }
 
   private buildResult(): BridgeResult {
@@ -976,7 +1061,7 @@ export function messageFor(code: ErrorCode, cause: string | null): string {
     case "INVALID_CONFIG":
       return "プロファイルパスが通常のブラウザプロファイルを指すか、symlink / junction を含みます。CHATGPT_BRIDGE_PROFILE_DIR を専用ディレクトリにしてください。";
     case "SUBMIT_STATE_UNKNOWN":
-      return "前回の実行が送信直前〜終端前に終了したため送信状態が不明です。ChatGPT の会話一覧を確認し、再送する場合は新しい requestId を使ってください。";
+      return "前回の実行が送信直前〜終端前に終了したため送信状態が不明です。再送せず先に chatgpt-bridge collect <requestId> を実行し、marker の会話 URL/baseline で唯一の回答を安全に回収してください。";
     case "PROFILE_IN_USE":
       return "専用プロファイルを別の Chrome が開いています。そのウィンドウを閉じてから再実行してください。";
     case "BROWSER_LAUNCH_FAILED":
@@ -1000,11 +1085,11 @@ export function messageFor(code: ErrorCode, cause: string | null): string {
     case "PROMPT_SUBMIT_FAILED":
       return "送信操作に失敗しました。submitted が unknown の場合は ChatGPT の会話一覧で送信有無を確認してください。";
     case "GENERATION_TIMEOUT":
-      return "回答の生成が timeoutMs 内に終わりませんでした（停止ボタンは既に消えており、ページは停止しているように見えます）。conversationUrl を開いて確認してから再送してください。新しい requestId を使う場合も、artifacts の screenshot で本当に生成が止まっているかを先に確認してください。";
+      return "回答の生成が timeoutMs 内に終わりませんでした。再送せず先に chatgpt-bridge collect <requestId> を実行してください。元の result を保持したまま、marker baseline から唯一の回答だけを回収します。";
     case "GENERATION_TIMEOUT_ACTIVE":
-      return "回答の生成が timeoutMs 内に終わりませんでしたが、タイムアウト時点でまだ生成中でした（停止ボタンが表示されていた）。CLI が待つのを諦めただけで、ChatGPT 側の生成はブラウザ上で続いている可能性が高いです。⚠️ このまま新しい requestId で再送すると、同じ専有プロファイルの中で生成が並走し、他セッション（人間の手動操作を含む）と衝突します。再送する前に必ず (1) artifacts/<requestId>/screenshot.png で本当に止まっているか確認する (2) chatgpt-bridge doctor の profile.free/lock を見る (3) それでも不明なら人間に確認する、のいずれかを行ってください。timeoutMs を伸ばして待つ方が安全な場合もあります。";
+      return "タイムアウト時点で停止ボタンが残り、生成継続の可能性があります。再送しないでください。停止後に chatgpt-bridge collect <requestId> を実行すると、唯一の完了回答だけを安全に回収できます。";
     case "CONVERSATION_MISMATCH":
-      return `送信した会話とは別の会話が開かれたため、回答の回収を中止しました（${cause ?? "unknown"}）。他のセッション（人間の手動操作を含む）がブラウザで別のチャットを開いた可能性があります。conversationUrl を開いて本来の会話の状態を確認してから、新しい requestId で再送してください。`;
+      return `送信した会話とは別の会話が開かれたため、回答の回収を中止しました（${cause ?? "unknown"}）。再送せず先に chatgpt-bridge collect <requestId> を実行してください。locked conversation URL を開き直し、marker baseline で唯一の回答だけを回収します。`;
     case "CHAT_ERROR":
       return `ChatGPT 側でエラーが発生しました（${cause ?? "unknown"}）。conversationUrl を開いて確認してください。`;
     case "DOM_CHANGED":
