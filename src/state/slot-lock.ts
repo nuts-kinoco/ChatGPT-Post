@@ -115,7 +115,10 @@ export async function checkSlotsBusy(
     const path = slotPath(basePath, i);
     const record: LockRecord | null = await readLockRecord(path);
     const verdict = await judgeStale(path, record, fullDeps);
-    if (verdict.stale) return null; // this slot is free -> not all busy
+    // A live process with an expired heartbeat is diagnostic-only abandoned: it is
+    // deliberately not a free slot, because acquiring would just spawn a child that
+    // immediately loses ALREADY_RUNNING to the still-owned lock.
+    if (verdict.stale && verdict.reclaimable) return null; // this slot is free
     busyReasons.push(`slot ${i}: ${verdict.reason}`);
   }
   return `all ${slots} generation slots busy (${busyReasons.join("; ")})`;

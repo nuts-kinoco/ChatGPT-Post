@@ -1,8 +1,9 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { hostname as osHostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BridgeConfig } from "../../src/cli/config.js";
+import { main } from "../../src/cli/main.js";
 import {
   jobStorePath,
   reconcileJob,
@@ -55,6 +56,22 @@ async function writeRequest(id: string, promptText = "hi"): Promise<string> {
 }
 
 describe("submitJob (Phase 1, A-132)", () => {
+  it("submit --json always emits a machine-readable invalid-request failure", async () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(await main(["submit", "--json"])).toBe(2);
+      expect(JSON.parse(writes.join(""))).toMatchObject({
+        error: { code: "INVALID_REQUEST", message: expect.any(String) },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("validates, records a queued->running job, and calls the injected spawnRunner exactly once", async () => {
     const reqPath = await writeRequest("20260918T000001Z-aaaaaaaa");
     const calls: string[] = [];
@@ -110,7 +127,10 @@ describe("submitJob (Phase 1, A-132)", () => {
       throw new Error("EACCES: could not open submit.log");
     });
     expect(out.ok).toBe(false);
-    if (!out.ok) expect(out.cause).toMatch(/failed to start the run/);
+    if (!out.ok) {
+      expect(out.code).toBe("SUBMIT_SPAWN_FAILED");
+      expect(out.cause).toMatch(/failed to start the run/);
+    }
     const store = await openJobStore(jobStorePath(cfg));
     try {
       const job = store.get("20260918T000008Z-22222222");
@@ -127,6 +147,7 @@ describe("submitJob (Phase 1, A-132)", () => {
     const reqPath = await writeRequest("20260918T000009Z-33333333");
     const out = await submitJob(cfg, reqPath, async () => null);
     expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.code).toBe("SUBMIT_SPAWN_FAILED");
     const store = await openJobStore(jobStorePath(cfg));
     try {
       expect(store.get("20260918T000009Z-33333333")?.status).toBe("failed");
@@ -192,6 +213,41 @@ describe("submitJob (Phase 1, A-132)", () => {
     } finally {
       store.close();
     }
+  });
+
+  it("A-151: an alive owner with only a stale heartbeat remains busy and never false-starts a detached child", async () => {
+    const reqPath = await writeRequest("20260924T000001Z-staleown");
+    await mkdir(cfg.locksDir, { recursive: true });
+    await writeFile(
+      join(cfg.locksDir, "bridge.lock"),
+      JSON.stringify({
+        pid: process.pid,
+        startedAt: "2000-01-01T00:00:00.000Z",
+        heartbeatAt: "2000-01-01T00:00:00.000Z",
+        token: "alive-but-stale",
+        command: "run",
+        requestId: null,
+        hostname: osHostname(),
+      }),
+    );
+    let calls = 0;
+    const out = await submitJob(
+      cfg,
+      reqPath,
+      async () => {
+        calls++;
+        return 1;
+      },
+      {
+        isProcessAlive: () => true,
+        processStartedAt: async () => new Date("2000-01-01T00:00:00.000Z"),
+        now: () => new Date("2026-09-24T00:00:00.000Z"),
+        pid: process.pid + 1,
+        hostname: osHostname(),
+      },
+    );
+    expect(out).toMatchObject({ ok: false, code: "ALREADY_RUNNING" });
+    expect(calls).toBe(0);
   });
 
   it("Phase 3 MVP (A-136): with maxConcurrency > 1, a busy bridge.lock alone no longer refuses to spawn -- only all slots busy does", async () => {

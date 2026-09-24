@@ -116,13 +116,9 @@ describe("state machine (11-STATE-MACHINE)", () => {
     expect(done.next.terminal?.exitCode).toBe(0);
   });
 
-  it("success path effects are WRITE_RESPONSE_MD, STOP_TRACE(success), WRITE_RESULT", () => {
+  it("success path writes the terminal result before trace finalization", () => {
     const t = transition(at("EXTRACTING"), { type: "EXTRACTED" });
-    expect(t.effects.map((e) => e.kind)).toEqual([
-      "WRITE_RESPONSE_MD",
-      "STOP_TRACE",
-      "WRITE_RESULT",
-    ]);
+    expect(t.effects.map((e) => e.kind)).toEqual(["WRITE_RESPONSE_MD", "WRITE_RESULT"]);
   });
 
   it("DISPATCH_SUBMIT only appears on PROMPT_ENTERED --MARKER_WRITTEN--> PROMPT_SUBMITTING", () => {
@@ -252,13 +248,13 @@ describe("state machine (11-STATE-MACHINE)", () => {
     ]);
   });
 
-  it("failure effects after browser: CAPTURE, STOP_TRACE, WRITE_RESULT, CLOSE_BROWSER, RELEASE_LOCK", () => {
+  it("failure effects write the terminal result before capture/trace diagnostics", () => {
     const t = transition(at("GENERATING"), { type: "VERDICT_TIMEOUT" });
     expect(t.effects.map((e) => e.kind)).toEqual([
       "STOP_OBSERVATION_LOOP",
+      "WRITE_RESULT",
       "CAPTURE",
       "STOP_TRACE",
-      "WRITE_RESULT",
       "CLOSE_BROWSER",
       "RELEASE_LOCK",
       "EXIT",

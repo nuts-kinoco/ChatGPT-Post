@@ -78,7 +78,9 @@ export type Event =
   | { type: "WRITE_FAILED"; file: "response" | "result"; cause: string }
   | { type: "DOM_UNEXPECTED"; element: string; tried: string[] }
   | { type: "RETRYABLE_STEP_FAILED"; step: string; cause: string }
-  | { type: "TIMEOUT"; phase: StateName };
+  | { type: "TIMEOUT"; phase: StateName }
+  /** Process lifecycle interruption (SIGINT/SIGTERM/SIGBREAK). */
+  | { type: "RUN_INTERRUPTED"; cause: string };
 
 export type EventType = Event["type"];
 
@@ -107,6 +109,7 @@ export type Effect =
   | { kind: "STOP_OBSERVATION_LOOP" }
   | { kind: "EXTRACT_LATEST" }
   | { kind: "WRITE_RESPONSE_MD" }
+  | { kind: "SEAL_TRACE" }
   | { kind: "STOP_TRACE"; mode: "failure" | "success" | "best-effort" }
   | { kind: "CAPTURE"; bestEffort: boolean }
   | { kind: "INSPECT_UI_REPORT" }
@@ -121,6 +124,7 @@ export type EffectKind = Effect["kind"];
 /** Effects that never produce an event; failures go to result.json.warnings[] (11 §1). */
 export const BEST_EFFORT_EFFECTS: ReadonlySet<EffectKind> = new Set<EffectKind>([
   "CAPTURE",
+  "SEAL_TRACE",
   "STOP_TRACE",
   "INSPECT_UI_REPORT",
   "UPDATE_MARKER",
@@ -224,9 +228,10 @@ function stay(s: MachineState, effects: Effect[]): Transition {
 
 const FAIL_BEFORE_BROWSER: Effect[] = [{ kind: "WRITE_RESULT" }, { kind: "RELEASE_LOCK" }];
 const FAIL_AFTER_BROWSER: Effect[] = [
+  // A-151: result.json is the terminal protocol.  Diagnostics can never prevent it.
+  { kind: "WRITE_RESULT" },
   { kind: "CAPTURE", bestEffort: true },
   { kind: "STOP_TRACE", mode: "failure" },
-  { kind: "WRITE_RESULT" },
   { kind: "CLOSE_BROWSER", bestEffort: true },
   { kind: "RELEASE_LOCK" },
 ];
@@ -272,6 +277,9 @@ function complete(s: MachineState): Transition {
       terminal: { name: "COMPLETED", code: null, cause: null, exitCode: 0, writesResult: true },
     },
     effects: [
+      // The terminal result was already written in WRITING_RESULT.  Finalize the
+      // bounded pre-submit trace afterwards so artifact work cannot block success.
+      { kind: "STOP_TRACE", mode: "success" },
       { kind: "CLOSE_BROWSER", bestEffort: true },
       { kind: "RELEASE_LOCK" },
       { kind: "EXIT", code: 0 },
@@ -309,14 +317,26 @@ export function transition(s: MachineState, ev: Event): Transition {
   if (s.terminal) return stay(s, []);
 
   // Global handlers (browser started or later)
+  if (ev.type === "RUN_INTERRUPTED") {
+    return fail(s, "INTERNAL_ERROR", {
+      cause: `run interrupted: ${ev.cause}`,
+      effects: [
+        { kind: "STOP_OBSERVATION_LOOP" },
+        { kind: "WRITE_RESULT" },
+        { kind: "STOP_TRACE", mode: "best-effort" },
+        { kind: "CLOSE_BROWSER", bestEffort: true },
+        { kind: "RELEASE_LOCK" },
+      ],
+    });
+  }
   if (ev.type === "BROWSER_CRASHED" && !PRE_BROWSER.has(s.name)) {
     return fail(s, "BROWSER_CRASHED", {
       cause: ev.cause,
       effects: [
         { kind: "STOP_OBSERVATION_LOOP" },
+        { kind: "WRITE_RESULT" },
         { kind: "CAPTURE", bestEffort: true },
         { kind: "STOP_TRACE", mode: "best-effort" },
-        { kind: "WRITE_RESULT" },
         { kind: "CLOSE_BROWSER", bestEffort: true },
         { kind: "RELEASE_LOCK" },
       ],
@@ -519,6 +539,7 @@ export function transition(s: MachineState, ev: Event): Transition {
         case "SUBMIT_DISPATCHED":
           return move(s, "WAITING_FOR_RESPONSE", [
             { kind: "UPDATE_MARKER" },
+            { kind: "SEAL_TRACE" },
             { kind: "START_OBSERVATION_LOOP" },
           ]);
         case "SUBMIT_FAILED":
@@ -589,7 +610,6 @@ export function transition(s: MachineState, ev: Event): Transition {
         case "EXTRACTED":
           return move(s, "WRITING_RESULT", [
             { kind: "WRITE_RESPONSE_MD" },
-            { kind: "STOP_TRACE", mode: "success" },
             { kind: "WRITE_RESULT" },
           ]);
         case "EXTRACTION_EMPTY":

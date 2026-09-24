@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import yauzl from "yauzl";
 import yazl from "yazl";
@@ -20,6 +20,38 @@ const ALLOWED_MIME = [
   /^application\/x-font/i,
 ];
 const TEXT_ENTRY = /\.(trace|stacks|network)$/;
+const SANITIZE_YIELD_EVERY = 64;
+
+/** Let timers (notably the run hard-watchdog) run during a bounded but busy trace sanitize. */
+async function yieldSanitizer(count: number): Promise<void> {
+  if (count % SANITIZE_YIELD_EVERY === 0)
+    await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Trace capture is diagnostic only.  These bounds keep a malformed or unexpectedly
+ * busy trace from becoming a disk/RAM incident.  The sanitizer never reads more than
+ * TRACE_MAX_UNCOMPRESSED_BYTES into memory and yields between work batches, so it cannot
+ * starve the run watchdog for multi-GB input.
+ */
+export const TRACE_MAX_COMPRESSED_BYTES = 16 * 1024 * 1024;
+export const TRACE_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
+export const TRACE_SANITIZE_TIMEOUT_MS = 10_000;
+
+async function withTraceTimeout<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`trace sanitization exceeded ${TRACE_SANITIZE_TIMEOUT_MS} ms cap`)),
+      TRACE_SANITIZE_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function stripUrl(url: string): string {
   return url.replace(/[?#].*$/, "");
@@ -66,14 +98,21 @@ export function reduceNetworkLine(
   return JSON.stringify(reduced);
 }
 
-async function readZip(path: string): Promise<Map<string, Buffer>> {
+async function readZip(path: string, maxUncompressedBytes: number): Promise<Map<string, Buffer>> {
   return new Promise((resolvePromise, reject) => {
     const entries = new Map<string, Buffer>();
+    let total = 0;
     yauzl.open(path, { lazyEntries: true }, (err, zip) => {
       if (err || !zip) return reject(err ?? new Error("zip open failed"));
       zip.on("entry", (entry) => {
         if (/\/$/.test(entry.fileName)) {
           zip.readEntry();
+          return;
+        }
+        total += entry.uncompressedSize;
+        if (total > maxUncompressedBytes) {
+          zip.close();
+          reject(new Error(`trace exceeds ${maxUncompressedBytes} byte uncompressed cap`));
           return;
         }
         zip.openReadStream(entry, (e, stream) => {
@@ -112,10 +151,10 @@ async function writeZip(path: string, entries: Map<string, Buffer>): Promise<voi
  * 15-SECURITY §3: reduce .network to header-less summaries, keep only allow-listed resources
  * (CSS / fonts / images / screencast frames), redact text entries line by line.
  */
-export function sanitizeEntries(entries: Map<string, Buffer>): {
+export async function sanitizeEntries(entries: Map<string, Buffer>): Promise<{
   out: Map<string, Buffer>;
   report: SanitizeReport;
-} {
+}> {
   const report: SanitizeReport = {
     networkEntriesReduced: 0,
     resourcesDropped: 0,
@@ -127,11 +166,14 @@ export function sanitizeEntries(entries: Map<string, Buffer>): {
   const out = new Map<string, Buffer>();
 
   // pass 1: network files first (they decide resource fate)
+  let workItems = 0;
   for (const [name, buf] of entries) {
+    await yieldSanitizer(++workItems);
     if (!name.endsWith(".network")) continue;
     const lines = buf.toString("utf8").split("\n");
     const kept: string[] = [];
     for (const line of lines) {
+      await yieldSanitizer(++workItems);
       if (!line.trim()) continue;
       const r = reduceNetworkLine(line, allowedSha1, droppedSha1);
       if (r) {
@@ -144,8 +186,10 @@ export function sanitizeEntries(entries: Map<string, Buffer>): {
   // pass 1b: screencast frames are referenced from .trace, not .network
   const screencastSha1 = new Set<string>();
   for (const [name, buf] of entries) {
+    await yieldSanitizer(++workItems);
     if (!name.endsWith(".trace")) continue;
     for (const line of buf.toString("utf8").split("\n")) {
+      await yieldSanitizer(++workItems);
       if (!line.includes('"screencast-frame"')) continue;
       try {
         const obj = JSON.parse(line) as { type?: string; sha1?: string };
@@ -159,6 +203,7 @@ export function sanitizeEntries(entries: Map<string, Buffer>): {
   // pass 2: everything else. A resource survives only if .network allow-listed its MIME
   // or .trace references it as a screencast frame; extension alone is never enough.
   for (const [name, buf] of entries) {
+    await yieldSanitizer(++workItems);
     if (name.endsWith(".network")) continue;
     if (name.startsWith("resources/")) {
       const base = name.slice("resources/".length);
@@ -176,11 +221,13 @@ export function sanitizeEntries(entries: Map<string, Buffer>): {
     }
     if (TEXT_ENTRY.test(name)) {
       const lines = buf.toString("utf8").split("\n");
-      const redacted = lines.map((l) => {
-        const r = redactSecrets(l);
-        if (r !== l) report.textLinesRedacted++;
-        return r;
-      });
+      const redacted: string[] = [];
+      for (const line of lines) {
+        await yieldSanitizer(++workItems);
+        const r = redactSecrets(line);
+        if (r !== line) report.textLinesRedacted++;
+        redacted.push(r);
+      }
       out.set(name, Buffer.from(redacted.join("\n"), "utf8"));
       continue;
     }
@@ -194,11 +241,13 @@ export function sanitizeEntries(entries: Map<string, Buffer>): {
     const looksText = !buf.subarray(0, 8000).includes(0);
     if (looksText) {
       const lines = buf.toString("utf8").split("\n");
-      const redacted = lines.map((l) => {
-        const r = redactSecrets(l);
-        if (r !== l) report.textLinesRedacted++;
-        return r;
-      });
+      const redacted: string[] = [];
+      for (const line of lines) {
+        await yieldSanitizer(++workItems);
+        const r = redactSecrets(line);
+        if (r !== line) report.textLinesRedacted++;
+        redacted.push(r);
+      }
       out.set(name, Buffer.from(redacted.join("\n"), "utf8"));
     } else {
       out.set(name, buf);
@@ -211,8 +260,16 @@ export async function sanitizeTraceZip(
   inputPath: string,
   outputPath: string,
 ): Promise<SanitizeReport> {
-  const entries = await readZip(inputPath);
-  const { out, report } = sanitizeEntries(entries);
-  await writeZip(outputPath, out);
-  return report;
+  return withTraceTimeout(
+    (async () => {
+      const input = await stat(inputPath);
+      if (input.size > TRACE_MAX_COMPRESSED_BYTES) {
+        throw new Error(`trace exceeds ${TRACE_MAX_COMPRESSED_BYTES} byte compressed cap`);
+      }
+      const entries = await readZip(inputPath, TRACE_MAX_UNCOMPRESSED_BYTES);
+      const { out, report } = await sanitizeEntries(entries);
+      await writeZip(outputPath, out);
+      return report;
+    })(),
+  );
 }

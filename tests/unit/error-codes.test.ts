@@ -137,7 +137,8 @@ function harness(): Harness {
           return { ok: true };
         },
         capture: async () => "/art/screenshot.png",
-        stopTrace: async () => "/art/trace.zip",
+        sealTrace: async () => undefined,
+        finalizeTrace: async () => "/art/trace.zip",
         close: async () => undefined,
       },
       chatgpt,

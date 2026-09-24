@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -104,6 +104,29 @@ describe("checkSlotsBusy (Phase 3 MVP, A-136)", () => {
     await acquireSlot(basePath, 2, "run", "req-1", deps({ pid: 100 }));
     await acquireSlot(basePath, 2, "run", "req-2", deps({ pid: 200 }));
     const busy = await checkSlotsBusy(basePath, 2, deps());
+    expect(busy).toMatch(/all 2 generation slots busy/);
+  });
+
+  it("A-151: does not call a live owner with an expired heartbeat a free slot", async () => {
+    for (let i = 0; i < 2; i++) {
+      await writeFile(
+        slotPath(basePath, i),
+        JSON.stringify({
+          pid: 100 + i,
+          startedAt: "2026-09-01T00:00:00Z",
+          heartbeatAt: "2026-09-01T00:00:00Z",
+          token: `stale-live-${i}`,
+          command: "run",
+          requestId: null,
+          hostname: "test-host",
+        }),
+      );
+    }
+    const busy = await checkSlotsBusy(
+      basePath,
+      2,
+      deps({ pid: 999, staleHeartbeatMs: 1, isProcessAlive: () => true }),
+    );
     expect(busy).toMatch(/all 2 generation slots busy/);
   });
 

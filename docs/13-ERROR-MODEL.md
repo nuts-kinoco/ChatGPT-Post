@@ -110,3 +110,15 @@ type BridgeError = {
 - `message` は日本語、1〜2 文、次に何をすべきかを含む。
 - プロンプト本文・回答本文・URL（クエリ・フラグメントを含む）・Cookie・トークンを含めない。`conversationUrl` はトップレベルにのみ置く。
 - `cause` は種別タグ（`banner` 等）を優先し、例外メッセージを入れる場合は `redact()` を通した後に 200 文字で切る。URL は `redact()` がクエリ・フラグメントを潰すが、`cause` には原則 URL を入れない。
+
+## 7. REL-1 lifecycle and JSON failures (A-150)
+
+`--json` is a stdout protocol. On every handled command failure it emits exactly one object of the form `{"error":{"code":"...","message":"..."}}`; non-JSON diagnostics use stderr. `submit --json` uses `INVALID_REQUEST`/exit 2 for bad input, `ALREADY_RUNNING`/exit 4 for a live lock, and `SUBMIT_SPAWN_FAILED`/exit 5 when no runner was handed off.
+
+Each `run` lock records PID, OS process start identity, and a five-second heartbeat. A heartbeat older than 30 seconds is reported as abandoned. A dead or reused PID remains automatically reclaimable; a live PID with a stale heartbeat is deliberately **not** auto-reclaimed. `unlock --stale` only removes the former class and never kills a process. This preserves fail-closed behavior for a shared browser profile.
+
+`SIGINT`, `SIGTERM`, and Windows `SIGBREAK` request a terminal result, browser close/CDP detach, then lock release. A hard kill cannot run cleanup and is recovered through lease diagnosis. The daemon is not a child of a request run; closing an attached request session only closes its dedicated page/disconnects CDP and never terminates the daemon.
+
+For detached Windows `submit` children, `taskkill`/`TerminateProcess` does not deliver those handlers. `run` therefore has an internal two-window watchdog. After validation but before dispatch, its deadline is the existing allowed pre-submit work: `3×BROWSER_STARTED(60 s) + 3×AUTH_CHECKED(90 s) + 2×NEW_CHAT_READY(30 s) + 2×PRESET_VERIFIED(60 s) + 2×1 s` browser retry waits, plus (only with attachments) `2×uploadBudgetMs(totalBytes)`, plus `RUN_CLEANUP_BUDGET_MS` (30 s). The multipliers are the existing retry limits, so every permitted full retry remains legitimate while a launch/CDP/pre-submit hang is still bounded. On confirmed dispatch it cancels that timer and re-arms from `dispatchedAt` for `timeoutMs + fallbackStabilizationMs(5 s) + IMAGE_CAPTURE_BUDGET_MS(120 s) + RUN_CLEANUP_BUDGET_MS(30 s)`. Thus `timeoutMs` remains a submit-to-completion limit rather than a run-start limit.
+
+When either outer deadline fires, `forceTerminal()` is started, but it is not trusted to settle: an independent 15-second hard grace ends the process even if result writing, CDP close, or async lock release is hung. Immediately before that hard exit, the run makes only a synchronous token-and-PID-checked unlink of its owned lock. If that cannot be done (for example, sharing violation or ownership changed), the exited PID makes the remaining lock reclaimable through the ordinary stale-lock policy. Signal handlers remain a foreground-run convenience, not the detached-run guarantee.

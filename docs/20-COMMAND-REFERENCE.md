@@ -277,3 +277,32 @@ npm run build         # dist/ を生成
 - 本文 20,000 文字超の直接入力（添付を使う）
 - 複数リクエストの並行処理（キューは直列）
 - ChatGPT の利用ポリシーで拒否される内容の回避（拒否はそのまま返す）
+
+## 9. Async submit ownership and stale locks (A-150)
+
+`submit` deliberately starts a detached `run` child and returns after the job ledger records its PID. The caller is not the run's owner: ending the caller session does not cancel the generation. The child owns its browser session, result, and lock cleanup; it handles `SIGINT`, `SIGTERM`, and Windows `SIGBREAK` by writing a terminal result before closing/detaching its browser and releasing its lock.
+
+This never kills the shared daemon. An attached request run closes only its own dedicated tab and CDP connection; the daemon browser remains running.
+
+Each lock includes PID, process-start identity, and a five-second heartbeat. `doctor` displays heartbeat age and clearly labels a stale lease as abandoned. The 30-second lease threshold is a diagnosis boundary, not permission for another submit to steal a live process's profile:
+
+```powershell
+chatgpt-bridge doctor
+chatgpt-bridge unlock --stale
+```
+
+`unlock --stale` removes only a dead/reused-PID (or otherwise reclaimable) lock after rechecking its token. It refuses a live PID with an expired heartbeat and never issues `taskkill`/`Stop-Process`; inspect that owner first. Normal acquire retains its existing safe auto-recovery only for dead/reused PID locks.
+
+### JSON failures and exit codes
+
+Every handled `--json` failure writes one JSON object to stdout:
+
+```json
+{"error":{"code":"ALREADY_RUNNING","message":"..."}}
+```
+
+For `submit --json`, exit 2 is invalid request, exit 4 is `ALREADY_RUNNING`, and exit 5 is `SUBMIT_SPAWN_FAILED`. A successful submit still prints its job row. Do not infer success from an empty stdout stream.
+
+### Detached-run deadline and diagnostics
+
+`SIGINT`, `SIGTERM`, and Windows `SIGBREAK` are helpful only while a foreground `run` can receive them. A detached `submit` child is protected instead by its internal `timeoutMs + 30 s` watchdog, which writes its terminal result, releases the lock, and exits even when its parent was killed. The pre-submit Playwright trace is sealed immediately after dispatch; the response wait records no trace events. Trace finalization is capped at 10 seconds, 16 MiB compressed input, and 64 MiB expanded content. Oversize or timed-out diagnostic traces are deleted and never become artifacts.

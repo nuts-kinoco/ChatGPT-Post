@@ -82,7 +82,7 @@ describe("trace sanitizer (SEC-010, 15 §3)", () => {
     expect(allowed.has("aaa")).toBe(true);
     expect(dropped.has("bbb")).toBe(true);
   });
-  it("keeps css/fonts/screencast, drops html/json, redacts trace.trace, leaves 'cookies' prose", () => {
+  it("keeps css/fonts/screencast, drops html/json, redacts trace.trace, leaves 'cookies' prose", async () => {
     const entries = new Map<string, Buffer>([
       [
         "trace.network",
@@ -113,7 +113,7 @@ describe("trace sanitizer (SEC-010, 15 §3)", () => {
       ["trace-metadata.json", Buffer.from('{"note":"Bearer abcdefghijklmnop"}\n')],
       ["trace-thumbnail.dat", Buffer.from([0x00, 0x01, 0x02, 0x03])], // genuinely binary: kept as-is
     ]);
-    const { out, report } = sanitizeEntries(entries);
+    const { out, report } = await sanitizeEntries(entries);
     expect(out.has("resources/aaa.css")).toBe(true);
     expect(out.has("resources/ddd.jpeg")).toBe(true);
     expect(out.has("resources/bbb.html")).toBe(false);

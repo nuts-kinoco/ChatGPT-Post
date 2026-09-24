@@ -209,12 +209,12 @@ export async function checkLock(cfg: BridgeConfig): Promise<DoctorItem> {
       const verdict = await judgeStale(slot, rec, defaultLockDeps);
       if (verdict.stale) {
         hasStale = true;
-        details.push(`slot${index} stale (${verdict.reason}); safe to delete ${slot}`);
+        details.push(
+          `slot${index} abandoned: ${lockDetail(rec, verdict.reason)}; ${verdict.reclaimable ? `safe to run unlock --stale for ${slot}` : "owner is still alive; do not auto-reclaim"}`,
+        );
       } else {
         hasHeld = true;
-        details.push(
-          `slot${index} held: pid=${rec?.pid ?? "?"} command=${rec?.command ?? "?"} (${verdict.reason})`,
-        );
+        details.push(`slot${index} held: ${lockDetail(rec, verdict.reason)}`);
       }
     }
     if (hasHeld) return { name: "lock", ok: false, detail: details.join("; ") };
@@ -233,14 +233,21 @@ export async function checkLock(cfg: BridgeConfig): Promise<DoctorItem> {
       name: "lock",
       ok: true,
       warn: true,
-      detail: `stale lock (${verdict.reason}); safe to delete ${path}`,
+      detail: `abandoned lock: ${lockDetail(rec, verdict.reason)}; ${verdict.reclaimable ? "safe to run unlock --stale" : "owner is still alive; do not auto-reclaim"}`,
     };
   }
   return {
     name: "lock",
     ok: false,
-    detail: `held: pid=${rec?.pid ?? "?"} command=${rec?.command ?? "?"} (${verdict.reason})`,
+    detail: `held: ${lockDetail(rec, verdict.reason)}`,
   };
+}
+
+function lockDetail(rec: Awaited<ReturnType<typeof readLockRecord>>, verdict: string): string {
+  const heartbeat = rec?.heartbeatAt ?? rec?.startedAt;
+  const at = heartbeat ? new Date(heartbeat).getTime() : Number.NaN;
+  const age = Number.isNaN(at) ? "unknown" : `${Math.max(0, Date.now() - at)} ms`;
+  return `pid=${rec?.pid ?? "?"} command=${rec?.command ?? "?"} heartbeatAge=${age} (${verdict})`;
 }
 
 /**

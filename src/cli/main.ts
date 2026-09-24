@@ -13,15 +13,21 @@ import { EXIT_CODES } from "../contracts/types.js";
 import { formatDoctor, runDoctor } from "../diagnostics/doctor.js";
 import { createLogger } from "../diagnostics/logger.js";
 import { computeUsage, formatUsage, loadLimits, loadRecords } from "../diagnostics/usage.js";
-import { RunController } from "../state/controller.js";
+import {
+  POST_SUBMIT_STABILIZATION_AND_EXTRACTION_BUDGET_MS,
+  RunController,
+} from "../state/controller.js";
 // A-132 Opus review, High #8: `node:sqlite` needs Node >=22.13 unflagged. These are imported
 // dynamically ONLY inside the four Phase 1 command handlers below (never at module top level),
 // so `run`/`doctor`/`worker`/`login`/etc. — the commands other projects' CLAUDE.md/SKILL.md files
 // already call directly — keep working unmodified even on a Node version where node:sqlite can't
 // load; only `submit`/`status`/`wait`/`result` themselves require the newer engines.node floor.
 import type { JobRow } from "../state/jobstore.js";
+import { unlockReclaimableStale } from "../state/lock.js";
+import { slotPath } from "../state/slot-lock.js";
 import { buildPorts } from "./adapters.js";
 import { type BridgeConfig, loadConfig } from "./config.js";
+import { RunWatchdog } from "./run-watchdog.js";
 import { runWorker } from "./worker.js";
 
 const USAGE = `chatgpt-bridge <command> [options]
@@ -29,6 +35,7 @@ const USAGE = `chatgpt-bridge <command> [options]
 commands:
   login                      専用ブラウザを開き、人間がログインする
   doctor                     環境・プロファイル・ロック・ログイン状態を診断する
+  unlock --stale [--json]    dead/reused PID の stale lock だけを明示的に削除する（生存 owner は絶対に kill しない）
   run --request <path> [--json]
                              request.json を 1 件処理する。--json は result.json の内容を標準出力に 1 行で出す
   submit --request <path> [--json]
@@ -253,6 +260,26 @@ async function cmdDoctor(cfg: BridgeConfig, verifiedOnly: boolean): Promise<numb
   return ok ? 0 : 1;
 }
 
+async function cmdUnlock(cfg: BridgeConfig, stale: boolean, json: boolean): Promise<number> {
+  if (!stale) {
+    printCommandError(json, "INVALID_REQUEST", "unlock requires --stale");
+    return EXIT_CODES.invalidInput;
+  }
+  const base = join(cfg.locksDir, "bridge.lock");
+  const paths =
+    cfg.maxConcurrency > 1
+      ? Array.from({ length: cfg.maxConcurrency }, (_, index) => slotPath(base, index))
+      : [base];
+  const results = await Promise.all(paths.map((path) => unlockReclaimableStale(path)));
+  const ok = results.every((r) => r.ok || r.detail === "lock vanished");
+  if (json) process.stdout.write(`${JSON.stringify({ stale: true, results })}\n`);
+  else
+    results.forEach((r, index) => {
+      process.stdout.write(`${paths[index]}: ${r.detail}\n`);
+    });
+  return ok ? 0 : EXIT_CODES.beforeBrowser;
+}
+
 async function cmdRun(
   cfg: BridgeConfig,
   requestPath: string,
@@ -263,14 +290,33 @@ async function cmdRun(
   // A-136 (Phase 3 MVP): only `run` ever pools — `pooled: true` takes effect only when
   // cfg.maxConcurrency > 1 (buildPorts falls back to the unchanged single-lock path otherwise).
   const ports = buildPorts(cfg, logger, verifiedOnly, true);
+  let watchdog: RunWatchdog | null = null;
   const controller = new RunController(ports, {
     requestPath: resolve(requestPath),
     artifactsRoot: cfg.artifactsDir,
     bridgeVersion: cfg.bridgeVersion,
     traceOnSuccess: cfg.traceOnSuccess,
+    onPreSubmitBudgetKnown: (budgetMs) => watchdog?.armBeforeSubmit(budgetMs),
+    onSubmitDispatched: (timeoutMs) =>
+      watchdog?.armAfterSubmit(timeoutMs, POST_SUBMIT_STABILIZATION_AND_EXTRACTION_BUDGET_MS),
   });
+  watchdog = new RunWatchdog(controller);
   if (!json) process.stdout.write(`run: ${resolve(requestPath)}\n`);
-  const outcome = await controller.run();
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
+  // Node exposes SIGBREAK on Windows consoles. It is intentionally not registered elsewhere so
+  // non-Windows shells keep their ordinary signal set.
+  if (process.platform === "win32") signals.push("SIGBREAK");
+  const onSignal = (signal: NodeJS.Signals) => {
+    void controller.interrupt(signal);
+  };
+  for (const signal of signals) process.once(signal, onSignal);
+  let outcome: Awaited<ReturnType<RunController["run"]>>;
+  try {
+    outcome = await controller.run();
+  } finally {
+    watchdog.cancel();
+    for (const signal of signals) process.removeListener(signal, onSignal);
+  }
   const res = outcome.result;
   if (json) {
     // one JSON document on stdout for orchestrators (result.json content, or a stub when none was written)
@@ -314,12 +360,29 @@ function printJob(job: JobRow, json: boolean): void {
   }
 }
 
+/** JSON mode is a protocol, including failures: stdout contains exactly one object a caller can
+ * parse instead of an error that only existed on stderr. */
+function printCommandError(json: boolean, code: string, message: string): void {
+  if (json) process.stdout.write(`${JSON.stringify({ error: { code, message } })}\n`);
+  else process.stderr.write(`${message}\n`);
+}
+
 async function cmdSubmit(cfg: BridgeConfig, requestPath: string, json: boolean): Promise<number> {
   const { submitJob } = await import("./submit.js");
   const outcome = await submitJob(cfg, requestPath);
   if (!outcome.ok) {
-    process.stderr.write(`${outcome.cause}\n`);
-    return EXIT_CODES.invalidInput;
+    if (json) {
+      process.stdout.write(
+        `${JSON.stringify({ error: { code: outcome.code, message: outcome.cause } })}\n`,
+      );
+    } else {
+      process.stderr.write(`${outcome.cause}\n`);
+    }
+    return outcome.code === "ALREADY_RUNNING"
+      ? EXIT_CODES.beforeBrowser
+      : outcome.code === "SUBMIT_SPAWN_FAILED"
+        ? EXIT_CODES.spawnFailure
+        : EXIT_CODES.invalidInput;
   }
   if (!json && outcome.alreadySubmitted) {
     process.stdout.write("(already submitted with the same content; returning the existing job)\n");
@@ -335,7 +398,7 @@ async function cmdStatus(cfg: BridgeConfig, requestId: string, json: boolean): P
   try {
     const job = store.get(requestId);
     if (!job) {
-      process.stderr.write(`no such job: ${requestId}\n`);
+      printCommandError(json, "INVALID_REQUEST", `no such job: ${requestId}`);
       return EXIT_CODES.invalidInput;
     }
     printJob(await reconcileJob(store, job, cfg), json);
@@ -357,7 +420,7 @@ async function cmdWait(
   try {
     const { job, timedOut } = await waitForJob(store, requestId, timeoutMs, cfg);
     if (!job) {
-      process.stderr.write(`no such job: ${requestId}\n`);
+      printCommandError(json, "INVALID_REQUEST", `no such job: ${requestId}`);
       return EXIT_CODES.invalidInput;
     }
     if (json) {
@@ -391,7 +454,7 @@ async function cmdResult(
   try {
     job = store.get(requestId);
     if (!job) {
-      process.stderr.write(`no such job: ${requestId}\n`);
+      printCommandError(json, "INVALID_REQUEST", `no such job: ${requestId}`);
       return EXIT_CODES.invalidInput;
     }
     job = await reconcileJob(store, job, cfg);
@@ -399,7 +462,11 @@ async function cmdResult(
     store.close();
   }
   if (job.status !== "completed") {
-    process.stderr.write(`job ${requestId} is not completed (status=${job.status})\n`);
+    printCommandError(
+      json,
+      "INVALID_REQUEST",
+      `job ${requestId} is not completed (status=${job.status})`,
+    );
     return EXIT_CODES.invalidInput;
   }
   const responsePath = join(job.requestDir, "response.md");
@@ -407,7 +474,11 @@ async function cmdResult(
   try {
     markdown = await readFile(responsePath, "utf8");
   } catch (err) {
-    process.stderr.write(`response.md missing for a completed job: ${(err as Error).message}\n`);
+    printCommandError(
+      json,
+      "INTERNAL_ERROR",
+      `response.md missing for a completed job: ${(err as Error).message}`,
+    );
     return 1;
   }
   if (out) {
@@ -639,6 +710,7 @@ export async function main(argv: string[]): Promise<number> {
       "log-level": { type: "string" },
       "dump-dom": { type: "boolean", default: false },
       "walk-effort": { type: "boolean", default: false },
+      stale: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       queue: { type: "string" },
       once: { type: "boolean", default: false },
@@ -670,27 +742,33 @@ export async function main(argv: string[]): Promise<number> {
       return cmdLogin(cfg, verifiedOnly);
     case "doctor":
       return cmdDoctor(cfg, verifiedOnly);
+    case "unlock":
+      return cmdUnlock(cfg, values.stale ?? false, values.json ?? false);
     case "run":
       if (!values.request) {
-        process.stderr.write("run requires --request <path>\n");
+        printCommandError(values.json ?? false, "INVALID_REQUEST", "run requires --request <path>");
         return EXIT_CODES.invalidInput;
       }
       return cmdRun(cfg, values.request, verifiedOnly, values.json ?? false);
     case "submit":
       if (!values.request) {
-        process.stderr.write("submit requires --request <path>\n");
+        printCommandError(
+          values.json ?? false,
+          "INVALID_REQUEST",
+          "submit requires --request <path>",
+        );
         return EXIT_CODES.invalidInput;
       }
       return cmdSubmit(cfg, values.request, values.json ?? false);
     case "status":
       if (!positionals[1]) {
-        process.stderr.write("status requires <requestId>\n");
+        printCommandError(values.json ?? false, "INVALID_REQUEST", "status requires <requestId>");
         return EXIT_CODES.invalidInput;
       }
       return cmdStatus(cfg, positionals[1], values.json ?? false);
     case "wait": {
       if (!positionals[1]) {
-        process.stderr.write("wait requires <requestId>\n");
+        printCommandError(values.json ?? false, "INVALID_REQUEST", "wait requires <requestId>");
         return EXIT_CODES.invalidInput;
       }
       // A-132 Opus review, Medium #7: Number(undefined-ish garbage) silently produces NaN, and
@@ -699,8 +777,10 @@ export async function main(argv: string[]): Promise<number> {
       // phase exists to eliminate.
       const timeoutMs = Number(values["timeout-ms"] ?? 900_000);
       if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
-        process.stderr.write(
-          `--timeout-ms must be a non-negative number, got "${values["timeout-ms"]}"\n`,
+        printCommandError(
+          values.json ?? false,
+          "INVALID_REQUEST",
+          `--timeout-ms must be a non-negative number, got "${values["timeout-ms"]}"`,
         );
         return EXIT_CODES.invalidInput;
       }
@@ -708,7 +788,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "result":
       if (!positionals[1]) {
-        process.stderr.write("result requires <requestId>\n");
+        printCommandError(values.json ?? false, "INVALID_REQUEST", "result requires <requestId>");
         return EXIT_CODES.invalidInput;
       }
       return cmdResult(cfg, positionals[1], values.out, values.json ?? false);

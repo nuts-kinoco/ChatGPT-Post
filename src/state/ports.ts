@@ -55,6 +55,8 @@ export interface LockPort {
   ): Promise<{ kind: "ok" } | { kind: "busy"; cause: string }>;
   verify(): Promise<boolean>;
   release(): Promise<void>;
+  /** Hard-watchdog-only synchronous release; implementations must check their exact token. */
+  releaseSync?(): boolean;
   markerExists(requestId: string): Promise<boolean>;
   writeMarker(requestId: string, marker: SubmitMarker): Promise<void>;
   updateMarker(
@@ -74,7 +76,10 @@ export interface BrowserPort {
   /** Viewport screenshot; returns absolute path. */
   capture(artifactsDir: string): Promise<string>;
   /** Stop + sanitize trace; returns absolute path. */
-  stopTrace(artifactsDir: string): Promise<string>;
+  /** Stop the context trace at submit, before the unbounded-in-practice response wait. */
+  sealTrace(artifactsDir: string): Promise<void>;
+  /** Promote a bounded pending trace or discard it under the terminal trace policy. */
+  finalizeTrace(artifactsDir: string, keep: boolean): Promise<string | null>;
   /** A-136 (Phase 3 MVP, Opus review Medium#3): in dedicated-page (pool) mode, `keepPage: true`
    * leaves the job's own tab open on the daemon instead of closing it — the only human-inspectable
    * evidence of what actually happened in a non-`completed` outcome (the same tab A-135's own

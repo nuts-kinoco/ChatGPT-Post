@@ -1,5 +1,4 @@
-import { mkdir, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type Browser,
@@ -12,6 +11,9 @@ import { COPY_CAPTURE_SHIM } from "../extraction/copy-capture.js";
 import { type ExperimentalStealthMode, STEALTH_SIGNAL_PATCH } from "./stealth-signals.js";
 import { withTimeout } from "./timeout.js";
 import { sanitizeTraceZip } from "./trace-sanitizer.js";
+
+/** Trace finalization is diagnostic work; it cannot consume a terminal run indefinitely. */
+export const TRACE_STOP_TIMEOUT_MS = 10_000;
 
 /** Codex review of A-110: page.evaluate() has no built-in timeout, so a half-dead CDP connection
  * could hang the liveness check (and the bridge lock it's held under) indefinitely. */
@@ -49,6 +51,8 @@ export class BrowserSession {
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private tracing = false;
+  /** Sanitized, bounded pre-submit trace awaiting the terminal keep/discard decision. */
+  private pendingTrace: string | null = null;
   /** true when `context` belongs to an external daemon reached via CDP: close() must detach
    * instead of tearing the browser down (A-103). */
   private attached = false;
@@ -249,7 +253,7 @@ export class BrowserSession {
       // per-Page — it records every page in the context. In dedicated-page (pool) mode, more than
       // one `run` can be attached to this same daemon context at once, so a shared trace.zip would
       // capture other concurrent jobs' prompts/responses too (their tabs, not just this session's).
-      // `stopTrace()`'s existing "tracing not active" throw is already a BEST_EFFORT_EFFECTS entry
+      // Trace finalization's existing "tracing not active" outcome is best-effort
       // (machine.ts) — controller.ts turns it into a result.json warning, never a failure — so
       // simply never starting a trace here degrades safely instead of risking a cross-request leak.
       if (!this.cfg.dedicatedPage) {
@@ -291,18 +295,58 @@ export class BrowserSession {
     return path;
   }
 
-  async stopTrace(artifactsDir: string): Promise<string> {
-    if (!this.context || !this.tracing) throw new Error("tracing not active");
+  /**
+   * Stop recording before the long generation wait.  The trace is retained only as a
+   * bounded pending file; finalizeTrace() later promotes it for a failure (or opted-in
+   * success) or deletes it.  This keeps the valuable DOM/submit evidence without
+   * recording an up-to-50-minute response stream.
+   */
+  async sealTrace(artifactsDir: string): Promise<void> {
+    if (!this.context || !this.tracing) return;
     this.tracing = false;
     await mkdir(artifactsDir, { recursive: true });
-    const tmp = join(tmpdir(), `bridge-trace-${process.pid}-${Date.now()}.zip`);
-    await this.context.tracing.stop({ path: tmp });
-    const out = join(artifactsDir, "trace.zip");
+    // Keep every transient trace on the artifacts volume, never C:\\Temp.
+    const tmp = join(artifactsDir, `.trace-${process.pid}-${Date.now()}.tmp.zip`);
+    const pending = join(artifactsDir, ".trace.pending.zip");
+    const stopping = this.context.tracing.stop({ path: tmp });
+    let sanitizing: Promise<unknown> | null = null;
     try {
-      await sanitizeTraceZip(tmp, out);
+      await withTimeout(stopping, TRACE_STOP_TIMEOUT_MS, "tracing.stop() (pre-submit)");
+      sanitizing = sanitizeTraceZip(tmp, pending);
+      await sanitizing;
+      this.pendingTrace = pending;
+    } catch (err) {
+      await unlink(pending).catch(() => undefined);
+      if (sanitizing) {
+        void sanitizing.then(
+          () => unlink(pending).catch(() => undefined),
+          () => unlink(pending).catch(() => undefined),
+        );
+      }
+      throw err;
     } finally {
       await unlink(tmp).catch(() => undefined);
+      // A timed-out Playwright stop can finish later.  Retry deletion at that exact
+      // point too, which matters on Windows where an open ZIP cannot be unlinked.
+      void stopping.then(
+        () => unlink(tmp).catch(() => undefined),
+        () => unlink(tmp).catch(() => undefined),
+      );
     }
+  }
+
+  /** Promote the previously sealed trace only when the terminal policy keeps it. */
+  async finalizeTrace(artifactsDir: string, keep: boolean): Promise<string | null> {
+    if (this.tracing) await this.sealTrace(artifactsDir);
+    const pending = this.pendingTrace;
+    this.pendingTrace = null;
+    if (!pending) return null;
+    if (!keep) {
+      await unlink(pending).catch(() => undefined);
+      return null;
+    }
+    const out = join(artifactsDir, "trace.zip");
+    await rename(pending, out);
     return out;
   }
 
@@ -319,7 +363,11 @@ export class BrowserSession {
     await this.disposeCopyCaptureShim();
     await this.disposeStealthSignalPatch();
     const ctx = this.context;
-    if (!ctx) return;
+    if (!ctx) {
+      if (this.pendingTrace) await unlink(this.pendingTrace).catch(() => undefined);
+      this.pendingTrace = null;
+      return;
+    }
     // A-136: captured before this.page is nulled below — only closed once detach (tracing.stop)
     // has run, only when this session itself created it (never a Page some other slot or the
     // daemon's own keepalive still owns), and never when the caller asked to keep it (Opus review
@@ -348,6 +396,8 @@ export class BrowserSession {
       const cdp = this.cdpBrowser;
       this.cdpBrowser = null;
       if (cdp) await withTimeout(cdp.close(), 10_000, "cdp.close()").catch(() => undefined);
+      if (this.pendingTrace) await unlink(this.pendingTrace).catch(() => undefined);
+      this.pendingTrace = null;
       return;
     }
     const limit = this.cfg.closeTimeoutMs ?? 15_000;
@@ -366,5 +416,7 @@ export class BrowserSession {
         () => undefined,
       );
     }
+    if (this.pendingTrace) await unlink(this.pendingTrace).catch(() => undefined);
+    this.pendingTrace = null;
   }
 }

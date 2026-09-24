@@ -155,6 +155,8 @@ export const EXIT_CODES = {
   invalidInput: 2,
   manualIntervention: 3,
   beforeBrowser: 4,
+  /** submit handed no live runner off; distinct from an invalid request or a busy bridge. */
+  spawnFailure: 5,
 } as const;
 
 export function exitCodeFor(code: ErrorCode): number {

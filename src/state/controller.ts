@@ -22,6 +22,7 @@ import {
   type Event,
   initialState,
   type MachineState,
+  RETRY_LIMITS,
   transition,
 } from "./machine.js";
 import type { Baseline, Ports, ProjectCreateControl } from "./ports.js";
@@ -65,6 +66,10 @@ export interface ControllerOptions {
   phaseLimitsMs?: Partial<Record<StateName, number>>;
   /** Image capture budget (A-091); tests shorten it. */
   imageCaptureBudgetMs?: number;
+  /** Called after validation, before any potentially blocking pre-submit work. */
+  onPreSubmitBudgetKnown?: (budgetMs: number) => void;
+  /** Called immediately after the confirmed submit dispatch. */
+  onSubmitDispatched?: (timeoutMs: number) => void;
 }
 
 export const IMAGE_CAPTURE_BUDGET_MS = 120_000;
@@ -81,6 +86,30 @@ export const DEFAULT_PHASE_LIMITS_MS: Partial<Record<StateName, number>> = {
   NEW_CHAT_READY: 30_000,
   PRESET_VERIFIED: 60_000,
 };
+
+const BROWSER_RETRY_WAIT_MS = 1_000;
+
+/**
+ * The pre-submit watchdog spans every documented phase allowance at every permitted attempt,
+ * the only fixed retry waits, and upload allowance for each permitted prompt attempt.
+ */
+export function preSubmitWatchdogBudgetMs(
+  attachmentBytes: number,
+  attachmentCount: number,
+): number {
+  const phaseBudget = Object.entries(DEFAULT_PHASE_LIMITS_MS).reduce(
+    (total, [state, limit]) => total + (limit ?? 0) * (RETRY_LIMITS[state as StateName] ?? 1),
+    0,
+  );
+  const browserRetries = Math.max(0, (RETRY_LIMITS.BROWSER_STARTED ?? 1) - 1);
+  const uploadAttempts = RETRY_LIMITS.PRESET_VERIFIED ?? 1;
+  const uploadBudget = attachmentCount > 0 ? uploadBudgetMs(attachmentBytes) * uploadAttempts : 0;
+  return phaseBudget + browserRetries * BROWSER_RETRY_WAIT_MS + uploadBudget;
+}
+
+/** Maximum normal completion stabilization plus the bounded generated-image extraction work. */
+export const POST_SUBMIT_STABILIZATION_AND_EXTRACTION_BUDGET_MS =
+  DEFAULT_COMPLETION_CONFIG.fallbackStabilizationMs + IMAGE_CAPTURE_BUDGET_MS;
 
 export interface RunOutcome {
   exitCode: number;
@@ -143,6 +172,8 @@ export class RunController {
   private result: BridgeResult | null = null;
   private resultPath: string | null = null;
   private exitCode = 1;
+  private interruption: string | null = null;
+  private interruptPromise: Promise<void> | null = null;
 
   constructor(
     private readonly ports: Ports,
@@ -178,6 +209,58 @@ export class RunController {
     };
   }
 
+  /** Ask a live run to produce its normal terminal record and release resources.  Closing the
+   * session makes an in-flight Playwright operation reject promptly; the effect wrapper then
+   * turns that rejection into RUN_INTERRUPTED rather than an ambiguous controller exception. */
+  async interrupt(cause: string): Promise<void> {
+    this.interruption ??= cause;
+    this.projectCreateControl?.abort.abort();
+    if (this.interruptPromise) return this.interruptPromise;
+    this.interruptPromise = (async () => {
+      // BrowserSession.close() is a no-op before launch; calling it unconditionally also breaks
+      // an in-flight launch/attach promptly when a signal lands in that narrow window.
+      await this.ports.browser.close().catch(() => undefined);
+    })();
+    return this.interruptPromise;
+  }
+
+  /**
+   * Last-resort in-process watchdog path.  This intentionally does not wait for a
+   * currently hung Playwright effect: it drives the terminal state independently so
+   * result.json and the lock are settled before the CLI exits.  Artifact work is
+   * after WRITE_RESULT and is bounded by its own caps/timeouts.
+   */
+  async forceTerminal(cause: string): Promise<RunOutcome> {
+    this.interruption ??= cause;
+    this.projectCreateControl?.abort.abort();
+    if (!this.state.terminal && !this.resultPath) {
+      await this.dispatch({ type: "RUN_INTERRUPTED", cause });
+    }
+    // If the normal terminal sequence was itself stalled after writing its result,
+    // still make lock/browser cleanup best-effort before the watchdog terminates.
+    if (this.browserUp) {
+      this.browserUp = false;
+      await this.ports.browser.close().catch(() => undefined);
+    }
+    if (this.lockHeld) {
+      this.lockHeld = false;
+      await this.ports.lock.release().catch(() => undefined);
+    }
+    return {
+      exitCode: this.exitCode,
+      state: this.state,
+      result: this.result,
+      resultPath: this.resultPath,
+    };
+  }
+
+  /** Called only by the hard watchdog deadline; never await this path. */
+  releaseLockSync(): void {
+    if (!this.lockHeld) return;
+    this.lockHeld = false;
+    this.ports.lock.releaseSync?.();
+  }
+
   private async dispatch(ev: Event): Promise<void> {
     const before = this.state.name;
     const { next, effects } = transition(this.state, ev);
@@ -203,7 +286,11 @@ export class RunController {
   private async execute(effect: Effect): Promise<Event | null> {
     const bestEffort = BEST_EFFORT_EFFECTS.has(effect.kind);
     try {
+      if (this.interruption && !this.state.terminal && !this.resultPath)
+        return { type: "RUN_INTERRUPTED", cause: this.interruption };
       const ev = await this.runEffect(effect);
+      if (this.interruption && !this.state.terminal && !this.resultPath)
+        return { type: "RUN_INTERRUPTED", cause: this.interruption };
       if (this.crashCause && !this.state.terminal && effect.kind !== "CLOSE_BROWSER") {
         const cause = this.crashCause;
         this.crashCause = null;
@@ -222,6 +309,8 @@ export class RunController {
         }
         return { type: "TIMEOUT", phase: err.phase };
       }
+      if (this.interruption && !this.state.terminal && !this.resultPath)
+        return { type: "RUN_INTERRUPTED", cause: this.interruption };
       const message = err instanceof Error ? err.message : String(err);
       if (bestEffort) {
         this.warnings.push(`${effect.kind.toLowerCase()}_failed: ${message.slice(0, 200)}`);
@@ -284,6 +373,9 @@ export class RunController {
         this.timeoutMs = v.timeoutMs;
         this.attachments = v.attachments;
         this.attachmentBytes = v.attachmentBytes;
+        this.opts.onPreSubmitBudgetKnown?.(
+          preSubmitWatchdogBudgetMs(this.attachmentBytes, this.attachments.length),
+        );
         const profile = await browser.checkProfilePath();
         if (!profile.ok) return { type: "PROFILE_PATH_REJECTED", cause: profile.cause };
         return { type: "VALID" };
@@ -459,6 +551,7 @@ export class RunController {
         if (d.kind === "dispatched") {
           this.conversationUrl = d.url.startsWith("https://chatgpt.com/") ? d.url : null;
           this.dispatchedAt = this.ports.clock.monotonic();
+          this.opts.onSubmitDispatched?.(this.timeoutMs);
           return { type: "SUBMIT_DISPATCHED" };
         }
         if (d.kind === "failed") return { type: "SUBMIT_FAILED", cause: d.cause };
@@ -550,10 +643,18 @@ export class RunController {
         this.artifacts.push(await browser.capture(this.artifactsDir));
         return null;
       }
+      case "SEAL_TRACE": {
+        if (!this.browserUp) return null;
+        await browser.sealTrace(this.artifactsDir);
+        return null;
+      }
       case "STOP_TRACE": {
         if (!this.browserUp) return null;
-        if (effect.mode === "success" && !this.opts.traceOnSuccess) return null;
-        this.artifacts.push(await browser.stopTrace(this.artifactsDir));
+        const trace = await browser.finalizeTrace(
+          this.artifactsDir,
+          effect.mode !== "success" || this.opts.traceOnSuccess,
+        );
+        if (trace) this.artifacts.push(trace);
         return null;
       }
       case "INSPECT_UI_REPORT": {
@@ -606,7 +707,9 @@ export class RunController {
           // ambiguous outcome of all and keep the page too. Only a clean "completed" run closes its
           // dedicated page; anything else leaves it open as the operator's evidence (no effect
           // outside dedicated-page mode -- see BrowserPort.close()'s doc comment).
-          await browser.close({ keepPage: this.result?.status !== "completed" });
+          // A-150: a terminal run must not retain a dedicated daemon tab or a local browser
+          // handle. BrowserSession.close() disconnects from a daemon rather than killing it.
+          await browser.close();
         }
         return null;
       case "RELEASE_LOCK":
@@ -641,6 +744,11 @@ export class RunController {
     const interval = this.opts.observationIntervalMs ?? 250;
     const baseline = this.requireBaseline().assistantCount;
     while (this.observing && !this.state.terminal) {
+      if (this.interruption) {
+        this.observing = false;
+        await this.dispatch({ type: "RUN_INTERRUPTED", cause: this.interruption });
+        return;
+      }
       if (this.crashCause) {
         const cause = this.crashCause;
         this.crashCause = null;
@@ -653,6 +761,11 @@ export class RunController {
       try {
         obs = await this.ports.chatgpt.observe(t);
       } catch (err) {
+        if (this.interruption) {
+          this.observing = false;
+          await this.dispatch({ type: "RUN_INTERRUPTED", cause: this.interruption });
+          return;
+        }
         this.warnings.push(`observe_failed: ${(err as Error).message.slice(0, 200)}`);
         await this.ports.clock.sleep(interval);
         continue;

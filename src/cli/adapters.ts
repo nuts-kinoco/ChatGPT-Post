@@ -119,6 +119,13 @@ export function fileLock(cfg: BridgeConfig): LockPort & { raw: ProcessLock | nul
         barrier = null;
         if (b) await releaseAllSlots(b);
       },
+      releaseSync: () => {
+        const b = barrier;
+        barrier = null;
+        let released = false;
+        for (const lock of b?.locks ?? []) released = lock.releaseSync() || released;
+        return released;
+      },
       markerExists: (id) => markerExists(markerPath(cfg.stateDir, id)),
       writeMarker: (id, m) => writeMarker(markerPath(cfg.stateDir, id), m),
       updateMarker: (id, patch) => updateMarker(markerPath(cfg.stateDir, id), patch),
@@ -134,6 +141,7 @@ export function fileLock(cfg: BridgeConfig): LockPort & { raw: ProcessLock | nul
     },
     verify: () => lock.verify(),
     release: () => lock.release(),
+    releaseSync: () => lock.releaseSync(),
     markerExists: (id) => markerExists(markerPath(cfg.stateDir, id)),
     writeMarker: (id, m) => writeMarker(markerPath(cfg.stateDir, id), m),
     updateMarker: (id, patch) => updateMarker(markerPath(cfg.stateDir, id), patch),
@@ -167,6 +175,11 @@ export function poolLock(cfg: BridgeConfig): LockPort {
       const lock = active;
       active = null;
       if (lock) await lock.release();
+    },
+    releaseSync: () => {
+      const lock = active;
+      active = null;
+      return lock?.releaseSync() ?? false;
     },
     markerExists: (id) => markerExists(markerPath(cfg.stateDir, id)),
     writeMarker: (id, m) => writeMarker(markerPath(cfg.stateDir, id), m),
@@ -249,7 +262,8 @@ export function playwrightBrowser(
       return session.launch(opts);
     },
     capture: (dir) => session.capture(dir),
-    stopTrace: (dir) => session.stopTrace(dir),
+    sealTrace: (dir) => session.sealTrace(dir),
+    finalizeTrace: (dir, keep) => session.finalizeTrace(dir, keep),
     close: (opts) => session.close(opts),
   };
 }

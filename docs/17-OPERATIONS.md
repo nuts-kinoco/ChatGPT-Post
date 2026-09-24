@@ -169,6 +169,12 @@ exit code の意味: 0 成功 / 1 ブラウザ起動後の失敗 / 2 入力・�
 
 自動削除は行わない（SEC-007）。
 
+### Detached run recovery and trace bounds (A-151)
+
+On Windows, signal handlers are useful only for a foreground `run`; a detached child killed with `taskkill` receives `TerminateProcess`, not `SIGTERM`/`SIGBREAK`. Every validated `run` consequently owns two watchdog windows. Before dispatch: `3×60 s + 3×90 s + 2×30 s + 2×60 s + 2×1 s + (attachments ? 2×uploadBudgetMs(totalBytes) : 0) + 30 s cleanup`; the coefficients come directly from the four phase limits and retry limits, including the browser retry waits. At confirmed dispatch it cancels that timer and measures a new one from `dispatchedAt`: `timeoutMs + 5 s fallback stabilization + 120 s image extraction + 30 s cleanup`. This keeps a long Project/upload pre-submit path from consuming the documented submit-to-completion `timeoutMs`, while still bounding a pre-submit hang. If `forceTerminal()` has not settled 15 seconds after either watchdog fires, the process makes a synchronous token-and-PID-checked owned-lock unlink attempt and exits anyway; an unlink that cannot be performed leaves a dead-PID lock which normal stale-lock recovery can reclaim.
+
+The trace is stopped immediately after prompt dispatch and is not active while waiting for a response. It is diagnostic-only and capped at 10 seconds, 16 MiB compressed, and 64 MiB expanded; a cap/timeout failure is discarded rather than retained. Trace ZIP reads/writes are asynchronous and the sanitizer yields between batches. The remaining bounded synchronous units are one ZIP entry's `Buffer.concat`, one entry's `toString().split("\\n")`, and one unusually large line's JSON parse/redaction (each limited by the 64 MiB expanded cap). They can delay a timer briefly, so the hard grace is not presented as an OS-level real-time guarantee during any one such unit.
+
 ## 9. Codex レビューの実行
 
 ```powershell

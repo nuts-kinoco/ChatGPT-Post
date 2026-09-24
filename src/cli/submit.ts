@@ -111,7 +111,11 @@ export const defaultSpawnRunner: SpawnRunner = async (requestPath, logPath) => {
 
 export type SubmitOutcome =
   | { ok: true; job: JobRow; alreadySubmitted: boolean }
-  | { ok: false; cause: string };
+  | {
+      ok: false;
+      code: "INVALID_REQUEST" | "ALREADY_RUNNING" | "SUBMIT_SPAWN_FAILED";
+      cause: string;
+    };
 
 /**
  * A-132: idempotent by (requestId, content hash) — a resubmit of the exact same requestId with
@@ -130,10 +134,15 @@ export async function submitJob(
 ): Promise<SubmitOutcome> {
   const abs = resolve(requestPath);
   const read = await readRequestFile(abs);
-  if (read.kind === "unreadable") return { ok: false, cause: `INVALID_REQUEST: ${read.cause}` };
+  if (read.kind === "unreadable")
+    return { ok: false, code: "INVALID_REQUEST", cause: `INVALID_REQUEST: ${read.cause}` };
   const validated = await validateAndLoad(read.raw, read.requestDir);
   if (validated.kind === "invalid") {
-    return { ok: false, cause: `INVALID_REQUEST: ${validated.errors.join("; ")}` };
+    return {
+      ok: false,
+      code: "INVALID_REQUEST",
+      cause: `INVALID_REQUEST: ${validated.errors.join("; ")}`,
+    };
   }
   const requestId = validated.request.requestId;
   const inputHash = await computeInputHash(
@@ -165,7 +174,11 @@ export async function submitJob(
         ? await checkSlotsBusy(join(cfg.locksDir, "bridge.lock"), cfg.maxConcurrency, deps)
         : await checkLockBusy(cfg, deps);
     if (lockBusy) {
-      return { ok: false, cause: `ALREADY_RUNNING: ${lockBusy} — retry submit in a moment` };
+      return {
+        ok: false,
+        code: "ALREADY_RUNNING",
+        cause: `ALREADY_RUNNING: ${lockBusy} — retry submit in a moment`,
+      };
     }
 
     const now = deps.now().toISOString();
@@ -220,7 +233,8 @@ export async function submitJob(
       });
       return {
         ok: false,
-        cause: `INTERNAL_ERROR: failed to start the run: ${(err as Error).message}`,
+        code: "SUBMIT_SPAWN_FAILED",
+        cause: `SUBMIT_SPAWN_FAILED: failed to start the run: ${(err as Error).message}`,
       };
     }
     if (pid === null) {
@@ -229,7 +243,11 @@ export async function submitJob(
         errorCode: "INTERNAL_ERROR",
         updatedAt: deps.now().toISOString(),
       });
-      return { ok: false, cause: "INTERNAL_ERROR: the spawned run reported no pid" };
+      return {
+        ok: false,
+        code: "SUBMIT_SPAWN_FAILED",
+        cause: "SUBMIT_SPAWN_FAILED: the spawned run reported no pid",
+      };
     }
     const job = store.update(requestId, {
       status: "running",
@@ -246,6 +264,7 @@ function checkExisting(existing: JobRow, inputHash: string): SubmitOutcome {
   if (existing.inputHash !== inputHash) {
     return {
       ok: false,
+      code: "INVALID_REQUEST",
       cause: `INVALID_REQUEST: requestId ${existing.requestId} was already submitted with different content (conflict) — use a new requestId`,
     };
   }
@@ -262,7 +281,7 @@ async function checkLockBusy(
   const record = await readLockRecord(lockPath);
   if (!record) return null;
   const verdict = await judgeStale(lockPath, record, { ...deps, unparseableGraceMs: 10_000 });
-  return verdict.stale ? null : verdict.reason;
+  return verdict.stale && verdict.reclaimable ? null : verdict.reason;
 }
 
 function statusFromResult(res: BridgeResult): JobStatus {

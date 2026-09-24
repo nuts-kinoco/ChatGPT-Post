@@ -1,9 +1,16 @@
+import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { judgeStale, type LockDeps, ProcessLock, readLockRecord } from "../../src/state/lock.js";
+import {
+  judgeStale,
+  type LockDeps,
+  ProcessLock,
+  readLockRecord,
+  unlockReclaimableStale,
+} from "../../src/state/lock.js";
 import {
   deleteMarker,
   markerExists,
@@ -64,6 +71,28 @@ describe("ProcessLock (ADR-005)", () => {
     expect(await a.verify()).toBe(false);
   });
 
+  it("hard-watchdog synchronous release deletes only its exact token and PID", async () => {
+    const p = join(dir, "bridge.lock");
+    const a = new ProcessLock(p, deps({ pid: 1 }));
+    expect((await a.acquire("run", null)).kind).toBe("ok");
+    expect(a.releaseSync()).toBe(true);
+    await expect(stat(p)).rejects.toThrow();
+
+    expect((await a.acquire("run", null)).kind).toBe("ok");
+    await writeFile(
+      p,
+      JSON.stringify({
+        pid: 1,
+        startedAt: "",
+        token: "replacement",
+        command: "run",
+        requestId: null,
+      }),
+    );
+    expect(a.releaseSync()).toBe(false);
+    expect((await readLockRecord(p))?.token).toBe("replacement");
+  });
+
   it("reclaims a stale lock (dead pid) with content verification", async () => {
     const p = join(dir, "bridge.lock");
     await writeFile(
@@ -106,6 +135,97 @@ describe("ProcessLock (ADR-005)", () => {
       deps({ processStartedAt: async () => new Date("2026-09-13T23:00:00Z") }),
     );
     expect(v2.stale).toBe(false);
+  });
+
+  it("classifies a live owner with an expired lease as abandoned but never auto-reclaims it", async () => {
+    const p = join(dir, "bridge.lock");
+    await writeFile(
+      p,
+      JSON.stringify({
+        pid: 999,
+        startedAt: "2026-09-14T00:00:00Z",
+        heartbeatAt: "2026-09-14T00:00:00Z",
+        token: "hung",
+        command: "run",
+        requestId: null,
+        hostname: "test-host",
+      }),
+    );
+    const d = deps({ staleHeartbeatMs: 1, isProcessAlive: () => true });
+    const verdict = await judgeStale(p, await readLockRecord(p), d);
+    expect(verdict).toMatchObject({ stale: true, reclaimable: false });
+    const contender = await new ProcessLock(p, d).acquire("run", null);
+    expect(contender.kind).toBe("busy");
+    const explicit = await unlockReclaimableStale(p, d);
+    expect(explicit.ok).toBe(false);
+    expect(await readLockRecord(p)).toMatchObject({ token: "hung" });
+  });
+
+  it("renews its lease and stops its unref'ed heartbeat when released", async () => {
+    let tick = 0;
+    const p = join(dir, "bridge.lock");
+    const lock = new ProcessLock(
+      p,
+      deps({ now: () => new Date(`2026-09-15T00:00:0${tick++}Z`), heartbeatMs: 0 }),
+    );
+    expect((await lock.acquire("run", null)).kind).toBe("ok");
+    const before = (await readLockRecord(p))?.heartbeatAt;
+    expect(await lock.heartbeat()).toBe(true);
+    expect((await readLockRecord(p))?.heartbeatAt).not.toBe(before);
+    await lock.release();
+    expect(await lock.heartbeat()).toBe(false);
+  });
+
+  it("keeps renewing after one transient unreadable lock read", async () => {
+    const p = join(dir, "bridge.lock");
+    const lock = new ProcessLock(p, deps({ heartbeatMs: 60_000 }));
+    expect((await lock.acquire("run", null)).kind).toBe("ok");
+    const owned = await readLockRecord(p);
+    await unlink(p); // Windows sharing/read failure is represented as null by readLockRecord
+    expect(await lock.heartbeat()).toBe(false);
+    expect((lock as unknown as { heartbeatTimer: unknown }).heartbeatTimer).not.toBeNull();
+    await writeFile(p, JSON.stringify(owned));
+    expect(await lock.heartbeat()).toBe(true);
+    await lock.release();
+  });
+
+  it("harness: killing a detached submit parent does not kill its child, which completes and releases its lock", async () => {
+    const lock = join(dir, "child.lock");
+    const done = join(dir, "child.done");
+    const childCode = `const fs=require('node:fs'); const lock=${JSON.stringify(lock)}; const done=${JSON.stringify(done)}; fs.writeFileSync(lock, JSON.stringify({pid:process.pid,token:'child',startedAt:new Date().toISOString(),heartbeatAt:new Date().toISOString()})); const t=setInterval(()=>fs.writeFileSync(lock, JSON.stringify({pid:process.pid,token:'child',startedAt:new Date().toISOString(),heartbeatAt:new Date().toISOString()})),20); setTimeout(()=>{clearInterval(t); fs.unlinkSync(lock); fs.writeFileSync(done,'done');},120);`;
+    const parentCode = `const {spawn}=require('node:child_process'); const c=spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{detached:true,stdio:'ignore'}); c.unref(); process.stdout.write(String(c.pid)); setInterval(()=>{},1000);`;
+    const parent = spawn(process.execPath, ["-e", parentCode], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    await new Promise<void>((resolve, reject) => {
+      parent.stdout.once("data", () => resolve());
+      parent.once("error", reject);
+    });
+    parent.kill("SIGKILL");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(await readFile(done, "utf8")).toBe("done");
+    await expect(stat(lock)).rejects.toThrow();
+  });
+
+  it("harness: a hard-killed child leaves a dead-PID lock that doctor policy can reclaim", async () => {
+    const p = join(dir, "hard-killed.lock");
+    const childCode = `require('node:fs').writeFileSync(${JSON.stringify(p)}, JSON.stringify({pid:process.pid,startedAt:new Date().toISOString(),heartbeatAt:new Date().toISOString(),token:'hard-killed',command:'run',requestId:null,hostname:'test-host'})); setInterval(()=>{},1000);`;
+    const child = spawn(process.execPath, ["-e", childCode], { stdio: "ignore" });
+    for (let i = 0; i < 50; i++) {
+      try {
+        await stat(p);
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    child.kill("SIGKILL");
+    await new Promise((resolve) => child.once("exit", resolve));
+    const d = deps({ isProcessAlive: () => false });
+    const verdict = await judgeStale(p, await readLockRecord(p), d);
+    expect(verdict).toMatchObject({ stale: true, reclaimable: true });
+    expect((await unlockReclaimableStale(p, d)).ok).toBe(true);
+    await expect(stat(p)).rejects.toThrow();
   });
 
   it("A-108: a lock held by another hostname is never treated as stale, even if the pid doesn't exist here", async () => {

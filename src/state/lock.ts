@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, openSync, writeSync } from "node:fs";
-import { mkdir, readFile, rename, stat, unlink } from "node:fs/promises";
+import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { hostname as osHostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -13,6 +13,10 @@ export interface LockRecord {
   /** A-108: empty string for pre-A-108 lock files (treated as "unknown host", falls back to the
    * old same-machine PID check below — never breaks locks a human already had on disk). */
   hostname: string;
+  /** Last owner lease renewal. Legacy locks retain PID-only liveness semantics. */
+  heartbeatAt?: string;
+  /** OS process creation time captured at acquire; protects against PID reuse. */
+  processStartedAt?: string | null;
 }
 
 export interface LockDeps {
@@ -26,6 +30,10 @@ export interface LockDeps {
   hostname: string;
   /** Empty / unparseable lock files younger than this are treated as live. */
   unparseableGraceMs: number;
+  /** Renewal period; the timer is unref'ed and cannot keep a terminal run alive. */
+  heartbeatMs?: number;
+  /** A lease older than this is abandoned, but live owners require explicit recovery. */
+  staleHeartbeatMs?: number;
   /** A-119: test-only seam, fired right after the stale lock is renamed aside and before the
    * moved-vs-judged comparison. Lets a test deterministically land a *fourth* process's write at
    * `this.path` inside the exact window the redesign review flagged (§"stale lock recovery に所有権競合"),
@@ -37,7 +45,9 @@ export type AcquireOutcome =
   | { kind: "ok"; record: LockRecord }
   | { kind: "busy"; cause: string; holder: LockRecord | null };
 
-export type StaleVerdict = { stale: true; reason: string } | { stale: false; reason: string };
+export type StaleVerdict =
+  | { stale: true; reason: string; reclaimable: boolean }
+  | { stale: false; reason: string };
 
 export const defaultLockDeps: LockDeps = {
   isProcessAlive: (pid) => {
@@ -89,6 +99,8 @@ export const defaultLockDeps: LockDeps = {
   pid: process.pid,
   hostname: osHostname(),
   unparseableGraceMs: 10_000,
+  heartbeatMs: 5_000,
+  staleHeartbeatMs: 30_000,
 };
 
 export async function readLockRecord(path: string): Promise<LockRecord | null> {
@@ -104,9 +116,44 @@ export async function readLockRecord(path: string): Promise<LockRecord | null> {
       command: typeof parsed.command === "string" ? parsed.command : "",
       requestId: typeof parsed.requestId === "string" ? parsed.requestId : null,
       hostname: typeof parsed.hostname === "string" ? parsed.hostname : "",
+      ...(typeof parsed.heartbeatAt === "string" ? { heartbeatAt: parsed.heartbeatAt } : {}),
+      ...(typeof parsed.processStartedAt === "string"
+        ? { processStartedAt: parsed.processStartedAt }
+        : {}),
     };
   } catch {
     return null;
+  }
+}
+
+/** Explicit recovery only.  Normal acquire may reclaim a dead/reused PID as it always has, but
+ * deliberately refuses a merely stale heartbeat from a live process.  This command likewise
+ * never kills anything: a live owner must be investigated or terminated by its operator. */
+export async function unlockReclaimableStale(
+  path: string,
+  deps: LockDeps = defaultLockDeps,
+): Promise<{ ok: true; detail: string } | { ok: false; detail: string }> {
+  const record = await readLockRecord(path);
+  const verdict = await judgeStale(path, record, deps);
+  if (!verdict.stale) return { ok: false, detail: `lock is live: ${verdict.reason}` };
+  if (!verdict.reclaimable) {
+    return {
+      ok: false,
+      detail: `lock is abandoned but its owner pid is still alive: ${verdict.reason}; refusing to kill or unlock a live process automatically`,
+    };
+  }
+  const seen = await readLockRecord(path);
+  const same =
+    (record === null && seen === null) ||
+    (record !== null && seen !== null && record.token === seen.token && record.pid === seen.pid);
+  if (!same) return { ok: false, detail: "lock changed while checking; retry doctor" };
+  try {
+    await unlink(path);
+    return { ok: true, detail: `removed reclaimable stale lock: ${verdict.reason}` };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT")
+      return { ok: true, detail: "lock vanished" };
+    return { ok: false, detail: `could not remove stale lock: ${(err as Error).message}` };
   }
 }
 
@@ -125,10 +172,14 @@ export async function judgeStale(
       const st = await stat(path);
       const age = deps.now().getTime() - st.mtimeMs;
       return age > deps.unparseableGraceMs
-        ? { stale: true, reason: `unparseable lock older than ${deps.unparseableGraceMs} ms` }
+        ? {
+            stale: true,
+            reason: `unparseable lock older than ${deps.unparseableGraceMs} ms`,
+            reclaimable: true,
+          }
         : { stale: false, reason: "unparseable lock is recent; treating as live" };
     } catch {
-      return { stale: true, reason: "lock vanished" };
+      return { stale: true, reason: "lock vanished", reclaimable: true };
     }
   }
   if (record.pid === deps.pid) return { stale: false, reason: "held by this process" };
@@ -139,15 +190,33 @@ export async function judgeStale(
     };
   }
   if (!deps.isProcessAlive(record.pid))
-    return { stale: true, reason: `pid ${record.pid} not running` };
+    return { stale: true, reason: `pid ${record.pid} not running`, reclaimable: true };
   const created = await deps.processStartedAt(record.pid);
-  const lockStarted = new Date(record.startedAt);
+  const lockStarted = new Date(record.processStartedAt ?? record.startedAt);
   if (
     created &&
     !Number.isNaN(lockStarted.getTime()) &&
     created.getTime() > lockStarted.getTime() + 2000
   ) {
-    return { stale: true, reason: `pid ${record.pid} was reused (created after the lock)` };
+    return {
+      stale: true,
+      reason: `pid ${record.pid} was reused (created after the lock)`,
+      reclaimable: true,
+    };
+  }
+  // Pre-A-150 locks have no lease. Preserve their documented PID-only behavior rather than
+  // retroactively calling a healthy legacy owner abandoned from its old acquire timestamp.
+  if (!record.heartbeatAt)
+    return { stale: false, reason: `pid ${record.pid} is alive (legacy lock without heartbeat)` };
+  const heartbeat = new Date(record.heartbeatAt);
+  const threshold = deps.staleHeartbeatMs ?? defaultLockDeps.staleHeartbeatMs ?? 30_000;
+  const age = deps.now().getTime() - heartbeat.getTime();
+  if (!Number.isNaN(heartbeat.getTime()) && age > threshold) {
+    return {
+      stale: true,
+      reclaimable: false,
+      reason: `heartbeat stale for ${age} ms (threshold ${threshold} ms; live owner requires manual investigation)`,
+    };
   }
   return { stale: false, reason: `pid ${record.pid} is alive` };
 }
@@ -196,6 +265,7 @@ function createExclusive(path: string, content: string): boolean {
 
 export class ProcessLock {
   private record: LockRecord | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     public readonly path: string,
@@ -209,9 +279,13 @@ export class ProcessLock {
   /** ADR-005 決定 1/2: O_EXCL create; on EEXIST judge stale and reclaim via content-verified rename. */
   async acquire(command: string, requestId: string | null): Promise<AcquireOutcome> {
     await mkdir(dirname(this.path), { recursive: true });
+    const processStartedAt = await this.deps.processStartedAt(this.deps.pid);
+    const now = this.deps.now().toISOString();
     const record: LockRecord = {
       pid: this.deps.pid,
-      startedAt: this.deps.now().toISOString(),
+      startedAt: now,
+      heartbeatAt: now,
+      processStartedAt: processStartedAt?.toISOString() ?? null,
       token: randomBytes(16).toString("hex"),
       command,
       requestId,
@@ -222,7 +296,8 @@ export class ProcessLock {
 
     const existing = await readLockRecord(this.path);
     const verdict = await judgeStale(this.path, existing, this.deps);
-    if (!verdict.stale) return { kind: "busy", cause: verdict.reason, holder: existing };
+    if (!verdict.stale || !verdict.reclaimable)
+      return { kind: "busy", cause: verdict.reason, holder: existing };
 
     // content-verified reclaim
     const stalePath = join(
@@ -279,11 +354,54 @@ export class ProcessLock {
 
   private async confirm(record: LockRecord): Promise<AcquireOutcome> {
     const seen = await readLockRecord(this.path);
-    if (!seen || seen.token !== record.token) {
+    if (seen && seen.token !== record.token) {
       return { kind: "busy", cause: "lock token mismatch right after creation", holder: seen };
     }
     this.record = record;
+    this.startHeartbeat();
     return { kind: "ok", record };
+  }
+
+  private startHeartbeat(): void {
+    const interval = this.deps.heartbeatMs ?? defaultLockDeps.heartbeatMs ?? 5_000;
+    if (interval <= 0 || this.heartbeatTimer) return;
+    this.heartbeatTimer = setInterval(() => void this.heartbeat(), interval);
+    this.heartbeatTimer.unref?.();
+  }
+
+  /** Renew only this exact token. Atomic replacement avoids partial JSON and never clobbers a
+   * replacement owner. */
+  async heartbeat(): Promise<boolean> {
+    const record = this.record;
+    if (!record) return false;
+    const seen = await readLockRecord(this.path);
+    // A transient sharing/read error is represented by null.  It must not turn a
+    // healthy owner into a permanently non-renewing owner; only a positively read,
+    // different token proves that ownership was replaced.
+    if (seen && seen.token !== record.token) {
+      this.stopHeartbeat();
+      return false;
+    }
+    if (!seen) return false;
+    const renewed: LockRecord = { ...record, heartbeatAt: this.deps.now().toISOString() };
+    const temp = `${this.path}.${record.token}.heartbeat`;
+    try {
+      await writeFile(temp, JSON.stringify(renewed), "utf8");
+      const latest = await readLockRecord(this.path);
+      if (!latest || latest.token !== record.token) return false;
+      await rename(temp, this.path);
+      this.record = renewed;
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await unlink(temp).catch(() => undefined);
+    }
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 
   /** ADR-005 決定 1: re-verify ownership (used right before writing the submit marker). */
@@ -295,6 +413,7 @@ export class ProcessLock {
 
   /** Delete only if we still own it. */
   async release(): Promise<void> {
+    this.stopHeartbeat();
     if (!this.record) return;
     const seen = await readLockRecord(this.path);
     if (seen && seen.token === this.record.token) {
@@ -305,5 +424,24 @@ export class ProcessLock {
       }
     }
     this.record = null;
+  }
+
+  /**
+   * Hard-watchdog escape hatch. This intentionally performs only a local, token-checked
+   * read/unlink and never waits for a promise or a browser/CDP operation.
+   */
+  releaseSync(): boolean {
+    this.stopHeartbeat();
+    const record = this.record;
+    if (!record) return false;
+    try {
+      const parsed = JSON.parse(readFileSync(this.path, "utf8")) as Partial<LockRecord>;
+      if (parsed.token !== record.token || parsed.pid !== record.pid) return false;
+      unlinkSync(this.path);
+      this.record = null;
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

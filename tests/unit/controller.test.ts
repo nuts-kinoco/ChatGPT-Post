@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { Observation } from "../../src/chatgpt/completion.js";
 import { checkResultInvariants } from "../../src/contracts/invariants.js";
 import type { BridgeResult } from "../../src/contracts/types.js";
-import { RunController } from "../../src/state/controller.js";
+import {
+  POST_SUBMIT_STABILIZATION_AND_EXTRACTION_BUDGET_MS,
+  preSubmitWatchdogBudgetMs,
+  RunController,
+} from "../../src/state/controller.js";
 import type { ChatGptPort, Ports } from "../../src/state/ports.js";
 
 interface Fake {
@@ -183,9 +187,12 @@ function fake(
           if (opts.captureFails) throw new Error("screenshot exploded");
           return "/art/screenshot.png";
         },
-        stopTrace: async () => {
-          calls.push("stopTrace");
-          return "/art/trace.zip";
+        sealTrace: async () => {
+          calls.push("sealTrace");
+        },
+        finalizeTrace: async (_dir, keep) => {
+          calls.push(`finalizeTrace:${keep}`);
+          return keep ? "/art/trace.zip" : null;
         },
         close: async () => {
           calls.push("close");
@@ -211,8 +218,59 @@ function run(f: Fake, extra: Partial<ConstructorParameters<typeof RunController>
 }
 
 describe("RunController", () => {
+  it("A-152: reports the derived pre-submit budget, then reports timeoutMs only after dispatch", async () => {
+    const f = fake();
+    const seen: Array<["pre" | "submit", number]> = [];
+    await run(f, {
+      onPreSubmitBudgetKnown: (budget) => seen.push(["pre", budget]),
+      onSubmitDispatched: (timeout) => seen.push(["submit", timeout]),
+    });
+    expect(seen).toEqual([
+      ["pre", 632_000],
+      ["submit", 60_000],
+    ]);
+    expect(preSubmitWatchdogBudgetMs(1024 * 1024, 1)).toBe(782_000);
+    expect(POST_SUBMIT_STABILIZATION_AND_EXTRACTION_BUDGET_MS).toBe(125_000);
+  });
+
+  it("SIGTERM-style interruption writes a terminal result, closes/detaches, then releases the lock", async () => {
+    let rejectObserve: ((reason: Error) => void) | null = null;
+    const f = fake({
+      observe: async () =>
+        new Promise<Observation>((_resolve, reject) => {
+          rejectObserve = reject;
+        }),
+    });
+    const originalClose = f.ports.browser.close;
+    f.ports.browser.close = async () => {
+      await originalClose();
+      rejectObserve?.(new Error("session closed"));
+    };
+    const controller = new RunController(f.ports, {
+      requestPath: "/req/request.json",
+      artifactsRoot: "/art",
+      bridgeVersion: "0.1.0",
+      traceOnSuccess: false,
+      observationIntervalMs: 0,
+    });
+    const running = controller.run();
+    for (let i = 0; i < 20 && rejectObserve === null; i++)
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    await controller.interrupt("SIGTERM");
+    const out = await running;
+    expect(out.result?.error?.code).toBe("INTERNAL_ERROR");
+    expect(out.result?.error?.cause).toContain("SIGTERM");
+    expect(f.calls.indexOf("writeResult")).toBeLessThan(f.calls.lastIndexOf("close"));
+    expect(f.calls.lastIndexOf("close")).toBeLessThan(f.calls.indexOf("release"));
+  });
+
   it("happy path: completed, response then result, close before release", async () => {
     const f = fake();
+    const observe = f.ports.chatgpt.observe;
+    f.ports.chatgpt.observe = async (elapsed) => {
+      f.calls.push("observe");
+      return observe(elapsed);
+    };
     const out = await run(f);
     expect(out.exitCode).toBe(0);
     expect(out.result?.status).toBe("completed");
@@ -229,7 +287,9 @@ describe("RunController", () => {
     expect(f.calls.indexOf("writeResponse")).toBeLessThan(f.calls.indexOf("writeResult"));
     expect(f.calls.indexOf("close")).toBeLessThan(f.calls.indexOf("release"));
     expect(f.calls.indexOf("restoreEffort")).toBeLessThan(f.calls.indexOf("close"));
-    expect(f.calls).not.toContain("stopTrace"); // trace on success disabled
+    expect(f.calls).toContain("sealTrace"); // sealed before the long response wait
+    expect(f.calls).toContain("finalizeTrace:false"); // trace on success disabled
+    expect(f.calls.indexOf("sealTrace")).toBeLessThan(f.calls.indexOf("observe"));
   });
 
   it("A-144: a direct Project URL keeps A-106 routing and reports its handshake", async () => {
@@ -510,8 +570,11 @@ describe("RunController", () => {
     expect(out.exitCode).toBe(3);
     expect(out.result?.status).toBe("manual_intervention_required");
     expect(out.result?.error?.code).toBe("AUTH_REQUIRED");
-    expect(out.result?.warnings.join()).toMatch(/capture_failed/);
-    expect(out.result?.artifacts).toEqual(["/art/trace.zip"]);
+    // A-151 writes the terminal protocol before slow diagnostics.  A later capture
+    // failure therefore cannot delay or rewrite the already-observable result.
+    expect(out.result?.warnings.join()).not.toMatch(/capture_failed/);
+    expect(out.result?.artifacts).toEqual([]);
+    expect(f.calls.indexOf("writeResult")).toBeLessThan(f.calls.indexOf("capture"));
   });
 
   it("SUBMIT_ABORTED: click not dispatched, marker deleted, submitted no", async () => {
@@ -652,7 +715,9 @@ describe("RunController", () => {
     expect(json).not.toMatch(/SECRET[1-6]/);
     expect(out.result?.error?.cause).toContain("Authorization: [REDACTED]");
     expect(out.result?.error?.message).not.toMatch(/SECRET/);
-    expect(out.result?.warnings.join("\n")).toContain("[REDACTED]");
+    // The trace/capture warning is post-result diagnostic work (A-151), so the
+    // terminal document remains the pre-artifact snapshot.
+    expect(out.result?.warnings.join("\n")).not.toContain("SECRET");
   });
 
   // Codex review of A-106, High: pathname-shape alone isn't enough — origin must match too, or a

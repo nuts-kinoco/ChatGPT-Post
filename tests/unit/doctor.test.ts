@@ -71,7 +71,7 @@ describe("checkLock pooled mode (Phase 3 MVP, A-136)", () => {
     expect(result.detail).toContain("slot1 free");
   });
 
-  it("warns about a stale slot and gives its exact safe-delete path", async () => {
+  it("reports a reclaimable stale slot and its explicit unlock path", async () => {
     const config = cfg(2);
     const path = slotPath(join(config.locksDir, "bridge.lock"), 1);
     await writeLock(path, 2_147_483_647, "run");
@@ -80,8 +80,8 @@ describe("checkLock pooled mode (Phase 3 MVP, A-136)", () => {
 
     expect(result.ok).toBe(true);
     expect(result.warn).toBe(true);
-    expect(result.detail).toContain("slot1 stale");
-    expect(result.detail).toContain(`safe to delete ${path}`);
+    expect(result.detail).toContain("slot1 abandoned");
+    expect(result.detail).toContain(`safe to run unlock --stale for ${path}`);
   });
 
   it("keeps a held slot failing even when the other pool slots are free", async () => {
@@ -97,15 +97,15 @@ describe("checkLock pooled mode (Phase 3 MVP, A-136)", () => {
     expect(result.detail).toContain("slot2 free");
   });
 
-  it("keeps the default single bridge.lock behavior unchanged", async () => {
+  it("reports heartbeat age for the default single bridge.lock", async () => {
     const config = cfg(1);
     const path = join(config.locksDir, "bridge.lock");
     await writeLock(path, process.pid, "run");
 
-    await expect(checkLock(config)).resolves.toEqual({
+    await expect(checkLock(config)).resolves.toMatchObject({
       name: "lock",
       ok: false,
-      detail: `held: pid=${process.pid} command=run (held by this process)`,
+      detail: expect.stringContaining(`held: pid=${process.pid} command=run heartbeatAge=`),
     });
   });
 });
