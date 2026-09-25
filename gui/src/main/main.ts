@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, screen, shell, type MessageBoxOptions } from "electron";
 import { spawn } from "node:child_process";
 import { open, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -101,6 +101,7 @@ export interface RequestDetail {
   prompt: string | null; response: string | null; responseTruncated: boolean; log: string | null; logTruncated: boolean;
   fieldErrors: Partial<Record<"request" | "result" | "meta" | "prompt" | "response" | "log", string>>;
 }
+export type StopRequestResult = { ok: true; requestId: string } | { ok: false; reason: string };
 async function readRequestDetail(requestId: unknown): Promise<RequestDetail> {
   const requestDirectory = safeRequestDirectory(requestId);
   const validatedRequestId = requestId as string;
@@ -132,6 +133,41 @@ function parseDoctor(stdout: string): { ok: boolean; items: DoctorItem[] } {
   const items = value.items.filter((item): item is DoctorItem => typeof item === "object" && item !== null && typeof (item as DoctorItem).name === "string" && typeof (item as DoctorItem).ok === "boolean" && typeof (item as DoctorItem).detail === "string");
   if (items.length !== value.items.length) throw new Error("doctor --json contains an invalid item");
   return { ok: value.ok, items };
+}
+function parseStop(stdout: string): StopRequestResult {
+  const line = stdout.split(/\r?\n/u).find((candidate) => candidate.trim());
+  if (!line) throw new Error("stop --json returned no JSON");
+  const parsed: unknown = JSON.parse(line);
+  if (!isRecord(parsed) || typeof parsed.ok !== "boolean") throw new Error("stop --json returned an unexpected shape");
+  if (parsed.ok === true && validRequestId(parsed.requestId)) return { ok: true, requestId: parsed.requestId };
+  if (parsed.ok === false && typeof parsed.reason === "string" && parsed.reason) return { ok: false, reason: parsed.reason };
+  throw new Error("stop --json returned an unexpected shape");
+}
+function requestStop(requestId: string): Promise<StopRequestResult> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(process.execPath, [CLI_PATH, "stop", requestId, "--json"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
+    } catch (error) {
+      resolve({ ok: false, reason: error instanceof Error ? `Could not start stop command: ${error.message}` : "Could not start stop command" });
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (result: StopRequestResult) => { if (!settled) { settled = true; resolve(result); } };
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on("error", (error) => finish({ ok: false, reason: `Could not start stop command: ${error.message}` }));
+    child.on("close", () => {
+      if (settled) return;
+      try { finish(parseStop(stdout)); }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : "Malformed stop output";
+        finish({ ok: false, reason: `${reason}${stderr.trim() ? ` (${stderr.trim()})` : ""}` });
+      }
+    });
+  });
 }
 function pollDoctor(): Promise<void> {
   return new Promise((resolve) => {
@@ -172,6 +208,30 @@ app.whenReady().then(() => {
       await shell.openExternal(detail.conversationUrl);
       return true;
     } catch { return false; }
+  });
+  ipcMain.handle("bridge-gui:stop", async (_event, requestId: unknown): Promise<StopRequestResult> => {
+    if (!validRequestId(requestId)) return { ok: false, reason: "Invalid request id" };
+    const running = bridgeState.requests.find((request) => request.requestId === requestId && request.status === "Running");
+    if (!running) return { ok: false, reason: "Request is no longer running" };
+    try {
+      const options: MessageBoxOptions = {
+        type: "warning",
+        title: "Stop running request?",
+        message: "Stop this running request?",
+        detail: `Title: ${running.title}\nRequest ID: ${running.requestId}\n\nStopping is cooperative: the running process will stop after its next poll.`,
+        buttons: ["Cancel", "Stop Request"],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      };
+      const confirmation = barWindow
+        ? await dialog.showMessageBox(barWindow, options)
+        : await dialog.showMessageBox(options);
+      if (confirmation.response !== 1) return { ok: false, reason: "Stop cancelled" };
+      return await requestStop(requestId);
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? `Could not request stop: ${error.message}` : "Could not request stop" };
+    }
   });
   void pollDoctor();
   void pollRequests();
