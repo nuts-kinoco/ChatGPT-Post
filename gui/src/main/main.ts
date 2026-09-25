@@ -1,15 +1,20 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, Tray, nativeImage, screen, shell, type MessageBoxOptions } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, net, Tray, nativeImage, protocol, screen, shell, type MessageBoxOptions } from "electron";
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, open, readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { aggregateState, DOCTOR_POLL_INTERVAL_MS, EMPTY_STATE, REQUESTS_POLL_INTERVAL_MS, scanRequests, type BridgeGuiState, type DoctorItem } from "./state.js";
 import { evaluateRefreshCookiePreflight, type RefreshCookiePreflightResult } from "./refresh-cookie.js";
 import { addPickerAttachmentPaths, attachmentsArePickerApproved, buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest, type NewSubmissionInput } from "./submit-new.js";
 import { resolveBridgePaths } from "./bridge-paths.js";
 import { portableExecutablePath } from "./login-item.js";
+import { RENDERER_SCHEME, rendererFilePath, resolveRendererUrl } from "./renderer-protocol.js";
 import * as fs from "node:fs/promises";
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: RENDERER_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+]);
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
@@ -41,7 +46,15 @@ let scannedRequests: Awaited<ReturnType<typeof scanRequests>> = [];
 let bridgeState: BridgeGuiState = EMPTY_STATE;
 let pickerAttachmentPaths = new Set<string>();
 
-function rendererUrl(): string { return !app.isPackaged && process.env.ELECTRON_RENDERER_URL ? process.env.ELECTRON_RENDERER_URL : `file://${path.join(__dirname, "../renderer/index.html")}`; }
+function rendererUrl(): string { return resolveRendererUrl(app.isPackaged, process.env.ELECTRON_RENDERER_URL); }
+function registerRendererProtocol() {
+  const rendererDirectory = path.join(__dirname, "../renderer");
+  protocol.handle(RENDERER_SCHEME, (request) => {
+    const filePath = rendererFilePath(request.url, rendererDirectory);
+    if (!filePath) return new Response("Not found", { status: 404 });
+    return net.fetch(pathToFileURL(filePath).toString());
+  });
+}
 function createTrayIcon() { return nativeImage.createFromPath(path.join(__dirname, "../../assets/tray-icon.png")).resize({ width: 16, height: 16 }); }
 function positionWindow() {
   if (!barWindow) return;
@@ -323,6 +336,7 @@ if (hasSingleInstanceLock) {
   app.on("second-instance", () => { if (bridgePaths.ok) void app.whenReady().then(showBar); });
 
   app.whenReady().then(() => {
+    registerRendererProtocol();
     if (!bridgePaths.ok) {
       dialog.showErrorBox("ChatGPT Bridge root is not configured", bridgePaths.error);
       app.quit();
