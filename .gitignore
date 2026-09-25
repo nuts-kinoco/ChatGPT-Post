@@ -24,6 +24,8 @@ logs/
 # Node
 node_modules/
 dist/
+gui/node_modules/
+gui/dist/
 coverage/
 .npm/
 npm-debug.log*
