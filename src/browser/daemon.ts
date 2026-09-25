@@ -395,6 +395,7 @@ export async function startDaemon(
       ...(process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS
         ? ["--keepalive-ms", process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS]
         : []),
+      ...(process.env.CHATGPT_BRIDGE_DAEMON_KEEPALIVE === "0" ? ["--keepalive-disabled"] : []),
     ],
     {
       detached: true,

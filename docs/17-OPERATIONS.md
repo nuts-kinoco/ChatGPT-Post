@@ -18,6 +18,14 @@ chatgpt-bridge collect --conversation-url https://chatgpt.com/c/... --since 2026
 
 `doctor` now reports residual `%TEMP%\playwright-artifacts-*` and `%TEMP%\bridge-trace-*` folders with aggregate size and age. It suggests manual cleanup and never deletes them.
 
+### Daemon session keepalive (A-158)
+
+While `chatgpt-bridge daemon start` is running, its own idle tab loads `https://chatgpt.com/` every six hours (at most four loads per day). This is a read-only home-page load: it never types, clicks, sends a prompt, or continues a conversation. The load reuses the same bounded authentication observation as `doctor`; a logout/challenge observation gets no follow-up page action. The daemon atomically acquires its normal lock (or every pool slot) first, so a `run`/`submit` in progress is logged as a skip without touching the browser. Each tick is appended to `runtime/daemon.<hostname>.log`.
+
+Set `CHATGPT_BRIDGE_DAEMON_KEEPALIVE=0` before starting the daemon to disable it. `CHATGPT_BRIDGE_DAEMON_KEEPALIVE_MS` accepts intervals of one hour or longer; invalid or shorter values safely fall back to six hours. The default deliberately favors low background traffic and Cloudflare safety over aggressive activity simulation.
+
+This can only extend an already-valid session's idle interval. It cannot prevent real expiry, logout, or a Cloudflare/CAPTCHA challenge, all of which still require the human manual-login flow. It never stores or enters credentials, 2FA codes, or prompts. A possible quota-free follow-up is surfacing the last successful tick in `doctor`; timer-driven chat prompts remain rejected.
+
 | 項目 | 値 |
 |---|---|
 | 文書版 | 2.0（Phase 7 全面改訂、2026-09-15。契約 1.2） |

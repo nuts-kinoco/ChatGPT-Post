@@ -8,8 +8,11 @@ import { rename, unlink, writeFile } from "node:fs/promises";
 import { hostname as osHostname } from "node:os";
 import { parseArgs } from "node:util";
 import { chromium } from "playwright";
+import { observeAuthWithRetry } from "../chatgpt/auth-probe.js";
+import { ChatGptPage } from "../chatgpt/page.js";
 import { ProcessLock } from "../state/lock.js";
 import { type AcquiredBarrier, acquireAllSlots, releaseAllSlots } from "../state/slot-lock.js";
+import { type KeepaliveScheduler, parseKeepaliveInterval, startKeepalive } from "./keepalive.js";
 import { type ExperimentalStealthMode, STEALTH_SIGNAL_PATCH } from "./stealth-signals.js";
 import { withTimeout } from "./timeout.js";
 
@@ -21,6 +24,7 @@ const { values } = parseArgs({
     "state-path": { type: "string" },
     "lock-path": { type: "string" },
     "keepalive-ms": { type: "string" },
+    "keepalive-disabled": { type: "boolean" },
     hostname: { type: "string" },
     "profile-id": { type: "string" },
     "max-concurrency": { type: "string" },
@@ -44,9 +48,9 @@ const port = Number(values.port ?? "9876");
 // computing it, so the recorded owner is unambiguous even if start and worker ever ran on
 // different hosts for some reason.
 const hostname = values.hostname ?? osHostname();
-// A-105: ChatGPT's own guidance is that an idle session needs interaction roughly every
-// 15-30 minutes; default to the low end of that window with margin to spare.
-const keepAliveMs = Number(values["keepalive-ms"] ?? 15 * 60 * 1000);
+// A-158: six hours is deliberately low-frequency (four loads/day); sub-hour overrides fall back.
+const keepAliveMs = parseKeepaliveInterval(values["keepalive-ms"]);
+const keepaliveEnabled = !values["keepalive-disabled"];
 // A-136 (Phase 3 MVP, Opus review High#1): the generation-slot pool size this daemon's keepalive
 // barrier-locks against for its whole lifetime — see DaemonState.maxConcurrency's doc comment.
 const maxConcurrencyRaw = Number(values["max-concurrency"] ?? "1");
@@ -92,7 +96,7 @@ if (experimentalStealth === "initscript") await context.addInitScript(STEALTH_SI
 let page = context.pages()[0] ?? (await context.newPage());
 
 let shuttingDown = false;
-let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
+let keepalive: KeepaliveScheduler | undefined;
 /**
  * Codex review of A-110, High: unlinking the state file *before* confirming the context is
  * actually closed meant a hung/failed close() could leave the real Chrome still holding the
@@ -104,7 +108,7 @@ let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  if (keepAliveTimer) clearInterval(keepAliveTimer);
+  keepalive?.stop();
   await withTimeout(context.close(), 10_000, "context.close()").catch(() => undefined);
   await unlink(statePath).catch(() => undefined);
   process.exit(0);
@@ -163,7 +167,6 @@ const keepaliveLock = lockPath ? buildKeepaliveLock(lockPath, maxConcurrency) : 
  * the dead page. `run`/`doctor` surfaced this as confusing errors (INVALID_STATE / NOT_READY)
  * instead of the clean PROFILE_IN_USE-then-fresh-launch path a genuinely absent daemon gets.
  */
-let consecutiveFailures = 0;
 /** After this many consecutive ticks where even opening a replacement page failed, give up on the
  * browser entirely and self-shutdown — doctor/run then correctly see "no daemon" and fall back to
  * a fresh launch, instead of a daemon that looks alive but can never serve a page again. Kept low
@@ -175,89 +178,35 @@ function log(msg: string): void {
   process.stdout.write(`[keepalive ${new Date().toISOString()}] ${msg}\n`);
 }
 
-/** Codex review of A-110, Medium: setInterval doesn't wait for a slow tick before starting the
- * next one; without this guard, two overlapping ticks could fight over replacing `page` and
- * `consecutiveFailures`, or one could close a page the other just opened. */
-let tickInFlight = false;
+async function probeDaemonPage(): Promise<{ ok: boolean; detail: string; recoverable: boolean }> {
+  // navigateAndObserveAuth() performs page.goto(ChatGPT home), so this is an actual network load.
+  const auth = await observeAuthWithRetry(new ChatGptPage(page, { verifiedOnly: true }));
+  return {
+    ok: auth.kind === "AUTH_OK",
+    detail:
+      auth.kind === "AUTH_OK"
+        ? "logged in"
+        : `${auth.kind}${"cause" in auth ? `: ${auth.cause}` : ""}`,
+    recoverable: auth.kind === "NOT_READY" || auth.kind === "WRONG_PAGE",
+  };
+}
 
-/** A-105: periodic real navigation as an activity signal. A-120 (Phase 0-B-4): the lock is held
- * for the entire duration of this tick's page-touching work via keepaliveLock.acquire()/release()
- * above, not just checked once — a genuine mutual-exclusion participant, not a presence check
- * with a re-check bolted on. */
-async function keepAliveTick(): Promise<void> {
-  if (shuttingDown || tickInFlight) return;
-  tickInFlight = true;
-  let acquired = false;
+/** Opens a replacement only after a liveness failure. A successful `newPage()` is insufficient:
+ * verify that it can evaluate before replacing the daemon's tracked page. */
+async function replaceDaemonPage(): Promise<void> {
+  let fresh: typeof page | undefined;
   try {
-    if (!keepaliveLock) {
-      log("skipped: no lock-path configured");
-      return;
-    }
-    const outcome = await keepaliveLock.acquire("daemon-keepalive", null);
-    if (outcome.kind !== "ok") {
-      log("skipped: lock held");
-      return;
-    }
-    acquired = true;
-    // A-136 (Phase 3 MVP): used to fall back to "any non-closed page in context.pages()" here, but
-    // now that more than one `run` can hold a dedicated Page concurrently (state/slot-lock.ts), any
-    // of those pages may belong to a generation actively in flight — navigating (or worse, later
-    // closing) one out from under it would corrupt that job. Always open a fresh page of our own
-    // instead; the old A-110 rationale (avoid piling up a stray blank tab) no longer applies once
-    // concurrent jobs routinely open and close their own dedicated tabs anyway.
-    if (page.isClosed()) {
-      try {
-        page = await context.newPage();
-      } catch (err) {
-        log(`could not open a replacement page: ${(err as Error).message}`);
-        return; // try again next tick rather than letting this throw out of keepAliveTick()
-      }
-    }
-    try {
-      await withTimeout(
-        page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 30000 }),
-        35_000,
-        "keepalive goto",
-      );
-      log(`reloaded, url=${page.url()}`);
-      consecutiveFailures = 0;
-      return;
-    } catch (err) {
-      consecutiveFailures++;
-      log(`failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${(err as Error).message}`);
-    }
-    // A-120: no second lock-held re-check needed here — we've held the real lock since before
-    // touching `page` above, so no client could have acquired it in between.
-    // A-110: the page itself (not necessarily the context) may be the thing that died. Try opening
-    // a replacement page on the same context before giving up on the whole daemon. Codex review,
-    // High: newPage() succeeding doesn't by itself prove the new page is usable — verify it too
-    // (bounded) before trusting it and resetting the failure count.
-    try {
-      const fresh = await context.newPage();
-      await withTimeout(
-        fresh.evaluate(() => true),
-        5000,
-        "replacement page liveness check",
-      );
-      await page.close().catch(() => undefined);
-      page = fresh;
-      log("opened a replacement page");
-      consecutiveFailures = 0;
-      return;
-    } catch (err) {
-      log(
-        `could not open a usable replacement page (context likely dead too): ${(err as Error).message}`,
-      );
-    }
-    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-      log(
-        `giving up after ${consecutiveFailures} consecutive failures; shutting down so doctor/run see "no daemon" instead of a stuck one`,
-      );
-      await shutdown();
-    }
-  } finally {
-    if (acquired) await keepaliveLock?.release();
-    tickInFlight = false;
+    fresh = await context.newPage();
+    await withTimeout(
+      fresh.evaluate(() => true),
+      5000,
+      "replacement page liveness check",
+    );
+    await page.close().catch(() => undefined);
+    page = fresh;
+  } catch (err) {
+    await fresh?.close().catch(() => undefined);
+    throw err;
   }
 }
 
@@ -286,8 +235,21 @@ process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
 context.on("close", () => void shutdown());
 
-keepAliveTimer = setInterval(() => void keepAliveTick(), keepAliveMs);
-process.stdout.write(`[keepalive] interval=${keepAliveMs}ms lockPath=${lockPath ?? "(none)"}\n`);
+keepalive = startKeepalive(
+  {
+    lock: keepaliveLock,
+    probeLogin: probeDaemonPage,
+    replacePage: replaceDaemonPage,
+    shutdown,
+    maxConsecutiveFailures: MAX_CONSECUTIVE_FAILURES,
+    log,
+  },
+  keepAliveMs,
+  keepaliveEnabled,
+);
+process.stdout.write(
+  `[keepalive] ${keepaliveEnabled ? "enabled" : "disabled"} interval=${keepAliveMs}ms lockPath=${lockPath ?? "(none)"}\n`,
+);
 
 // Keep the process alive until a shutdown signal arrives or the browser context closes.
 await new Promise(() => undefined);

@@ -9,6 +9,7 @@ import { parseArgs } from "node:util";
 import { checkDaemon, startDaemon, stopDaemon } from "../browser/daemon.js";
 import { checkProfilePath } from "../browser/profile-guard.js";
 import { buildBundle } from "../bundle/bundle.js";
+import { observeAuthWithRetry } from "../chatgpt/auth-probe.js";
 import { ChatGptPage } from "../chatgpt/page.js";
 import { EXIT_CODES } from "../contracts/types.js";
 import { formatDoctor, runDoctor } from "../diagnostics/doctor.js";
@@ -31,6 +32,8 @@ import { buildPorts } from "./adapters.js";
 import { type BridgeConfig, loadConfig } from "./config.js";
 import { RunWatchdog } from "./run-watchdog.js";
 import { runWorker } from "./worker.js";
+
+export { observeAuthWithRetry } from "../chatgpt/auth-probe.js";
 
 const USAGE = `chatgpt-bridge <command> [options]
 
@@ -152,31 +155,6 @@ async function withBrowser<T>(
  * a transient navigation hiccup (goto timeout, net::ERR_ABORTED); real auth states (AUTH_REQUIRED,
  * CHALLENGE, WRONG_PAGE) are never retried — retrying those would mask a genuine fail-closed signal.
  */
-export async function observeAuthWithRetry(
-  page: Pick<ChatGptPage, "navigateAndObserveAuth">,
-  crash: CrashState,
-  attempts = 3,
-): Promise<Awaited<ReturnType<ChatGptPage["navigateAndObserveAuth"]>>> {
-  let last: Awaited<ReturnType<ChatGptPage["navigateAndObserveAuth"]>> = {
-    kind: "NOT_READY",
-    cause: "not attempted",
-  };
-  for (let i = 0; i < attempts; i++) {
-    // Codex review of 80f816d, High #1: a crash must stop retries against the dead page immediately.
-    if (crash.cause) return last;
-    last = await page.navigateAndObserveAuth().catch(
-      (err): Awaited<ReturnType<ChatGptPage["navigateAndObserveAuth"]>> => ({
-        kind: "NOT_READY",
-        cause: `threw: ${(err as Error).message}`,
-      }),
-    );
-    if (crash.cause) return last;
-    if (last.kind !== "NOT_READY") return last;
-    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 1500 * (i + 1)));
-  }
-  return last;
-}
-
 async function cmdLogin(cfg: BridgeConfig, verifiedOnly: boolean): Promise<number> {
   const r = await withBrowser(cfg, "login", verifiedOnly, async (ports, crash) => {
     const page = new ChatGptPage(ports.session.currentPage, { verifiedOnly });
