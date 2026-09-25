@@ -6,7 +6,7 @@ export default {
       colors: {
         base: "#121417",
         surface: "#1a1d21",
-        raised: "#2a2e33",
+        raised: "#22272e",
         line: "#2a2e33",
         ink: "#e1e4e8",
         "ink-2": "#8b949e",
