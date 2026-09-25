@@ -27,7 +27,7 @@ async function expectNoMarker(): Promise<void> {
   await expect(stat(markerPath())).rejects.toMatchObject({ code: "ENOENT" });
 }
 
-async function writeLock(id: string, pid = process.pid): Promise<void> {
+async function writeLock(id: string, pid = process.pid, command = "run"): Promise<void> {
   const locksDir = join(runtimeDir, "locks");
   await mkdir(locksDir, { recursive: true });
   const now = new Date().toISOString();
@@ -37,7 +37,7 @@ async function writeLock(id: string, pid = process.pid): Promise<void> {
       pid,
       startedAt: now,
       token: "stop-test-token",
-      command: "run",
+      command,
       requestId: id,
       hostname: hostname(),
       heartbeatAt: now,
@@ -86,14 +86,27 @@ describe("stop <requestId>", () => {
     await expectNoMarker();
   });
 
+  it("refuses a live collect lock and writes no marker", async () => {
+    await writeLock(requestId, process.pid, "collect");
+    const out = await runJson();
+    expect(out.code).not.toBe(0);
+    expect(out.output).toEqual({
+      ok: false,
+      reason: 'cannot stop command "collect": only "run" supports cooperative stop',
+    });
+    await expectNoMarker();
+  });
+
   it("atomically writes an idempotent marker only for a live matching lock", async () => {
     await writeLock(requestId);
     expect((await runJson()).code).toBe(0);
     expect((await runJson()).code).toBe(0);
     const marker = JSON.parse(await readFile(markerPath(), "utf8")) as {
+      token: string;
       requestedAt: string;
       requestedBy: string;
     };
+    expect(marker.token).toBe("stop-test-token");
     expect(new Date(marker.requestedAt).toISOString()).toBe(marker.requestedAt);
     expect(marker.requestedBy).toBe("cli");
   });

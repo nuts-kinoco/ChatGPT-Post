@@ -3,6 +3,7 @@ import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from "node:f
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { hostname as osHostname } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { deleteStopRequest, stopRequestPath } from "./stop-request.js";
 
 export interface LockRecord {
   pid: number;
@@ -132,6 +133,7 @@ export async function readLockRecord(path: string): Promise<LockRecord | null> {
 export async function unlockReclaimableStale(
   path: string,
   deps: LockDeps = defaultLockDeps,
+  runtimeStateDir?: string,
 ): Promise<{ ok: true; detail: string } | { ok: false; detail: string }> {
   const record = await readLockRecord(path);
   const verdict = await judgeStale(path, record, deps);
@@ -149,6 +151,15 @@ export async function unlockReclaimableStale(
   if (!same) return { ok: false, detail: "lock changed while checking; retry doctor" };
   try {
     await unlink(path);
+    if (
+      runtimeStateDir !== undefined &&
+      record?.requestId !== null &&
+      record?.requestId !== undefined
+    ) {
+      await deleteStopRequest(stopRequestPath(runtimeStateDir, record.requestId)).catch(
+        () => undefined,
+      );
+    }
     return { ok: true, detail: `removed reclaimable stale lock: ${verdict.reason}` };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT")

@@ -130,7 +130,7 @@ function harness(): Harness {
         },
       },
       lock: {
-        acquire: async () => ({ kind: "ok" }),
+        acquire: async () => ({ kind: "ok", token: "error-code-test-token" }),
         verify: async () => true,
         release: async () => undefined,
         markerExists: async () => false,
@@ -138,6 +138,7 @@ function harness(): Harness {
         updateMarker: async () => undefined,
         deleteMarker: async () => undefined,
         stopRequestExists: async () => false,
+        readStopRequest: async () => null,
         deleteStopRequest: async () => undefined,
       },
       browser: {

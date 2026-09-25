@@ -11,6 +11,7 @@ import type {
 } from "../contracts/types.js";
 import type { ChallengeKind, NewChatFailure, SubmitFailure } from "./machine.js";
 import type { SubmitMarker } from "./marker.js";
+import type { StopRequest } from "./stop-request.js";
 
 export interface Clock {
   now(): Date;
@@ -52,7 +53,7 @@ export interface LockPort {
   acquire(
     command: string,
     requestId: string | null,
-  ): Promise<{ kind: "ok" } | { kind: "busy"; cause: string }>;
+  ): Promise<{ kind: "ok"; token: string } | { kind: "busy"; cause: string }>;
   verify(): Promise<boolean>;
   release(): Promise<void>;
   /** Hard-watchdog-only synchronous release; implementations must check their exact token. */
@@ -65,6 +66,7 @@ export interface LockPort {
   ): Promise<void>;
   deleteMarker(requestId: string): Promise<void>;
   stopRequestExists(requestId: string): Promise<boolean>;
+  readStopRequest(requestId: string): Promise<StopRequest | null>;
   deleteStopRequest(requestId: string): Promise<void>;
 }
 

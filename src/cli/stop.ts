@@ -76,6 +76,12 @@ export async function requestStop(
       staleReasons.push(verdict.reason);
       continue;
     }
+    if (candidate.record?.command !== "run") {
+      return {
+        ok: false,
+        reason: `cannot stop command "${candidate.record?.command ?? "unknown"}": only "run" supports cooperative stop`,
+      };
+    }
 
     // Refuse if ownership changed during the liveness check. The second stale judgment also
     // closes the common dead-owner race immediately before the marker write.
@@ -89,6 +95,7 @@ export async function requestStop(
     }
 
     await writeStopRequest(stopRequestPath(cfg.stateDir, requestId), {
+      token: candidate.record.token,
       requestedAt: deps.now().toISOString(),
       requestedBy,
     });

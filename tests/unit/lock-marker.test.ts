@@ -1,6 +1,16 @@
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -19,6 +29,7 @@ import {
   updateMarker,
   writeMarker,
 } from "../../src/state/marker.js";
+import { stopRequestPath, writeStopRequest } from "../../src/state/stop-request.js";
 
 let dir: string;
 beforeEach(async () => {
@@ -266,6 +277,34 @@ describe("ProcessLock (ADR-005)", () => {
     expect(verdict).toMatchObject({ stale: true, reclaimable: true });
     expect((await unlockReclaimableStale(p, d)).ok).toBe(true);
     await expect(stat(p)).rejects.toThrow();
+  });
+
+  it("removes the reclaimed owner's stop.request as best-effort stale-lock hygiene", async () => {
+    const runtimeDir = join(dir, "runtime");
+    const stateDir = join(runtimeDir, "state");
+    const p = join(runtimeDir, "locks", "bridge.lock");
+    const requestId = "req-stale-reclaim";
+    await mkdir(join(runtimeDir, "locks"), { recursive: true });
+    await writeFile(
+      p,
+      JSON.stringify({
+        pid: 999,
+        startedAt: "2026-09-14T00:00:00Z",
+        token: "dead-owner-token",
+        command: "run",
+        requestId,
+        hostname: "test-host",
+      }),
+    );
+    const requestPath = stopRequestPath(stateDir, requestId);
+    await writeStopRequest(requestPath, {
+      token: "dead-owner-token",
+      requestedAt: "2026-09-15T00:00:00.000Z",
+    });
+
+    const result = await unlockReclaimableStale(p, deps({ isProcessAlive: () => false }), stateDir);
+    expect(result.ok).toBe(true);
+    await expect(stat(requestPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("A-108: a lock held by another hostname is never treated as stale, even if the pid doesn't exist here", async () => {

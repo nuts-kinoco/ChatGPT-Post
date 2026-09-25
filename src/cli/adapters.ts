@@ -33,7 +33,12 @@ import {
   releaseAllSlots,
   verifyAllSlots,
 } from "../state/slot-lock.js";
-import { deleteStopRequest, stopRequestExists, stopRequestPath } from "../state/stop-request.js";
+import {
+  deleteStopRequest,
+  readStopRequest,
+  stopRequestExists,
+  stopRequestPath,
+} from "../state/stop-request.js";
 import type { BridgeConfig } from "./config.js";
 
 export const systemClock: Clock = {
@@ -112,7 +117,9 @@ export function fileLock(cfg: BridgeConfig): LockPort & { raw: ProcessLock | nul
         const res = await acquireAllSlots(basePath, cfg.maxConcurrency, command, requestId);
         if (res.kind === "busy") return { kind: "busy", cause: res.cause };
         barrier = res.barrier;
-        return { kind: "ok" };
+        const token = barrier.locks[0]?.token;
+        if (token === null || token === undefined) throw new Error("acquired barrier has no token");
+        return { kind: "ok", token };
       },
       verify: () => (barrier ? verifyAllSlots(barrier) : Promise.resolve(false)),
       release: async () => {
@@ -132,6 +139,7 @@ export function fileLock(cfg: BridgeConfig): LockPort & { raw: ProcessLock | nul
       updateMarker: (id, patch) => updateMarker(markerPath(cfg.stateDir, id), patch),
       deleteMarker: (id) => deleteMarker(markerPath(cfg.stateDir, id)),
       stopRequestExists: (id) => stopRequestExists(stopRequestPath(cfg.stateDir, id)),
+      readStopRequest: (id) => readStopRequest(stopRequestPath(cfg.stateDir, id)),
       deleteStopRequest: (id) => deleteStopRequest(stopRequestPath(cfg.stateDir, id)),
     };
   }
@@ -140,7 +148,9 @@ export function fileLock(cfg: BridgeConfig): LockPort & { raw: ProcessLock | nul
     raw: lock,
     acquire: async (command, requestId) => {
       const a = await lock.acquire(command, requestId);
-      return a.kind === "ok" ? { kind: "ok" } : { kind: "busy", cause: a.cause };
+      return a.kind === "ok"
+        ? { kind: "ok", token: a.record.token }
+        : { kind: "busy", cause: a.cause };
     },
     verify: () => lock.verify(),
     release: () => lock.release(),
@@ -150,6 +160,7 @@ export function fileLock(cfg: BridgeConfig): LockPort & { raw: ProcessLock | nul
     updateMarker: (id, patch) => updateMarker(markerPath(cfg.stateDir, id), patch),
     deleteMarker: (id) => deleteMarker(markerPath(cfg.stateDir, id)),
     stopRequestExists: (id) => stopRequestExists(stopRequestPath(cfg.stateDir, id)),
+    readStopRequest: (id) => readStopRequest(stopRequestPath(cfg.stateDir, id)),
     deleteStopRequest: (id) => deleteStopRequest(stopRequestPath(cfg.stateDir, id)),
   };
 }
@@ -173,7 +184,9 @@ export function poolLock(cfg: BridgeConfig): LockPort {
       const res = await acquireSlot(basePath, cfg.maxConcurrency, command, requestId);
       if (res.kind === "busy") return { kind: "busy", cause: res.cause };
       active = res.slot.lock;
-      return { kind: "ok" };
+      const token = active.token;
+      if (token === null) throw new Error("acquired slot has no token");
+      return { kind: "ok", token };
     },
     verify: () => (active ? active.verify() : Promise.resolve(false)),
     release: async () => {
@@ -191,6 +204,7 @@ export function poolLock(cfg: BridgeConfig): LockPort {
     updateMarker: (id, patch) => updateMarker(markerPath(cfg.stateDir, id), patch),
     deleteMarker: (id) => deleteMarker(markerPath(cfg.stateDir, id)),
     stopRequestExists: (id) => stopRequestExists(stopRequestPath(cfg.stateDir, id)),
+    readStopRequest: (id) => readStopRequest(stopRequestPath(cfg.stateDir, id)),
     deleteStopRequest: (id) => deleteStopRequest(stopRequestPath(cfg.stateDir, id)),
   };
 }

@@ -159,6 +159,7 @@ export class RunController {
   private attachmentBytes = 0;
   private timeoutMs = 0;
   private lockHeld = false;
+  private lockToken: string | null = null;
   private browserUp = false;
   private observing = false;
   private crashCause: string | null = null;
@@ -276,6 +277,7 @@ export class RunController {
     }
     if (this.lockHeld) {
       this.lockHeld = false;
+      this.lockToken = null;
       await this.ports.lock.release().catch(() => undefined);
     }
     return {
@@ -290,6 +292,7 @@ export class RunController {
   releaseLockSync(): void {
     if (!this.lockHeld) return;
     this.lockHeld = false;
+    this.lockToken = null;
     this.ports.lock.releaseSync?.();
   }
 
@@ -416,7 +419,9 @@ export class RunController {
         const a = await lock.acquire("run", this.requestId);
         if (a.kind === "busy") return { type: "LOCK_BUSY", cause: a.cause };
         this.lockHeld = true;
+        this.lockToken = a.token;
         this.stopRequestCleanupEnabled = true;
+        await lock.deleteStopRequest(this.requireId());
         this.startStopRequestPolling();
         return { type: "LOCK_OK" };
       }
@@ -754,6 +759,7 @@ export class RunController {
       case "RELEASE_LOCK":
         if (this.lockHeld) {
           this.lockHeld = false;
+          this.lockToken = null;
           await lock.release();
         }
         return null;
@@ -798,8 +804,15 @@ export class RunController {
 
   private async pollStopRequest(): Promise<void> {
     const requestId = this.requireId();
-    if (!(await this.ports.lock.stopRequestExists(requestId))) return;
+    const request = await this.ports.lock.readStopRequest(requestId);
+    if (request === null) return;
     if (this.state.terminal || this.interruption) return;
+    if (request.token !== this.lockToken) {
+      await this.ports.lock.deleteStopRequest(requestId).catch((err) => {
+        this.ports.log("warn", `foreign stop.request cleanup failed: ${(err as Error).message}`);
+      });
+      return;
+    }
     this.cancelStopRequestPolling();
     await this.interrupt("user_stop_requested");
     await this.ports.lock.deleteStopRequest(requestId).catch((err) => {

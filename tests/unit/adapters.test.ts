@@ -127,7 +127,10 @@ describe("buildPorts pool wiring (Phase 3 MVP, A-136)", () => {
 
   it("does not orphan a held slot when acquire is called twice on the same pool lock", async () => {
     const ports = buildPorts({ ...cfg, maxConcurrency: 2 }, logger, true, true);
-    expect(await ports.lock.acquire("run", "req-1")).toEqual({ kind: "ok" });
+    expect(await ports.lock.acquire("run", "req-1")).toMatchObject({
+      kind: "ok",
+      token: expect.any(String),
+    });
     try {
       const second = await ports.lock.acquire("run", "req-2");
       expect(second.kind).toBe("busy");

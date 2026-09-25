@@ -26,7 +26,7 @@ import {
 // already call directly — keep working unmodified even on a Node version where node:sqlite can't
 // load; only `submit`/`status`/`wait`/`result` themselves require the newer engines.node floor.
 import type { JobRow } from "../state/jobstore.js";
-import { unlockReclaimableStale } from "../state/lock.js";
+import { defaultLockDeps, unlockReclaimableStale } from "../state/lock.js";
 import { markerPath, readMarker } from "../state/marker.js";
 import { slotPath } from "../state/slot-lock.js";
 import { buildPorts } from "./adapters.js";
@@ -267,7 +267,9 @@ async function cmdUnlock(cfg: BridgeConfig, stale: boolean, json: boolean): Prom
     cfg.maxConcurrency > 1
       ? Array.from({ length: cfg.maxConcurrency }, (_, index) => slotPath(base, index))
       : [base];
-  const results = await Promise.all(paths.map((path) => unlockReclaimableStale(path)));
+  const results = await Promise.all(
+    paths.map((path) => unlockReclaimableStale(path, defaultLockDeps, cfg.stateDir)),
+  );
   const ok = results.every((r) => r.ok || r.detail === "lock vanished");
   if (json) process.stdout.write(`${JSON.stringify({ stale: true, results })}\n`);
   else

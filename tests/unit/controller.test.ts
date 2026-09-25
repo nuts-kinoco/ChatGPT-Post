@@ -8,6 +8,9 @@ import {
   RunController,
 } from "../../src/state/controller.js";
 import type { ChatGptPort, Ports } from "../../src/state/ports.js";
+import type { StopRequest } from "../../src/state/stop-request.js";
+
+const LOCK_TOKEN = "current-run-token";
 
 interface Fake {
   ports: Ports;
@@ -15,7 +18,7 @@ interface Fake {
   results: BridgeResult[];
   responses: string[];
   markers: Map<string, unknown>;
-  stopRequests: Set<string>;
+  stopRequests: Map<string, StopRequest>;
   lockBusy: boolean;
   lockVerify: boolean;
   timeline: Observation[];
@@ -54,7 +57,7 @@ function fake(
   const results: BridgeResult[] = [];
   const responses: string[] = [];
   const markers = new Map<string, unknown>();
-  const stopRequests = new Set<string>();
+  const stopRequests = new Map<string, StopRequest>();
   let mono = 0;
   const timeline: Observation[] = [
     observation({ assistantCount: 0 }),
@@ -169,7 +172,7 @@ function fake(
       lock: {
         acquire: async () => {
           calls.push("acquire");
-          return f.lockBusy ? { kind: "busy", cause: "held" } : { kind: "ok" };
+          return f.lockBusy ? { kind: "busy", cause: "held" } : { kind: "ok", token: LOCK_TOKEN };
         },
         verify: async () => {
           calls.push("verify");
@@ -191,6 +194,7 @@ function fake(
           markers.delete(id);
         },
         stopRequestExists: async (id) => stopRequests.has(id),
+        readStopRequest: async (id) => stopRequests.get(id) ?? null,
         deleteStopRequest: async (id) => {
           stopRequests.delete(id);
         },
@@ -308,7 +312,11 @@ describe("RunController", () => {
     const running = controller.run();
     for (let i = 0; i < 20 && rejectObserve === null; i++)
       await new Promise((resolve) => setTimeout(resolve, 1));
-    f.stopRequests.add("req-00000001");
+    f.stopRequests.set("req-00000001", {
+      token: LOCK_TOKEN,
+      requestedAt: "2026-09-25T03:00:00.000Z",
+      requestedBy: "test",
+    });
     const out = await running;
     expect(out.result?.error?.code).toBe("INTERNAL_ERROR");
     expect(out.result?.error?.cause).toContain("user_stop_requested");
@@ -319,10 +327,67 @@ describe("RunController", () => {
 
   it("does not consume another run's stop.request when lock acquisition is refused", async () => {
     const f = fake({}, { lockBusy: true });
-    f.stopRequests.add("req-00000001");
+    f.stopRequests.set("req-00000001", {
+      token: "other-run-token",
+      requestedAt: "2026-09-25T03:00:00.000Z",
+    });
     const out = await run(f);
     expect(out.state.terminal?.code).toBe("ALREADY_RUNNING");
     expect(f.stopRequests.has("req-00000001")).toBe(true);
+  });
+
+  it("cleans a marker orphaned by a prior hard-exit before starting the next run's poller", async () => {
+    const f = fake();
+    f.stopRequests.set("req-00000001", {
+      token: "hard-exited-run-token",
+      requestedAt: "2026-09-25T03:00:00.000Z",
+    });
+    const out = await run(f);
+    expect(out.result?.status).toBe("completed");
+    expect(f.stopRequests.has("req-00000001")).toBe(false);
+  });
+
+  it("deletes a foreign-token marker that lands after acquire cleanup without interrupting the new run", async () => {
+    let releaseObservation: ((value: Observation) => void) | null = null;
+    let firstObservation = true;
+    const f = fake({
+      observe: async (t) => {
+        if (!firstObservation) return observation({ t, streaming: false });
+        firstObservation = false;
+        return new Promise<Observation>((resolve) => {
+          releaseObservation = resolve;
+        });
+      },
+    });
+    const originalDelete = f.ports.lock.deleteStopRequest;
+    let acquireCleanupDone = false;
+    let foreignMarkerDeleted = false;
+    f.ports.lock.deleteStopRequest = async (id) => {
+      await originalDelete(id);
+      if (!acquireCleanupDone) {
+        acquireCleanupDone = true;
+        f.stopRequests.set(id, {
+          token: "exited-run-token",
+          requestedAt: "2026-09-25T03:00:00.000Z",
+        });
+      } else {
+        foreignMarkerDeleted = true;
+      }
+    };
+
+    const running = run(f, { stopRequestPollIntervalMs: 1 });
+    for (let i = 0; i < 100 && (!foreignMarkerDeleted || releaseObservation === null); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(foreignMarkerDeleted).toBe(true);
+    expect(releaseObservation).not.toBeNull();
+    const resume = releaseObservation as ((value: Observation) => void) | null;
+    resume?.(observation({ assistantCount: 1, streaming: false }));
+
+    const out = await running;
+    expect(out.result?.status).toBe("completed");
+    expect(out.result?.error).toBeNull();
+    expect(f.stopRequests.has("req-00000001")).toBe(false);
   });
 
   it("happy path: completed, response then result, close before release", async () => {
