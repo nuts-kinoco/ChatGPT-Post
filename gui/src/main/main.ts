@@ -12,7 +12,7 @@ import { describeCliRun, runBridgeCli } from "./cli-process.js";
 import { portableExecutablePath } from "./login-item.js";
 import { startPollLoop } from "./poll-loop.js";
 import { RENDERER_SCHEME, rendererFilePath, resolveRendererUrl } from "./renderer-protocol.js";
-import { bottomRightPosition, clampToWorkArea, fitsWithinAnyWorkArea, isSavedPositionValid, type WindowBounds, type WindowPosition } from "./bar-position.js";
+import { bottomRightPosition, clampToWorkArea, isSavedPositionValid, popupBoundsForAnchor, type WindowBounds, type WindowPosition } from "./bar-position.js";
 import * as fs from "node:fs/promises";
 
 protocol.registerSchemesAsPrivileged([
@@ -49,6 +49,9 @@ let scannedRequests: Awaited<ReturnType<typeof scanRequests>> = [];
 let bridgeState: BridgeGuiState = EMPTY_STATE;
 let pickerAttachmentPaths = new Set<string>();
 let savedBarPosition: WindowPosition | undefined;
+// The collapsed bar's location.  This deliberately remains independent from
+// the expanded popup's bounds, which may need edge clamping.
+let barAnchorPosition: WindowPosition | undefined;
 let loadingBarPosition: Promise<void> | undefined;
 let saveBarPositionTimeout: NodeJS.Timeout | undefined;
 let lastProgrammaticBounds: WindowBounds | undefined;
@@ -92,8 +95,9 @@ async function writeBarPosition(position: WindowPosition) {
     try { await fs.rm(temporaryPath, { force: true }); } catch { /* Best-effort cleanup only. */ }
   }
 }
-function rememberBarPosition(bounds: WindowBounds) {
-  savedBarPosition = { x: bounds.x, y: bounds.y };
+function rememberBarPosition(position: WindowPosition) {
+  barAnchorPosition = position;
+  savedBarPosition = position;
   if (saveBarPositionTimeout) clearTimeout(saveBarPositionTimeout);
   saveBarPositionTimeout = setTimeout(() => {
     saveBarPositionTimeout = undefined;
@@ -109,19 +113,30 @@ function applyWindowBounds(bounds: WindowBounds) {
   lastProgrammaticBounds = bounds;
   barWindow.setBounds(bounds);
 }
+function anchorPosition(): WindowPosition {
+  if (!barWindow) throw new Error("Bridge GUI bar window is unavailable");
+  const currentBounds = barWindow.getBounds();
+  const candidate = barAnchorPosition ?? { x: currentBounds.x, y: currentBounds.y };
+  const display = screen.getDisplayMatching({ ...candidate, width: BAR_WIDTH, height: BAR_HEIGHT });
+  const clamped = clampToWorkArea({ ...candidate, width: BAR_WIDTH, height: BAR_HEIGHT }, display.workArea);
+  const position = { x: clamped.x, y: clamped.y };
+  if (candidate.x !== position.x || candidate.y !== position.y) rememberBarPosition(position);
+  else barAnchorPosition = position;
+  return position;
+}
 function positionWindow(): WindowBounds | undefined {
   if (!barWindow) return undefined;
-  const height = popupOpen ? POPUP_HEIGHT : BAR_HEIGHT;
-  const currentBounds = barWindow.getBounds();
-  const display = screen.getDisplayMatching(currentBounds);
-  const bounds = clampToWorkArea({ x: currentBounds.x, y: currentBounds.y, width: BAR_WIDTH, height }, display.workArea);
-  applyWindowBounds(bounds);
+  const anchor = anchorPosition();
+  const display = screen.getDisplayMatching({ ...anchor, width: BAR_WIDTH, height: BAR_HEIGHT });
+  const bounds = popupOpen
+    ? popupBoundsForAnchor(anchor, BAR_WIDTH, POPUP_HEIGHT, display.workArea)
+    : { ...anchor, width: BAR_WIDTH, height: BAR_HEIGHT };
+  if (!sameBounds(barWindow.getBounds(), bounds)) applyWindowBounds(bounds);
   return bounds;
 }
 function ensureWindowIsOnOneDisplay() {
-  if (!barWindow || fitsWithinAnyWorkArea(barWindow.getBounds(), currentWorkAreas())) return;
-  const bounds = positionWindow();
-  if (bounds) rememberBarPosition(bounds);
+  if (!barWindow) return;
+  positionWindow();
 }
 function onBarMoved() {
   if (!barWindow) return;
@@ -131,9 +146,12 @@ function onBarMoved() {
     return;
   }
   const display = screen.getDisplayMatching(bounds);
-  const clamped = clampToWorkArea(bounds, display.workArea);
-  rememberBarPosition(clamped);
-  if (!sameBounds(bounds, clamped)) applyWindowBounds(clamped);
+  // A user may drag the visible header while the popup is edge-clamped.  Save
+  // the header's requested location as a collapsed bar position, then derive
+  // a separate, fully contained popup rectangle from that anchor.
+  const clampedAnchor = clampToWorkArea({ x: bounds.x, y: bounds.y, width: BAR_WIDTH, height: BAR_HEIGHT }, display.workArea);
+  rememberBarPosition({ x: clampedAnchor.x, y: clampedAnchor.y });
+  positionWindow();
 }
 async function showBar() {
   if (!barWindow) {
@@ -143,6 +161,7 @@ async function showBar() {
       const initialPosition = savedBarPosition && isSavedPositionValid(savedBarPosition, BAR_WIDTH, BAR_HEIGHT, currentWorkAreas())
         ? savedBarPosition
         : bottomRightPosition(primaryWorkArea, BAR_WIDTH, BAR_HEIGHT, WINDOW_MARGIN);
+      barAnchorPosition = initialPosition;
       barWindow = new BrowserWindow({ width: BAR_WIDTH, height: BAR_HEIGHT, x: initialPosition.x, y: initialPosition.y, useContentSize: true, frame: false, resizable: false, skipTaskbar: true, alwaysOnTop: windowControls.alwaysOnTop, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.cjs") } });
       if (process.env.BRIDGE_GUI_DEBUG) {
         const wc = barWindow.webContents;
