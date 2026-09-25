@@ -5,6 +5,7 @@ import type { StopRequestResult } from "./main.js";
 import type { RefreshCookieResult } from "./main.js";
 import type { SubmitNewResult } from "./main.js";
 import type { NewSubmissionInput } from "./submit-new.js";
+import type { WindowControlState } from "./main.js";
 
 contextBridge.exposeInMainWorld("bridgeGui", {
   onState(callback: (state: BridgeGuiState) => void) {
@@ -14,6 +15,9 @@ contextBridge.exposeInMainWorld("bridgeGui", {
     return () => ipcRenderer.removeListener("bridge-gui:state", listener);
   },
   togglePopup() { ipcRenderer.send("bridge-gui:toggle-popup"); },
+  windowControls(): Promise<WindowControlState> { return ipcRenderer.invoke("bridge-gui:window-controls"); },
+  toggleAlwaysOnTop(): Promise<WindowControlState> { return ipcRenderer.invoke("bridge-gui:toggle-always-on-top"); },
+  toggleMute(): Promise<WindowControlState> { return ipcRenderer.invoke("bridge-gui:toggle-mute"); },
   requestDetail(requestId: string): Promise<RequestDetail | { error: string }> { return ipcRenderer.invoke("bridge-gui:request-detail", requestId); },
   openConversation(requestId: string): Promise<boolean> { return ipcRenderer.invoke("bridge-gui:open-conversation", requestId); },
   stopRequest(requestId: string): Promise<StopRequestResult> { return ipcRenderer.invoke("bridge-gui:stop", requestId); },

@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import type { BridgeGuiState, BridgeRequest, DoctorItem, RequestStatus } from "../main/state.js";
 import type { RequestDetail } from "../main/main.js";
 import type { NewSubmissionInput } from "../main/submit-new.js";
+import type { WindowControlState } from "../main/main.js";
+import { COMPLETION_TOAST_DURATION_MS, terminalTransitionsSinceLastPoll } from "../main/completion-notifications.js";
 import "./styles.css";
 
 const INITIAL: BridgeGuiState = { doctor: { ok: false, items: [], error: "Connecting" }, lockHeld: null, requests: [], updatedAt: new Date(0).toISOString() };
@@ -36,5 +38,63 @@ function Drawer({ id, back }: { id: string; back: () => void }) {
   const label = (name: string, observed: string | null, requested: string | null) => <p><span className="text-ink-3">{name}<br /></span>{observed ?? requested ?? "—"} <span className="text-ink-3">{observed ? requested && observed !== requested ? `(observed; requested ${requested})` : "(observed)" : requested ? "(requested)" : ""}</span></p>;
   return <section className="absolute inset-0 z-10 h-[480px] translate-x-full border-x border-b border-line bg-surface px-3 py-3 font-mono text-[10px] text-ink transition-transform data-[open]:translate-x-0" data-open><div className="mb-3 flex justify-between"><button type="button" onClick={back} className="text-ink-2 hover:text-ink">‹ Back</button><span className="tracking-[.14em] text-ink-3">REQUEST DETAIL</span></div>{error && <p className="rounded border border-err/40 bg-raised p-2 text-err">{error}</p>}{!error && !detail && <p className="rounded bg-raised p-2 text-ink-2">Loading request files…</p>}{detail && <><div className="mb-3 grid grid-cols-4 gap-1 border-b border-line pb-3">{(["Overview", "Prompt", "Response", "Logs"] as Tab[]).map((x) => <button key={x} type="button" onClick={() => setTab(x)} className={`rounded px-1 py-1.5 ${tab === x ? "bg-raised text-ink" : "text-ink-3 hover:bg-raised"}`}>{x}</button>)}</div><div className="h-[394px] overflow-y-auto pr-1">{tab === "Overview" && <div className="space-y-3"><div><p className="text-ink-3">REQUEST ID</p><input id="request-id-copy" readOnly value={detail.requestId} onClick={(e) => e.currentTarget.select()} className="mt-1 w-full rounded border border-line bg-base px-2 py-1.5" /><button type="button" onClick={() => void copy(detail.requestId, "request-id-copy")} className="mt-1 text-info">Copy request ID</button></div><div><p className="text-ink-3">CHATGPT URL</p>{detail.conversationUrl ? <button type="button" onClick={() => void window.bridgeGui.openConversation(detail.requestId)} className="mt-1 text-info">Open in Browser ↗</button> : <p className="mt-1 text-ink-2">—</p>}</div><div className="grid grid-cols-2 gap-2">{label("PRESET", detail.observedPreset, detail.requestedPreset)}{label("MODEL", detail.observedModel, detail.requestedModel)}</div><div className="grid grid-cols-2 gap-2"><p><span className="text-ink-3">CALLER<br /></span>{detail.caller ?? "—"}</p><p><span className="text-ink-3">PROJECT<br /></span>{detail.project ?? "—"}</p></div>{detail.error && <p className="rounded border border-err/40 bg-raised p-2 text-err">{detail.error}</p>}{fileError(detail.fieldErrors.request ?? detail.fieldErrors.result ?? detail.fieldErrors.meta)}{notice && <p className="text-ok">{notice}</p>}</div>}{tab === "Prompt" && <>{detail.prompt === null ? <p className="text-ink-2">No prompt file.</p> : <pre className="whitespace-pre-wrap break-words rounded bg-base p-2">{detail.prompt}</pre>}{fileError(detail.fieldErrors.prompt)}</>}{tab === "Response" && <>{detail.response === null ? <p className="text-ink-2">{detail.status === null ? "No response yet." : "No response file."}</p> : <><button type="button" onClick={() => void copy(detail.response ?? "", "response-copy")} className="mb-2 text-info">Copy Markdown</button><textarea id="response-copy" readOnly value={detail.response} className="sr-only" /><pre className="whitespace-pre-wrap break-words rounded bg-base p-2">{detail.response}</pre>{detail.responseTruncated && <p className="mt-2 text-warn">Response truncated at 2 MB.</p>}</>}{fileError(detail.fieldErrors.response)}</>}{tab === "Logs" && <>{detail.log === null ? <p className="text-ink-2">No log file.</p> : <><pre className="whitespace-pre-wrap break-words rounded bg-base p-2">{detail.log}</pre>{detail.logTruncated && <p className="mt-2 text-warn">Showing last 200 KB of log (oldest to newest).</p>}</>}{fileError(detail.fieldErrors.log)}</>}</div></>}</section>;
 }
-function App() { const [state, setState] = useState(INITIAL); const [now, setNow] = useState(Date.now()); const [selected, setSelected] = useState<string | null>(null); const [newRequest, setNewRequest] = useState(false); const [notice, setNotice] = useState<string | null>(null); useEffect(() => { const off = window.bridgeGui.onState(setState); const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => { off(); window.clearInterval(timer); }; }, []); const active = useMemo(() => current(state.requests), [state.requests]); const extra = state.requests.filter((x) => x.status === "Running" || x.status === "Unknown").length - (active ? 1 : 0); return <main className="relative overflow-hidden font-mono text-[11px] text-ink"><button type="button" onClick={() => window.bridgeGui.togglePopup()} className="flex h-10 w-full items-center border border-line bg-base px-3 text-left hover:bg-raised"><span className={`mr-2 h-2 w-2 rounded-full ${active ? color[active.status] : "bg-ink-3"}`} /><span className="text-ink-2">{active ? code[active.status] : "IDLE"}</span><span className="mx-3 min-w-0 flex-1 truncate font-sans">{active?.title ?? (state.lockHeld ? "Lock in use" : "Lock free")}</span><span className="text-ink-2">{active ? elapsed(active.startedAt, now) : "--:--"}</span>{extra > 0 && <span className="ml-2 text-ink-2">+{extra}</span>}<span className="ml-3 text-ink-3">›</span></button><Popup state={state} now={now} choose={setSelected} showNotice={setNotice} newRequest={() => setNewRequest(true)} />{notice && <p role="status" className="absolute bottom-3 left-3 right-3 z-20 rounded border border-ok/40 bg-raised p-2 text-ok">{notice}</p>}{selected && <Drawer id={selected} back={() => setSelected(null)} />}{newRequest && <NewRequestModal close={() => setNewRequest(false)} showNotice={setNotice} />}</main>; }
+function App() {
+  const [state, setState] = useState(INITIAL);
+  const [now, setNow] = useState(Date.now());
+  const [selected, setSelected] = useState<string | null>(null);
+  const [newRequest, setNewRequest] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [controls, setControls] = useState<WindowControlState>({ alwaysOnTop: true, muted: false });
+  const [completionToasts, setCompletionToasts] = useState<{ id: number; message: string }[]>([]);
+  const previousRequests = useRef<BridgeRequest[] | undefined>(undefined);
+  const controlsRef = useRef(controls);
+  const nextToastId = useRef(0);
+
+  useEffect(() => { controlsRef.current = controls; }, [controls]);
+  useEffect(() => {
+    const timeoutIds = new Set<number>();
+    const off = window.bridgeGui.onState((next) => {
+      const transitions = terminalTransitionsSinceLastPoll(previousRequests.current, next.requests);
+      previousRequests.current = next.requests;
+      setState(next);
+      if (controlsRef.current.muted) return;
+      for (const request of transitions) {
+        const id = ++nextToastId.current;
+        setCompletionToasts((toasts) => [...toasts, { id, message: `${request.status}: ${request.title}` }]);
+        const timeoutId = window.setTimeout(() => {
+          setCompletionToasts((toasts) => toasts.filter((toast) => toast.id !== id));
+          timeoutIds.delete(timeoutId);
+        }, COMPLETION_TOAST_DURATION_MS);
+        timeoutIds.add(timeoutId);
+      }
+    });
+    void window.bridgeGui.windowControls().then(setControls);
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => { off(); window.clearInterval(timer); timeoutIds.forEach((id) => window.clearTimeout(id)); };
+  }, []);
+
+  const active = useMemo(() => current(state.requests), [state.requests]);
+  const extra = state.requests.filter((request) => request.status === "Running" || request.status === "Unknown").length - (active ? 1 : 0);
+  const toggleAlwaysOnTop = () => { void window.bridgeGui.toggleAlwaysOnTop().then(setControls); };
+  const toggleMute = () => { void window.bridgeGui.toggleMute().then(setControls); };
+
+  return <main className="relative overflow-hidden font-mono text-[11px] text-ink">
+    <div className="flex h-10 border border-line bg-base">
+      <button type="button" onClick={() => window.bridgeGui.togglePopup()} className="flex min-w-0 flex-1 items-center px-3 text-left hover:bg-raised">
+        <span className={`mr-2 h-2 w-2 rounded-full ${active ? color[active.status] : "bg-ink-3"}`} />
+        <span className="text-ink-2">{active ? code[active.status] : "IDLE"}</span>
+        <span className="mx-3 min-w-0 flex-1 truncate font-sans">{active?.title ?? (state.lockHeld ? "Lock in use" : "Lock free")}</span>
+        <span className="text-ink-2">{active ? elapsed(active.startedAt, now) : "--:--"}</span>
+        {extra > 0 && <span className="ml-2 text-ink-2">+{extra}</span>}
+      </button>
+      <button type="button" onClick={toggleAlwaysOnTop} aria-pressed={controls.alwaysOnTop} title="Toggle always on top" className={`border-l border-line px-2 text-[9px] ${controls.alwaysOnTop ? "text-info" : "text-ink-3"}`}>PIN</button>
+      <button type="button" onClick={toggleMute} aria-pressed={controls.muted} title="Toggle completion notifications" className={`border-l border-line px-2 text-[9px] ${controls.muted ? "text-warn" : "text-ink-2"}`}>{controls.muted ? "MUTE" : "ON"}</button>
+    </div>
+    <Popup state={state} now={now} choose={setSelected} showNotice={setNotice} newRequest={() => setNewRequest(true)} />
+    {completionToasts.length > 0 && <div aria-live="polite" className="pointer-events-none absolute bottom-3 left-3 right-3 z-20 space-y-2">{completionToasts.map((toast) => <p key={toast.id} role="status" className="completion-toast rounded border border-info/50 bg-raised p-2 text-info">{toast.message}</p>)}</div>}
+    {notice && <p role="status" className="absolute bottom-3 left-3 right-3 z-20 rounded border border-ok/40 bg-raised p-2 text-ok">{notice}</p>}
+    {selected && <Drawer id={selected} back={() => setSelected(null)} />}
+    {newRequest && <NewRequestModal close={() => setNewRequest(false)} showNotice={setNotice} />}
+  </main>;
+}
 createRoot(document.getElementById("root")!).render(<App />);

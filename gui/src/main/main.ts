@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, screen, shell, type MessageBoxOptions } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, Tray, nativeImage, screen, shell, type MessageBoxOptions } from "electron";
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, open, readFile } from "node:fs/promises";
@@ -24,6 +24,8 @@ const LOG_TAIL_MAX_BYTES = 200 * 1024;
 let tray: Tray | undefined;
 let barWindow: BrowserWindow | undefined;
 let popupOpen = false;
+export interface WindowControlState { alwaysOnTop: boolean; muted: boolean; }
+let windowControls: WindowControlState = { alwaysOnTop: true, muted: false };
 let doctor = EMPTY_STATE.doctor;
 let scannedRequests: Awaited<ReturnType<typeof scanRequests>> = [];
 let bridgeState: BridgeGuiState = EMPTY_STATE;
@@ -39,7 +41,7 @@ function positionWindow() {
 }
 function showBar() {
   if (!barWindow) {
-    barWindow = new BrowserWindow({ width: BAR_WIDTH, height: BAR_HEIGHT, useContentSize: true, frame: false, resizable: false, skipTaskbar: true, alwaysOnTop: true, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.js") } });
+    barWindow = new BrowserWindow({ width: BAR_WIDTH, height: BAR_HEIGHT, useContentSize: true, frame: false, resizable: false, skipTaskbar: true, alwaysOnTop: windowControls.alwaysOnTop, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.js") } });
     void barWindow.loadURL(rendererUrl());
     barWindow.on("close", (event) => { event.preventDefault(); barWindow?.hide(); });
   }
@@ -47,6 +49,13 @@ function showBar() {
   barWindow.show();
   barWindow.focus();
 }
+function toggleBar() { if (barWindow?.isVisible()) barWindow.hide(); else showBar(); }
+function setAlwaysOnTop(alwaysOnTop: boolean): WindowControlState {
+  windowControls = { ...windowControls, alwaysOnTop };
+  barWindow?.setAlwaysOnTop(alwaysOnTop);
+  return windowControls;
+}
+function toggleMute(): WindowControlState { windowControls = { ...windowControls, muted: !windowControls.muted }; return windowControls; }
 function publishState() { bridgeState = aggregateState(doctor, scannedRequests); barWindow?.webContents.send("bridge-gui:state", bridgeState); }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null; }
 function stringValue(value: unknown): string | null { return typeof value === "string" ? value : null; }
@@ -285,6 +294,9 @@ app.whenReady().then(() => {
   tray.on("click", showBar);
   ipcMain.on("bridge-gui:subscribe", (event) => event.sender.send("bridge-gui:state", bridgeState));
   ipcMain.on("bridge-gui:toggle-popup", () => { popupOpen = !popupOpen; positionWindow(); });
+  ipcMain.handle("bridge-gui:window-controls", (): WindowControlState => windowControls);
+  ipcMain.handle("bridge-gui:toggle-always-on-top", (): WindowControlState => setAlwaysOnTop(!windowControls.alwaysOnTop));
+  ipcMain.handle("bridge-gui:toggle-mute", (): WindowControlState => toggleMute());
   ipcMain.handle("bridge-gui:request-detail", async (_event, requestId: unknown) => {
     try { return await readRequestDetail(requestId); }
     catch (error) { return { error: error instanceof Error ? error.message : "Could not load request detail" }; }
@@ -342,6 +354,10 @@ app.whenReady().then(() => {
   });
   void pollDoctor();
   void pollRequests();
+  const hotkeyRegistered = globalShortcut.register("CommandOrControl+Shift+C", toggleBar);
+  if (!hotkeyRegistered) console.warn("Bridge GUI: global hotkey CommandOrControl+Shift+C is already in use; continuing without it");
   setInterval(() => { void pollDoctor(); }, DOCTOR_POLL_INTERVAL_MS);
   setInterval(() => { void pollRequests(); }, REQUESTS_POLL_INTERVAL_MS);
 });
+
+app.on("will-quit", () => { globalShortcut.unregister("CommandOrControl+Shift+C"); });
