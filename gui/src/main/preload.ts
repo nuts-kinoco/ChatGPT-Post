@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { BridgeGuiState } from "./state.js";
+import type { RequestDetail } from "./main.js";
 
 contextBridge.exposeInMainWorld("bridgeGui", {
   onState(callback: (state: BridgeGuiState) => void) {
@@ -9,4 +10,6 @@ contextBridge.exposeInMainWorld("bridgeGui", {
     return () => ipcRenderer.removeListener("bridge-gui:state", listener);
   },
   togglePopup() { ipcRenderer.send("bridge-gui:toggle-popup"); },
+  requestDetail(requestId: string): Promise<RequestDetail | { error: string }> { return ipcRenderer.invoke("bridge-gui:request-detail", requestId); },
+  openConversation(requestId: string): Promise<boolean> { return ipcRenderer.invoke("bridge-gui:open-conversation", requestId); },
 });

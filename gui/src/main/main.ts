@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, screen, shell } from "electron";
 import { spawn } from "node:child_process";
+import { open, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { aggregateState, DOCTOR_POLL_INTERVAL_MS, EMPTY_STATE, REQUESTS_POLL_INTERVAL_MS, scanRequests, type BridgeGuiState, type DoctorItem } from "./state.js";
@@ -11,6 +12,10 @@ const POPUP_HEIGHT = 520;
 const WINDOW_MARGIN = 12;
 const CLI_PATH = path.resolve(__dirname, "../../../dist/cli/main.js");
 const REQUESTS_PATH = path.resolve(__dirname, "../../../runtime/requests");
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$/u;
+const CONVERSATION_URL_PATTERN = /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+(?:[/?#][^\s]*)?$/u;
+const RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
+const LOG_TAIL_MAX_BYTES = 200 * 1024;
 let tray: Tray | undefined;
 let barWindow: BrowserWindow | undefined;
 let popupOpen = false;
@@ -38,6 +43,85 @@ function showBar() {
   barWindow.focus();
 }
 function publishState() { bridgeState = aggregateState(doctor, scannedRequests); barWindow?.webContents.send("bridge-gui:state", bridgeState); }
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null; }
+function stringValue(value: unknown): string | null { return typeof value === "string" ? value : null; }
+function validRequestId(value: unknown): value is string { return typeof value === "string" && REQUEST_ID_PATTERN.test(value) && !value.includes(".."); }
+function conversationUrl(value: unknown): string | null { return typeof value === "string" && CONVERSATION_URL_PATTERN.test(value) ? value : null; }
+function safeRequestDirectory(requestId: unknown): string {
+  if (!validRequestId(requestId)) throw new Error("Invalid request id");
+  const requestDirectory = path.resolve(REQUESTS_PATH, requestId);
+  if (!requestDirectory.startsWith(`${REQUESTS_PATH}${path.sep}`)) throw new Error("Invalid request path");
+  return requestDirectory;
+}
+async function readOptionalJson(filePath: string): Promise<{ value: Record<string, unknown> | null; error?: string }> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(filePath, "utf8"));
+    return { value: isRecord(parsed) ? parsed : null, ...(isRecord(parsed) ? {} : { error: "Malformed JSON" }) };
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return { value: null };
+    return { value: null, error: error instanceof Error ? error.message : "Could not read JSON" };
+  }
+}
+async function readOptionalText(filePath: string, maxBytes: number): Promise<{ content: string | null; truncated: boolean; error?: string }> {
+  try {
+    const handle = await open(filePath, "r");
+    try {
+      const { size } = await handle.stat();
+      const bytes = Math.min(size, maxBytes);
+      const buffer = Buffer.alloc(bytes);
+      await handle.read(buffer, 0, bytes, 0);
+      return { content: buffer.toString("utf8"), truncated: size > maxBytes };
+    } finally { await handle.close(); }
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return { content: null, truncated: false };
+    return { content: null, truncated: false, error: error instanceof Error ? error.message : "Could not read file" };
+  }
+}
+async function readOptionalTail(filePath: string): Promise<{ content: string | null; truncated: boolean; error?: string }> {
+  try {
+    const handle = await open(filePath, "r");
+    try {
+      const { size } = await handle.stat();
+      const bytes = Math.min(size, LOG_TAIL_MAX_BYTES);
+      const buffer = Buffer.alloc(bytes);
+      await handle.read(buffer, 0, bytes, Math.max(0, size - bytes));
+      let content = buffer.toString("utf8");
+      if (size > bytes) content = content.slice(content.indexOf("\n") + 1);
+      return { content, truncated: size > bytes };
+    } finally { await handle.close(); }
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return { content: null, truncated: false };
+    return { content: null, truncated: false, error: error instanceof Error ? error.message : "Could not read log" };
+  }
+}
+export interface RequestDetail {
+  requestId: string; status: string | null; error: string | null; conversationUrl: string | null;
+  requestedPreset: string | null; observedPreset: string | null; requestedModel: string | null; observedModel: string | null;
+  caller: string | null; project: string | null;
+  prompt: string | null; response: string | null; responseTruncated: boolean; log: string | null; logTruncated: boolean;
+  fieldErrors: Partial<Record<"request" | "result" | "meta" | "prompt" | "response" | "log", string>>;
+}
+async function readRequestDetail(requestId: unknown): Promise<RequestDetail> {
+  const requestDirectory = safeRequestDirectory(requestId);
+  const validatedRequestId = requestId as string;
+  const [requestFile, resultFile, metaFile, promptFile, responseFile, logFile] = await Promise.all([
+    readOptionalJson(path.join(requestDirectory, "request.json")), readOptionalJson(path.join(requestDirectory, "result.json")), readOptionalJson(path.join(requestDirectory, "meta.json")),
+    readOptionalText(path.join(requestDirectory, "prompt.md"), 20_000), readOptionalText(path.join(requestDirectory, "response.md"), RESPONSE_MAX_BYTES), readOptionalTail(path.join(requestDirectory, "run.log")),
+  ]);
+  const request = requestFile.value ?? {};
+  const result = resultFile.value ?? {};
+  const meta = metaFile.value ?? {};
+  const fieldErrors: RequestDetail["fieldErrors"] = {};
+  for (const [name, file] of Object.entries({ request: requestFile, result: resultFile, meta: metaFile, prompt: promptFile, response: responseFile, log: logFile })) if (file.error) fieldErrors[name as keyof RequestDetail["fieldErrors"]] = file.error;
+  return {
+    requestId: validatedRequestId, status: stringValue(result.status), error: isRecord(result.error) ? stringValue(result.error.message) : null,
+    conversationUrl: conversationUrl(result.conversationUrl) ?? conversationUrl(request.conversationUrl),
+    requestedPreset: stringValue(result.requestedPreset) ?? stringValue(request.preset), observedPreset: stringValue(result.observedPreset),
+    requestedModel: stringValue(result.requestedModel) ?? stringValue(request.model), observedModel: stringValue(result.observedModel),
+    caller: stringValue(meta.caller), project: stringValue(meta.project), prompt: promptFile.content, response: responseFile.content,
+    responseTruncated: responseFile.truncated, log: logFile.content, logTruncated: logFile.truncated, fieldErrors,
+  };
+}
 function parseDoctor(stdout: string): { ok: boolean; items: DoctorItem[] } {
   const line = stdout.split(/\r?\n/u).find((candidate) => candidate.trim());
   if (!line) throw new Error("doctor --json returned no JSON");
@@ -77,6 +161,18 @@ app.whenReady().then(() => {
   tray.on("click", showBar);
   ipcMain.on("bridge-gui:subscribe", (event) => event.sender.send("bridge-gui:state", bridgeState));
   ipcMain.on("bridge-gui:toggle-popup", () => { popupOpen = !popupOpen; positionWindow(); });
+  ipcMain.handle("bridge-gui:request-detail", async (_event, requestId: unknown) => {
+    try { return await readRequestDetail(requestId); }
+    catch (error) { return { error: error instanceof Error ? error.message : "Could not load request detail" }; }
+  });
+  ipcMain.handle("bridge-gui:open-conversation", async (_event, requestId: unknown) => {
+    try {
+      const detail = await readRequestDetail(requestId);
+      if (!detail.conversationUrl) return false;
+      await shell.openExternal(detail.conversationUrl);
+      return true;
+    } catch { return false; }
+  });
   void pollDoctor();
   void pollRequests();
   setInterval(() => { void pollDoctor(); }, DOCTOR_POLL_INTERVAL_MS);
