@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { BridgeGuiState } from "./state.js";
 import type { RequestDetail } from "./main.js";
 import type { StopRequestResult } from "./main.js";
+import type { RefreshCookieResult } from "./main.js";
 
 contextBridge.exposeInMainWorld("bridgeGui", {
   onState(callback: (state: BridgeGuiState) => void) {
@@ -14,4 +15,5 @@ contextBridge.exposeInMainWorld("bridgeGui", {
   requestDetail(requestId: string): Promise<RequestDetail | { error: string }> { return ipcRenderer.invoke("bridge-gui:request-detail", requestId); },
   openConversation(requestId: string): Promise<boolean> { return ipcRenderer.invoke("bridge-gui:open-conversation", requestId); },
   stopRequest(requestId: string): Promise<StopRequestResult> { return ipcRenderer.invoke("bridge-gui:stop", requestId); },
+  refreshCookie(): Promise<RefreshCookieResult> { return ipcRenderer.invoke("bridge-gui:refresh-cookie"); },
 });

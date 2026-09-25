@@ -1,9 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, screen, shell, type MessageBoxOptions } from "electron";
 import { spawn } from "node:child_process";
-import { open, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, open, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { aggregateState, DOCTOR_POLL_INTERVAL_MS, EMPTY_STATE, REQUESTS_POLL_INTERVAL_MS, scanRequests, type BridgeGuiState, type DoctorItem } from "./state.js";
+import { evaluateRefreshCookiePreflight, type RefreshCookiePreflightResult } from "./refresh-cookie.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BAR_WIDTH = 380;
@@ -12,6 +14,7 @@ const POPUP_HEIGHT = 520;
 const WINDOW_MARGIN = 12;
 const CLI_PATH = path.resolve(__dirname, "../../../dist/cli/main.js");
 const REQUESTS_PATH = path.resolve(__dirname, "../../../runtime/requests");
+const PROFILE_DIR = path.resolve(__dirname, "../../../runtime/profile");
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$/u;
 const CONVERSATION_URL_PATTERN = /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+(?:[/?#][^\s]*)?$/u;
 const RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
@@ -102,6 +105,7 @@ export interface RequestDetail {
   fieldErrors: Partial<Record<"request" | "result" | "meta" | "prompt" | "response" | "log", string>>;
 }
 export type StopRequestResult = { ok: true; requestId: string } | { ok: false; reason: string };
+export type RefreshCookieResult = { ok: true } | { ok: false; reason: string };
 async function readRequestDetail(requestId: unknown): Promise<RequestDetail> {
   const requestDirectory = safeRequestDirectory(requestId);
   const validatedRequestId = requestId as string;
@@ -169,6 +173,52 @@ function requestStop(requestId: string): Promise<StopRequestResult> {
     });
   });
 }
+async function findChromeExecutable(): Promise<string | null> {
+  const candidates = process.platform === "win32"
+    ? [
+        path.join(process.env.PROGRAMFILES ?? "C:\\Program Files", "Google", "Chrome", "Application", "chrome.exe"),
+        path.join(process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)", "Google", "Chrome", "Application", "chrome.exe"),
+        path.join(process.env.LOCALAPPDATA ?? "", "Google", "Chrome", "Application", "chrome.exe"),
+      ]
+    : ["/usr/bin/google-chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
+  for (const candidate of candidates) {
+    try { await access(candidate, constants.X_OK); return candidate; }
+    catch { /* Try the next documented Chrome location. */ }
+  }
+  return null;
+}
+function requestRefreshCookie(): Promise<RefreshCookieResult> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(process.execPath, [CLI_PATH, "doctor", "--json", "--no-login"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
+    } catch (error) {
+      resolve({ ok: false, reason: error instanceof Error ? `Could not start doctor: ${error.message}` : "Could not start doctor" });
+      return;
+    }
+    let stdout = "";
+    let settled = false;
+    const finish = (result: RefreshCookieResult) => { if (!settled) { settled = true; resolve(result); } };
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.on("error", (error) => finish({ ok: false, reason: `Could not start doctor: ${error.message}` }));
+    child.on("close", () => {
+      if (settled) return;
+      const preflight: RefreshCookiePreflightResult = evaluateRefreshCookiePreflight(stdout);
+      if (!preflight.ok) { finish(preflight); return; }
+      void findChromeExecutable().then((chromePath) => {
+        if (!chromePath) { finish({ ok: false, reason: "Google Chrome could not be found" }); return; }
+        try {
+          const chrome = spawn(chromePath, [`--user-data-dir=${PROFILE_DIR}`, "https://chatgpt.com/"], { detached: true, stdio: "ignore" });
+          chrome.unref();
+          chrome.once("error", (error) => finish({ ok: false, reason: `Could not open Google Chrome: ${error.message}` }));
+          chrome.once("spawn", () => finish({ ok: true }));
+        } catch (error) {
+          finish({ ok: false, reason: error instanceof Error ? `Could not open Google Chrome: ${error.message}` : "Could not open Google Chrome" });
+        }
+      }, (error) => finish({ ok: false, reason: error instanceof Error ? `Could not find Google Chrome: ${error.message}` : "Could not find Google Chrome" }));
+    });
+  });
+}
 function pollDoctor(): Promise<void> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI_PATH, "doctor", "--json", "--no-login"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
@@ -233,6 +283,7 @@ app.whenReady().then(() => {
       return { ok: false, reason: error instanceof Error ? `Could not request stop: ${error.message}` : "Could not request stop" };
     }
   });
+  ipcMain.handle("bridge-gui:refresh-cookie", async (): Promise<RefreshCookieResult> => requestRefreshCookie());
   void pollDoctor();
   void pollRequests();
   setInterval(() => { void pollDoctor(); }, DOCTOR_POLL_INTERVAL_MS);
