@@ -3,6 +3,8 @@ import type { BridgeGuiState } from "./state.js";
 import type { RequestDetail } from "./main.js";
 import type { StopRequestResult } from "./main.js";
 import type { RefreshCookieResult } from "./main.js";
+import type { SubmitNewResult } from "./main.js";
+import type { NewSubmissionInput } from "./submit-new.js";
 
 contextBridge.exposeInMainWorld("bridgeGui", {
   onState(callback: (state: BridgeGuiState) => void) {
@@ -16,4 +18,6 @@ contextBridge.exposeInMainWorld("bridgeGui", {
   openConversation(requestId: string): Promise<boolean> { return ipcRenderer.invoke("bridge-gui:open-conversation", requestId); },
   stopRequest(requestId: string): Promise<StopRequestResult> { return ipcRenderer.invoke("bridge-gui:stop", requestId); },
   refreshCookie(): Promise<RefreshCookieResult> { return ipcRenderer.invoke("bridge-gui:refresh-cookie"); },
+  chooseNewAttachments(): Promise<string[]> { return ipcRenderer.invoke("bridge-gui:choose-new-attachments"); },
+  submitNew(input: NewSubmissionInput): Promise<SubmitNewResult> { return ipcRenderer.invoke("bridge-gui:submit-new", input); },
 });

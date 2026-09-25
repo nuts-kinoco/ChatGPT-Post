@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { aggregateState, DOCTOR_POLL_INTERVAL_MS, EMPTY_STATE, REQUESTS_POLL_INTERVAL_MS, scanRequests, type BridgeGuiState, type DoctorItem } from "./state.js";
 import { evaluateRefreshCookiePreflight, type RefreshCookiePreflightResult } from "./refresh-cookie.js";
+import { buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest, type NewSubmissionInput } from "./submit-new.js";
+import * as fs from "node:fs/promises";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BAR_WIDTH = 380;
@@ -106,6 +108,7 @@ export interface RequestDetail {
 }
 export type StopRequestResult = { ok: true; requestId: string } | { ok: false; reason: string };
 export type RefreshCookieResult = { ok: true } | { ok: false; reason: string };
+export type SubmitNewResult = { ok: true; requestId: string } | { ok: false; reason: string };
 async function readRequestDetail(requestId: unknown): Promise<RequestDetail> {
   const requestDirectory = safeRequestDirectory(requestId);
   const validatedRequestId = requestId as string;
@@ -168,6 +171,41 @@ function requestStop(requestId: string): Promise<StopRequestResult> {
       try { finish(parseStop(stdout)); }
       catch (error) {
         const reason = error instanceof Error ? error.message : "Malformed stop output";
+        finish({ ok: false, reason: `${reason}${stderr.trim() ? ` (${stderr.trim()})` : ""}` });
+      }
+    });
+  });
+}
+function parseSubmit(stdout: string): SubmitNewResult {
+  const line = stdout.split(/\r?\n/u).find((candidate) => candidate.trim());
+  if (!line) throw new Error("submit --json returned no JSON");
+  const parsed: unknown = JSON.parse(line);
+  if (!isRecord(parsed)) throw new Error("submit --json returned an unexpected shape");
+  if (isRecord(parsed.error) && typeof parsed.error.message === "string" && parsed.error.message) return { ok: false, reason: parsed.error.message };
+  if (validRequestId(parsed.requestId)) return { ok: true, requestId: parsed.requestId };
+  throw new Error("submit --json returned an unexpected shape");
+}
+function requestSubmit(requestFilePath: string): Promise<SubmitNewResult> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(process.execPath, buildSubmitArgs(CLI_PATH, requestFilePath), { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
+    } catch (error) {
+      resolve({ ok: false, reason: error instanceof Error ? `Could not start submit: ${error.message}` : "Could not start submit" });
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (result: SubmitNewResult) => { if (!settled) { settled = true; resolve(result); } };
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on("error", (error) => finish({ ok: false, reason: `Could not start submit: ${error.message}` }));
+    child.on("close", () => {
+      if (settled) return;
+      try { finish(parseSubmit(stdout)); }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : "Malformed submit output";
         finish({ ok: false, reason: `${reason}${stderr.trim() ? ` (${stderr.trim()})` : ""}` });
       }
     });
@@ -284,6 +322,24 @@ app.whenReady().then(() => {
     }
   });
   ipcMain.handle("bridge-gui:refresh-cookie", async (): Promise<RefreshCookieResult> => requestRefreshCookie());
+  ipcMain.handle("bridge-gui:choose-new-attachments", async (): Promise<string[]> => {
+    const result = barWindow
+      ? await dialog.showOpenDialog(barWindow, { properties: ["openFile", "multiSelections"] })
+      : await dialog.showOpenDialog({ properties: ["openFile", "multiSelections"] });
+    return result.canceled ? [] : result.filePaths;
+  });
+  ipcMain.handle("bridge-gui:submit-new", async (_event, value: NewSubmissionInput): Promise<SubmitNewResult> => {
+    const validated = validateNewSubmission(value);
+    if (!validated.ok) return validated;
+    const requestId = createRequestId();
+    let requestDirectory: string;
+    try {
+      requestDirectory = await writeNewRequest(REQUESTS_PATH, requestId, validated.value, fs);
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? `Could not create request files: ${error.message}` : "Could not create request files" };
+    }
+    return requestSubmit(path.join(requestDirectory, "request.json"));
+  });
   void pollDoctor();
   void pollRequests();
   setInterval(() => { void pollDoctor(); }, DOCTOR_POLL_INTERVAL_MS);
