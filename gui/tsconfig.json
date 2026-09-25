@@ -10,5 +10,5 @@
     "jsx": "react-jsx",
     "noEmit": true
   },
-  "include": ["src/main/**/*.ts", "src/renderer/**/*.ts", "src/renderer/**/*.tsx"]
+  "include": ["src/main/**/*.ts", "src/main/**/*.cts", "src/renderer/**/*.ts", "src/renderer/**/*.tsx"]
 }
