@@ -999,7 +999,9 @@ export function reverseLookupModel(
  */
 /**
  * Trigger label prefixes observed 2026-09-15: none (latest), "5.6" (GPT-5.6 Sol), "5.5" (GPT-5.5),
- * "6" (latest routed to GPT-6 Pro at the pro level). Anything else is unknown -> fail closed.
+ * "6" (latest routed to GPT-6 Pro at the pro level). The 2026-09-24 redesign can also render
+ * latest Pro as bare "Pro", so "6" remains an accepted fallback rather than a requirement.
+ * Anything else is unknown -> fail closed.
  */
 export const MODEL_HINTS: Record<string, { model: ObservedModel; preset?: ObservedPreset }> = {
   "5.6": { model: "gpt-5.6-sol" },
@@ -1013,7 +1015,10 @@ export function hintMatches(
   model: ObservedModel,
   preset: ObservedPreset,
 ): boolean {
-  if (hint === null) return model === "latest" && preset !== "pro";
+  // A-161: the redesigned latest-model Pro trigger is a bare "Pro". Whole-label parsing has
+  // already proved the effort label; an absent prefix therefore agrees only with latest, for
+  // every preset (as it did for bare latest non-Pro labels before the redesign).
+  if (hint === null) return model === "latest";
   const h = MODEL_HINTS[hint];
   if (!h) return false;
   if (h.model !== model) return false;

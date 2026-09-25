@@ -410,6 +410,7 @@ describe("ChatGptPage prompt cleanup on a fixture", () => {
   async function submitFixture(
     body: string,
     timeoutMs = 200,
+    pollIntervalMs = 10,
   ): Promise<{ page: Page; chat: ChatGptPage; acceptanceEvidence: string[] }> {
     if (!browser) throw new Error("browser unavailable");
     const fixturePage = await browser.newPage();
@@ -423,7 +424,7 @@ describe("ChatGptPage prompt cleanup on a fixture", () => {
     const acceptanceEvidence: string[] = [];
     const chat = new ChatGptPage(fixturePage, {
       verifiedOnly: true,
-      pollIntervalMs: 10,
+      pollIntervalMs,
       submitAcceptanceTimeoutMs: timeoutMs,
       acceptanceLog: (message) => acceptanceEvidence.push(message),
     });
@@ -468,7 +469,8 @@ describe("ChatGptPage prompt cleanup on a fixture", () => {
       skip();
       return;
     }
-    const { page: fixturePage, chat } = await submitFixture(`
+    const { page: fixturePage, chat } = await submitFixture(
+      `
       <script>
         document.querySelector('[data-testid=send-button]').addEventListener('click', () => {
           const composer = document.querySelector('#prompt-textarea');
@@ -476,7 +478,10 @@ describe("ChatGptPage prompt cleanup on a fixture", () => {
           setTimeout(() => { composer.textContent = 'expected prompt'; }, 20);
         });
       </script>
-    `);
+      `,
+      400,
+      200,
+    );
     try {
       await expect(
         chat.dispatchSubmit(

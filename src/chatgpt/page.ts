@@ -102,6 +102,7 @@ export interface ChatGptPageOptions {
  * after large uploads. Thirty seconds only delays a safe retry; a shorter verdict can double-send.
  */
 export const DEFAULT_SUBMIT_ACCEPTANCE_TIMEOUT_MS = 30_000;
+const COMPOSER_CLEAR_TRACKER_KEY = "__chatgptBridgeComposerClearTracker";
 
 function hostOf(url: string): string {
   try {
@@ -1170,6 +1171,71 @@ export class ChatGptPage implements ChatGptPort {
     return text === expected;
   }
 
+  /**
+   * A-162: interval reads can miss a send handler clearing then restoring the draft between
+   * polls. Install this before clicking so the page event loop records an empty composer even
+   * while the Node side is busy checking the other acceptance evidence.
+   */
+  private async startComposerClearTracker(composer: Locator): Promise<boolean> {
+    return composer
+      .evaluate((element, key) => {
+        type Tracker = { cleared: boolean; observers: MutationObserver[] };
+        const root = window as typeof window & { [trackerKey: string]: Tracker | undefined };
+        root[key]?.observers.forEach((observer) => {
+          observer.disconnect();
+        });
+        const target = element as HTMLElement;
+        const textIsEmpty = (candidate: HTMLElement) =>
+          candidate.innerText.normalize("NFKC").replace(/\r\n?/g, "\n").trim().length === 0;
+        const tracker: Tracker = {
+          cleared: textIsEmpty(target),
+          observers: [],
+        };
+        const record = () => {
+          // The original node catches ordinary text edits. The document observer also follows
+          // the composer through a React replacement; only form contenteditables are considered
+          // for the fallback, matching the final selector candidate.
+          const candidates = new Set<HTMLElement>([
+            target,
+            ...Array.from(document.querySelectorAll<HTMLElement>('form [contenteditable="true"]')),
+          ]);
+          if ([...candidates].some(textIsEmpty)) tracker.cleared = true;
+        };
+        const targetObserver = new MutationObserver(record);
+        targetObserver.observe(target, { childList: true, characterData: true, subtree: true });
+        const documentObserver = new MutationObserver(record);
+        documentObserver.observe(document.documentElement, {
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+        tracker.observers.push(targetObserver, documentObserver);
+        root[key] = tracker;
+      }, COMPOSER_CLEAR_TRACKER_KEY)
+      .then(() => true)
+      .catch((err) => {
+        this.opts.log?.(`composer clear tracker setup failed: ${(err as Error).message}`);
+        return false;
+      });
+  }
+
+  /** Stop the page-side watcher and read its latched result. A missing watcher is unsafe. */
+  private async stopComposerClearTracker(): Promise<boolean> {
+    return this.page
+      .evaluate((key) => {
+        type Tracker = { cleared: boolean; observers: MutationObserver[] };
+        const root = window as typeof window & { [trackerKey: string]: Tracker | undefined };
+        const tracker = root[key];
+        if (!tracker) return true;
+        tracker.observers.forEach((observer) => {
+          observer.disconnect();
+        });
+        delete root[key];
+        return tracker.cleared;
+      }, COMPOSER_CLEAR_TRACKER_KEY)
+      .catch(() => true);
+  }
+
   private logAcceptanceEvidence(kind: "userTurn" | "stopButton" | "url"): void {
     this.opts.acceptanceLog?.(`submit acceptance evidence: ${kind}`);
   }
@@ -1351,9 +1417,22 @@ export class ChatGptPage implements ChatGptPort {
       return { kind: "failed", cause: "send_button_missing" };
     if (!(await this.sendButtonEnabled(btn)))
       return { kind: "failed", cause: "send_button_disabled" };
+    let composerClearTrackerInstalled = false;
+    try {
+      // This must precede click: a send handler can synchronously clear the composer.
+      composerClearTrackerInstalled = await this.startComposerClearTracker(
+        await resolve(this.page, "composer", this.sel),
+      );
+    } catch (err) {
+      this.opts.log?.(`composer clear tracker unavailable: ${(err as Error).message}`);
+    }
+    const discardComposerClearTracker = async () => {
+      if (composerClearTrackerInstalled) await this.stopComposerClearTracker();
+    };
     try {
       await btn.click({ timeout: 5000 });
     } catch (err) {
+      await discardComposerClearTracker();
       this.lastError = (err as Error).message;
       return { kind: "failed", cause: "click_failed" };
     }
@@ -1380,14 +1459,17 @@ export class ChatGptPage implements ChatGptPort {
           }
         })();
       if (userTurnAccepted) {
+        await discardComposerClearTracker();
         this.logAcceptanceEvidence("userTurn");
         return { kind: "dispatched", url };
       }
       if (streaming) {
+        await discardComposerClearTracker();
         this.logAcceptanceEvidence("stopButton");
         return { kind: "dispatched", url };
       }
       if (movedToConversation) {
+        await discardComposerClearTracker();
         this.logAcceptanceEvidence("url");
         return { kind: "dispatched", url };
       }
@@ -1401,6 +1483,9 @@ export class ChatGptPage implements ChatGptPort {
     const actual = composer.locator
       ? normaliseComposerInnerText(await composer.locator.innerText().catch(() => ""))
       : "";
+    // If installing or reading the continuous watcher failed, never permit a retry based on a
+    // final snapshot alone: an unobserved clear is exactly the ambiguity A-155 protects.
+    composerCleared ||= !composerClearTrackerInstalled || (await this.stopComposerClearTracker());
     if (expected.length > 0 && actual === expected && !composerCleared && composer.locator) {
       const cleanup = await this.clearComposerAfterFailedPrompt(composer.locator);
       if (cleanup.kind === "cleared") {

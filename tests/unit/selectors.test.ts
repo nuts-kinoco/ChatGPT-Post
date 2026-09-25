@@ -109,6 +109,11 @@ describe("selectors (14-SELECTOR-STRATEGY, AC-016)", () => {
       effortLabel: "Pro",
       modelHint: "6",
     });
+    expect(parseTriggerLabel("Pro", "ja")).toEqual({
+      preset: "pro",
+      effortLabel: "Pro",
+      modelHint: null,
+    });
     expect(parseTriggerLabel("思考量", "ja")).toEqual({ error: "unmapped" });
     expect(parseTriggerLabel("5.5高", "ja")).toEqual({ error: "unmapped" }); // no separator
     // unknown prefixes are refused (Codex P5-3)
@@ -116,8 +121,11 @@ describe("selectors (14-SELECTOR-STRATEGY, AC-016)", () => {
     expect(parseTriggerLabel("Foo 高", "ja")).toEqual({ error: "unmapped" });
   });
   it("hintMatches cross-checks the trigger prefix with the menu observation", () => {
+    // A-161: the redesigned trigger renders latest Pro as bare "Pro".
     expect(hintMatches(null, "latest", "high")).toBe(true);
-    expect(hintMatches(null, "latest", "pro")).toBe(false); // pro on latest shows "6 Pro"
+    expect(hintMatches(null, "latest", "pro")).toBe(true);
+    expect(hintMatches(null, "gpt-5.5", "pro")).toBe(false);
+    expect(hintMatches(null, "gpt-5.6-sol", "pro")).toBe(false);
     expect(hintMatches("6", "latest", "pro")).toBe(true);
     expect(hintMatches("6", "latest", "high")).toBe(false);
     expect(hintMatches("5.5", "gpt-5.5", "high")).toBe(true);
