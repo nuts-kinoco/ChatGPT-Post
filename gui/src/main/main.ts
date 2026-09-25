@@ -38,6 +38,8 @@ const LOG_TAIL_MAX_BYTES = 200 * 1024;
 const DOCTOR_TIMEOUT_MS = 30_000;
 const STOP_TIMEOUT_MS = 45_000;
 const SUBMIT_TIMEOUT_MS = 60_000;
+// The CLI runs in this executable with ELECTRON_RUN_AS_NODE, which loads ICU data from beside it (not bundled on macOS).
+const EXEC_PATH_SIBLINGS = process.platform === "darwin" ? [] : ["icudtl.dat"];
 let tray: Tray | undefined;
 let barWindow: BrowserWindow | undefined;
 let popupOpen = false;
@@ -302,7 +304,7 @@ function parseStop(stdout: string): StopRequestResult {
   throw new Error("stop --json returned an unexpected shape");
 }
 async function requestStop(requestId: string): Promise<StopRequestResult> {
-  const result = await runBridgeCli({ execPath: process.execPath, cliPath: CLI_PATH, args: ["stop", requestId, "--json"], timeoutMs: STOP_TIMEOUT_MS, label: "stop command" });
+  const result = await runBridgeCli({ execPath: process.execPath, execPathSiblings: EXEC_PATH_SIBLINGS, cliPath: CLI_PATH, args: ["stop", requestId, "--json"], timeoutMs: STOP_TIMEOUT_MS, label: "stop command" });
   if (!result.ok) return result;
   try { return parseStop(result.run.stdout); }
   catch (error) { return { ok: false, reason: `${error instanceof Error ? error.message : "Malformed stop output"} (${describeCliRun(result.run)})` }; }
@@ -318,7 +320,7 @@ function parseSubmit(stdout: string): SubmitNewResult {
 }
 async function requestSubmit(requestFilePath: string): Promise<SubmitNewResult> {
   const [cliPath, ...args] = buildSubmitArgs(CLI_PATH, requestFilePath);
-  const result = await runBridgeCli({ execPath: process.execPath, cliPath, args, timeoutMs: SUBMIT_TIMEOUT_MS, label: "submit" });
+  const result = await runBridgeCli({ execPath: process.execPath, execPathSiblings: EXEC_PATH_SIBLINGS, cliPath, args, timeoutMs: SUBMIT_TIMEOUT_MS, label: "submit" });
   if (!result.ok) return result;
   try { return parseSubmit(result.run.stdout); }
   catch (error) { return { ok: false, reason: `${error instanceof Error ? error.message : "Malformed submit output"} (${describeCliRun(result.run)})` }; }
@@ -338,7 +340,7 @@ async function findChromeExecutable(): Promise<string | null> {
   return null;
 }
 async function requestRefreshCookie(): Promise<RefreshCookieResult> {
-  const doctorRun = await runBridgeCli({ execPath: process.execPath, cliPath: CLI_PATH, args: ["doctor", "--json", "--no-login"], timeoutMs: DOCTOR_TIMEOUT_MS, label: "doctor preflight" });
+  const doctorRun = await runBridgeCli({ execPath: process.execPath, execPathSiblings: EXEC_PATH_SIBLINGS, cliPath: CLI_PATH, args: ["doctor", "--json", "--no-login"], timeoutMs: DOCTOR_TIMEOUT_MS, label: "doctor preflight" });
   if (!doctorRun.ok) return doctorRun;
   const preflight: RefreshCookiePreflightResult = evaluateRefreshCookiePreflight(doctorRun.run.stdout, describeCliRun(doctorRun.run));
   if (!preflight.ok) return preflight;
@@ -358,7 +360,7 @@ async function requestRefreshCookie(): Promise<RefreshCookieResult> {
   });
 }
 async function pollDoctor(): Promise<void> {
-  const result = await runBridgeCli({ execPath: process.execPath, cliPath: CLI_PATH, args: ["doctor", "--json", "--no-login"], timeoutMs: DOCTOR_TIMEOUT_MS, label: "doctor poll" });
+  const result = await runBridgeCli({ execPath: process.execPath, execPathSiblings: EXEC_PATH_SIBLINGS, cliPath: CLI_PATH, args: ["doctor", "--json", "--no-login"], timeoutMs: DOCTOR_TIMEOUT_MS, label: "doctor poll" });
   if (!result.ok) {
     console.warn(`Bridge GUI: ${result.reason}; retrying next tick`);
     doctor = { ok: false, items: [], error: result.reason };

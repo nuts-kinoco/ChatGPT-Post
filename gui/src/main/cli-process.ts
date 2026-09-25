@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
+import path from "node:path";
 
 export interface CliRun { stdout: string; stderr: string; exitCode: number | null; signal: NodeJS.Signals | null; }
 export type CliRunResult = { ok: true; run: CliRun } | { ok: false; reason: string };
@@ -13,6 +14,8 @@ export interface RunBridgeCliOptions {
   /** Used in failure messages, e.g. "doctor". */
   label: string;
   env?: NodeJS.ProcessEnv;
+  /** Files that must sit next to `execPath` for it to start as Node (Chromium's ICU data). */
+  execPathSiblings?: string[];
 }
 
 /**
@@ -26,6 +29,14 @@ export async function runBridgeCli(options: RunBridgeCliOptions): Promise<CliRun
   try { await access(cliPath, constants.R_OK); }
   catch {
     return { ok: false, reason: `Bridge CLI not found at ${cliPath}. Check CHATGPT_BRIDGE_ROOT and run "npm run build" in that checkout.` };
+  }
+  const execDirectory = path.dirname(execPath);
+  for (const sibling of options.execPathSiblings ?? []) {
+    try { await access(path.join(execDirectory, sibling), constants.R_OK); }
+    catch {
+      // Without icudtl.dat the child dies in Chromium's ICU CHECK (exit 0x80000003) before running any JS.
+      return { ok: false, reason: `Cannot start ${label}: ${sibling} is missing from ${execDirectory}, so the app's own files were removed while it was running. Quit ChatGPT Bridge Control from the tray and start it again.` };
+    }
   }
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;

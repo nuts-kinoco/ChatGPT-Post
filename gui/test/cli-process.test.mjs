@@ -46,3 +46,17 @@ test("stderr summary skips Node's stack header and prefers the error line", () =
   assert.equal(summarizeStderr(""), "");
   assert.equal(describeCliRun({ stdout: "", stderr: "", exitCode: 0, signal: null }), "exit 0, no stderr");
 });
+
+test("a missing ICU data file next to the executable is reported instead of spawning a child that crashes", async () => {
+  const cliPath = await script("never-run.mjs", "process.stdout.write('ran');");
+  const result = await runBridgeCli({ execPath: process.execPath, execPathSiblings: ["icudtl-missing-for-test.dat"], cliPath, args: [], timeoutMs: 5000, label: "doctor poll" });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.reason, /^Cannot start doctor poll: icudtl-missing-for-test\.dat is missing from .*Quit ChatGPT Bridge Control/);
+});
+
+test("present executable siblings do not block the run", async () => {
+  const cliPath = await script("ok.mjs", "process.stdout.write('ran');");
+  const sibling = path.basename(process.execPath);
+  const result = await runBridgeCli({ execPath: process.execPath, execPathSiblings: [sibling], cliPath, args: [], timeoutMs: 5000, label: "doctor" });
+  assert.equal(result.ok && result.run.stdout, "ran");
+});
