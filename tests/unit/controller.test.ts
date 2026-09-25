@@ -15,6 +15,7 @@ interface Fake {
   results: BridgeResult[];
   responses: string[];
   markers: Map<string, unknown>;
+  stopRequests: Set<string>;
   lockBusy: boolean;
   lockVerify: boolean;
   timeline: Observation[];
@@ -53,6 +54,7 @@ function fake(
   const results: BridgeResult[] = [];
   const responses: string[] = [];
   const markers = new Map<string, unknown>();
+  const stopRequests = new Set<string>();
   let mono = 0;
   const timeline: Observation[] = [
     observation({ assistantCount: 0 }),
@@ -120,6 +122,7 @@ function fake(
     results,
     responses,
     markers,
+    stopRequests,
     lockBusy: opts.lockBusy ?? false,
     lockVerify: opts.lockVerify ?? true,
     timeline,
@@ -186,6 +189,10 @@ function fake(
         deleteMarker: async (id) => {
           calls.push("deleteMarker");
           markers.delete(id);
+        },
+        stopRequestExists: async (id) => stopRequests.has(id),
+        deleteStopRequest: async (id) => {
+          stopRequests.delete(id);
         },
       },
       browser: {
@@ -275,6 +282,47 @@ describe("RunController", () => {
     expect(out.result?.error?.cause).toContain("SIGTERM");
     expect(f.calls.indexOf("writeResult")).toBeLessThan(f.calls.lastIndexOf("close"));
     expect(f.calls.lastIndexOf("close")).toBeLessThan(f.calls.indexOf("release"));
+  });
+
+  it("stop.request polling triggers the same cooperative RUN_INTERRUPTED path", async () => {
+    let rejectObserve: ((reason: Error) => void) | null = null;
+    const f = fake({
+      observe: async () =>
+        new Promise<Observation>((_resolve, reject) => {
+          rejectObserve = reject;
+        }),
+    });
+    const originalClose = f.ports.browser.close;
+    f.ports.browser.close = async () => {
+      await originalClose();
+      rejectObserve?.(new Error("session closed"));
+    };
+    const controller = new RunController(f.ports, {
+      requestPath: "/req/request.json",
+      artifactsRoot: "/art",
+      bridgeVersion: "0.1.0",
+      traceOnSuccess: false,
+      observationIntervalMs: 0,
+      stopRequestPollIntervalMs: 1,
+    });
+    const running = controller.run();
+    for (let i = 0; i < 20 && rejectObserve === null; i++)
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    f.stopRequests.add("req-00000001");
+    const out = await running;
+    expect(out.result?.error?.code).toBe("INTERNAL_ERROR");
+    expect(out.result?.error?.cause).toContain("user_stop_requested");
+    expect(f.stopRequests.has("req-00000001")).toBe(false);
+    expect(f.calls.indexOf("writeResult")).toBeLessThan(f.calls.lastIndexOf("close"));
+    expect(f.calls.lastIndexOf("close")).toBeLessThan(f.calls.indexOf("release"));
+  });
+
+  it("does not consume another run's stop.request when lock acquisition is refused", async () => {
+    const f = fake({}, { lockBusy: true });
+    f.stopRequests.add("req-00000001");
+    const out = await run(f);
+    expect(out.state.terminal?.code).toBe("ALREADY_RUNNING");
+    expect(f.stopRequests.has("req-00000001")).toBe(true);
   });
 
   it("happy path: completed, response then result, close before release", async () => {

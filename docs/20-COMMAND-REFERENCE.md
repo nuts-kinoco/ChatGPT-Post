@@ -128,6 +128,28 @@ chatgpt-bridge run --request .\runtime\requests\<requestId>\request.json --json
 
 実行中、ブリッジは `preset` に合わせてアカウントの思考量設定を変更し、**終了時に元の段階へ戻す**。
 
+### 4b-1. 実行中のリクエストへ協調停止を要求する
+
+```powershell
+chatgpt-bridge stop <requestId>
+chatgpt-bridge stop <requestId> --json
+```
+
+`stop` は、現在の live lock が同じ `requestId` を保持している場合だけ
+`runtime/state/<requestId>/stop.request` を atomic write する。実行中の `run` はこのマーカーを
+500 ms 間隔で監視し、見つけるとプロセス内から既存の
+`controller.interrupt("user_stop_requested")` を呼ぶ。直接起動した `run` でも、`submit` が起動した
+detached child でも同じ経路である。マーカーは消費時または通常終了時に削除され、同じ stop を
+複数回実行しても安全である。
+
+このコマンドは **OS signal を送らず、プロセスを kill せず、lock も変更しない**。lock がない、
+stale/dead、または別 requestId の場合はマーカーを書かずに非ゼロで拒否する。`--json` の成功は
+`{ "ok": true, "requestId": "..." }`、拒否は `{ "ok": false, "reason": "..." }`。
+
+協調停止なので、対象プロセスが生存し、ポーリングを続けられる状態でなければ効かない。完全に
+ハングしてマーカーを観測できないプロセスは `stop` では停止できない。これは強制終了を避けるための
+意図した制約である。
+
 ### 4c. 出力
 
 ```
@@ -257,6 +279,7 @@ npm run build         # dist/ を生成
 |---|---|---|
 | `runtime/locks/bridge.lock` | プロセスロック | ブリッジが動いていないことを確認した上で可（`doctor` の `lock` 項目参照） |
 | `runtime/state/<requestId>/submit.marker` | 送信直前の write-ahead マーカー。残っていれば「送信したか不明」 | ChatGPT 側で会話を確認してから可 |
+| `runtime/state/<requestId>/stop.request` | `stop` が書く協調停止要求。実行中の `run` が消費し、終端時にも削除 | 通常は自動削除。lock と requestId を確認せず手作業で作らない |
 | `runtime/artifacts/<requestId>/` | 失敗時の screenshot / trace（サニタイズ済み） | 可 |
 | `runtime/profile/` | ログイン情報を含む専用プロファイル | **共有・コピー禁止**。消すと再ログインが必要 |
 

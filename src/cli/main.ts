@@ -11,6 +11,7 @@ import { checkProfilePath } from "../browser/profile-guard.js";
 import { buildBundle } from "../bundle/bundle.js";
 import { observeAuthWithRetry } from "../chatgpt/auth-probe.js";
 import { ChatGptPage } from "../chatgpt/page.js";
+import { isValidRequestId } from "../contracts/request.js";
 import { EXIT_CODES } from "../contracts/types.js";
 import { formatDoctor, runDoctor } from "../diagnostics/doctor.js";
 import { createLogger } from "../diagnostics/logger.js";
@@ -31,6 +32,7 @@ import { slotPath } from "../state/slot-lock.js";
 import { buildPorts } from "./adapters.js";
 import { type BridgeConfig, loadConfig } from "./config.js";
 import { RunWatchdog } from "./run-watchdog.js";
+import { requestStop } from "./stop.js";
 import { runWorker } from "./worker.js";
 
 export { observeAuthWithRetry } from "../chatgpt/auth-probe.js";
@@ -41,6 +43,7 @@ commands:
   login                      専用ブラウザを開き、人間がログインする
   doctor [--json] [--no-login] 環境・プロファイル・ロック・ログイン状態を診断する
   unlock --stale [--json]    dead/reused PID の stale lock だけを明示的に削除する（生存 owner は絶対に kill しない）
+  stop <requestId> [--json]  live lock が一致する実行へ協調停止を要求する（signal/kill は送らない）
   run --request <path> [--json]
                              request.json を 1 件処理する。--json は result.json の内容を標準出力に 1 行で出す
   submit --request <path> [--json]
@@ -272,6 +275,20 @@ async function cmdUnlock(cfg: BridgeConfig, stale: boolean, json: boolean): Prom
       process.stdout.write(`${paths[index]}: ${r.detail}\n`);
     });
   return ok ? 0 : EXIT_CODES.beforeBrowser;
+}
+
+async function cmdStop(cfg: BridgeConfig, requestId: string, json: boolean): Promise<number> {
+  if (!isValidRequestId(requestId)) {
+    const reason = `invalid requestId: ${requestId}`;
+    if (json) process.stdout.write(`${JSON.stringify({ ok: false, reason })}\n`);
+    else process.stderr.write(`${reason}\n`);
+    return EXIT_CODES.invalidInput;
+  }
+  const outcome = await requestStop(cfg, requestId);
+  if (json) process.stdout.write(`${JSON.stringify(outcome)}\n`);
+  else if (outcome.ok) process.stdout.write(`stop requested: ${requestId}\n`);
+  else process.stderr.write(`stop refused: ${outcome.reason}\n`);
+  return outcome.ok ? 0 : EXIT_CODES.beforeBrowser;
 }
 
 async function cmdRun(
@@ -980,6 +997,14 @@ export async function main(argv: string[]): Promise<number> {
       return cmdDoctor(cfg, verifiedOnly, values.json ?? false, values["no-login"] ?? false);
     case "unlock":
       return cmdUnlock(cfg, values.stale ?? false, values.json ?? false);
+    case "stop":
+      if (!positionals[1]) {
+        const reason = "stop requires <requestId>";
+        if (values.json) process.stdout.write(`${JSON.stringify({ ok: false, reason })}\n`);
+        else process.stderr.write(`${reason}\n`);
+        return EXIT_CODES.invalidInput;
+      }
+      return cmdStop(cfg, positionals[1], values.json ?? false);
     case "run":
       if (!values.request) {
         printCommandError(values.json ?? false, "INVALID_REQUEST", "run requires --request <path>");

@@ -137,6 +137,8 @@ function harness(): Harness {
         writeMarker: async () => undefined,
         updateMarker: async () => undefined,
         deleteMarker: async () => undefined,
+        stopRequestExists: async () => false,
+        deleteStopRequest: async () => undefined,
       },
       browser: {
         checkProfilePath: async () => ({ ok: true }),

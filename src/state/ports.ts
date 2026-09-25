@@ -64,6 +64,8 @@ export interface LockPort {
     patch: Pick<SubmitMarker, "dispatchedAt" | "urlAfter">,
   ): Promise<void>;
   deleteMarker(requestId: string): Promise<void>;
+  stopRequestExists(requestId: string): Promise<boolean>;
+  deleteStopRequest(requestId: string): Promise<void>;
 }
 
 export interface BrowserPort {

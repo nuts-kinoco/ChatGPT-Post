@@ -80,6 +80,8 @@ export interface ControllerOptions {
   onPreSubmitBudgetKnown?: (budgetMs: number) => void;
   /** Called immediately after the confirmed submit dispatch. */
   onSubmitDispatched?: (timeoutMs: number) => void;
+  /** Test seam; production uses STOP_REQUEST_POLL_INTERVAL_MS. */
+  stopRequestPollIntervalMs?: number;
 }
 
 export const IMAGE_CAPTURE_BUDGET_MS = 120_000;
@@ -128,6 +130,7 @@ export function preSubmitWatchdogBudgetMs(
 /** Maximum normal completion stabilization plus the bounded generated-image extraction work. */
 export const POST_SUBMIT_STABILIZATION_AND_EXTRACTION_BUDGET_MS =
   DEFAULT_COMPLETION_CONFIG.fallbackStabilizationMs + IMAGE_CAPTURE_BUDGET_MS;
+export const STOP_REQUEST_POLL_INTERVAL_MS = 500;
 
 export interface RunOutcome {
   exitCode: number;
@@ -192,6 +195,9 @@ export class RunController {
   private exitCode = 1;
   private interruption: string | null = null;
   private interruptPromise: Promise<void> | null = null;
+  private stopRequestTimer: NodeJS.Timeout | null = null;
+  private stopRequestPollPromise: Promise<void> | null = null;
+  private stopRequestCleanupEnabled = false;
 
   constructor(
     private readonly ports: Ports,
@@ -217,6 +223,14 @@ export class RunController {
         await this.dispatch({ type: "DOM_UNEXPECTED", element: "controller", tried: [] });
       } catch {
         /* give up */
+      }
+    } finally {
+      this.cancelStopRequestPolling();
+      await this.stopRequestPollPromise;
+      if (this.stopRequestCleanupEnabled && this.requestId !== null) {
+        await this.ports.lock.deleteStopRequest(this.requestId).catch((err) => {
+          this.ports.log("warn", `stop.request cleanup failed: ${(err as Error).message}`);
+        });
       }
     }
     return {
@@ -402,6 +416,8 @@ export class RunController {
         const a = await lock.acquire("run", this.requestId);
         if (a.kind === "busy") return { type: "LOCK_BUSY", cause: a.cause };
         this.lockHeld = true;
+        this.stopRequestCleanupEnabled = true;
+        this.startStopRequestPolling();
         return { type: "LOCK_OK" };
       }
       case "CHECK_MARKER":
@@ -755,6 +771,41 @@ export class RunController {
   private history: Observation[] = [];
   private dispatchedAt = 0;
   private stuckStopRecoveryAttempted = false;
+
+  private startStopRequestPolling(): void {
+    const poll = () => {
+      if (this.stopRequestPollPromise || this.state.terminal || this.interruption) return;
+      this.stopRequestPollPromise = this.pollStopRequest()
+        .catch((err) => {
+          this.ports.log("warn", `stop.request poll failed: ${(err as Error).message}`);
+        })
+        .finally(() => {
+          this.stopRequestPollPromise = null;
+        });
+    };
+    poll();
+    this.stopRequestTimer = setInterval(
+      poll,
+      this.opts.stopRequestPollIntervalMs ?? STOP_REQUEST_POLL_INTERVAL_MS,
+    );
+    this.stopRequestTimer.unref();
+  }
+
+  private cancelStopRequestPolling(): void {
+    if (this.stopRequestTimer !== null) clearInterval(this.stopRequestTimer);
+    this.stopRequestTimer = null;
+  }
+
+  private async pollStopRequest(): Promise<void> {
+    const requestId = this.requireId();
+    if (!(await this.ports.lock.stopRequestExists(requestId))) return;
+    if (this.state.terminal || this.interruption) return;
+    this.cancelStopRequestPolling();
+    await this.interrupt("user_stop_requested");
+    await this.ports.lock.deleteStopRequest(requestId).catch((err) => {
+      this.ports.log("warn", `stop.request cleanup failed: ${(err as Error).message}`);
+    });
+  }
 
   private async observeLoop(): Promise<void> {
     const cfg: CompletionConfig = {

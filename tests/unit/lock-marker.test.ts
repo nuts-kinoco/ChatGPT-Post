@@ -197,14 +197,44 @@ describe("ProcessLock (ADR-005)", () => {
     const parent = spawn(process.execPath, ["-e", parentCode], {
       stdio: ["ignore", "pipe", "ignore"],
     });
-    await new Promise<void>((resolve, reject) => {
-      parent.stdout.once("data", () => resolve());
-      parent.once("error", reject);
-    });
-    parent.kill("SIGKILL");
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(await readFile(done, "utf8")).toBe("done");
-    await expect(stat(lock)).rejects.toThrow();
+    let childPid: number | undefined;
+    try {
+      const childPidText = await new Promise<string>((resolve, reject) => {
+        parent.stdout.once("data", (chunk: Buffer) => resolve(chunk.toString()));
+        parent.once("error", reject);
+      });
+      childPid = Number.parseInt(childPidText, 10);
+      parent.kill("SIGKILL");
+
+      let childDone = false;
+      let lockReleased = false;
+      for (let i = 0; i < 250 && !(childDone && lockReleased); i++) {
+        try {
+          childDone = (await readFile(done, "utf8")) === "done";
+        } catch {
+          childDone = false;
+        }
+        try {
+          await stat(lock);
+          lockReleased = false;
+        } catch {
+          lockReleased = true;
+        }
+        if (!(childDone && lockReleased)) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      }
+      expect(await readFile(done, "utf8")).toBe("done");
+      await expect(stat(lock)).rejects.toThrow();
+    } finally {
+      if (childPid !== undefined) {
+        try {
+          process.kill(childPid, "SIGKILL");
+        } catch {
+          // The detached child normally exits before cleanup reaches this point.
+        }
+      }
+    }
   });
 
   it("harness: a hard-killed child leaves a dead-PID lock that doctor policy can reclaim", async () => {

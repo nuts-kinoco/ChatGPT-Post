@@ -33,6 +33,7 @@ import {
   releaseAllSlots,
   verifyAllSlots,
 } from "../state/slot-lock.js";
+import { deleteStopRequest, stopRequestExists, stopRequestPath } from "../state/stop-request.js";
 import type { BridgeConfig } from "./config.js";
 
 export const systemClock: Clock = {
@@ -130,6 +131,8 @@ export function fileLock(cfg: BridgeConfig): LockPort & { raw: ProcessLock | nul
       writeMarker: (id, m) => writeMarker(markerPath(cfg.stateDir, id), m),
       updateMarker: (id, patch) => updateMarker(markerPath(cfg.stateDir, id), patch),
       deleteMarker: (id) => deleteMarker(markerPath(cfg.stateDir, id)),
+      stopRequestExists: (id) => stopRequestExists(stopRequestPath(cfg.stateDir, id)),
+      deleteStopRequest: (id) => deleteStopRequest(stopRequestPath(cfg.stateDir, id)),
     };
   }
   const lock = new ProcessLock(join(cfg.locksDir, "bridge.lock"));
@@ -146,6 +149,8 @@ export function fileLock(cfg: BridgeConfig): LockPort & { raw: ProcessLock | nul
     writeMarker: (id, m) => writeMarker(markerPath(cfg.stateDir, id), m),
     updateMarker: (id, patch) => updateMarker(markerPath(cfg.stateDir, id), patch),
     deleteMarker: (id) => deleteMarker(markerPath(cfg.stateDir, id)),
+    stopRequestExists: (id) => stopRequestExists(stopRequestPath(cfg.stateDir, id)),
+    deleteStopRequest: (id) => deleteStopRequest(stopRequestPath(cfg.stateDir, id)),
   };
 }
 
@@ -185,6 +190,8 @@ export function poolLock(cfg: BridgeConfig): LockPort {
     writeMarker: (id, m) => writeMarker(markerPath(cfg.stateDir, id), m),
     updateMarker: (id, patch) => updateMarker(markerPath(cfg.stateDir, id), patch),
     deleteMarker: (id) => deleteMarker(markerPath(cfg.stateDir, id)),
+    stopRequestExists: (id) => stopRequestExists(stopRequestPath(cfg.stateDir, id)),
+    deleteStopRequest: (id) => deleteStopRequest(stopRequestPath(cfg.stateDir, id)),
   };
 }
 
