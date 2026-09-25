@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { evaluateRefreshCookiePreflight } from "../dist/main/refresh-cookie.js";
 
-const doctor = (lock) => `${JSON.stringify({ ok: lock.ok, items: [lock] })}\n`;
+const doctor = (lock, profileFree = true, extra = []) => `${JSON.stringify({ ok: lock.ok, items: [lock, { name: "profile.free", ok: profileFree, detail: profileFree ? "free" : "busy" }, ...extra] })}\n`;
 
 test("refresh cookie refuses a live held lock", () => {
   assert.deepEqual(
@@ -11,7 +11,15 @@ test("refresh cookie refuses a live held lock", () => {
   );
 });
 
-test("refresh cookie permits a free or stale-warning lock", () => {
+test("refresh cookie permits an explicit no-lock result", () => {
   assert.deepEqual(evaluateRefreshCookiePreflight(doctor({ name: "lock", ok: true, detail: "no lock file" })), { ok: true });
-  assert.deepEqual(evaluateRefreshCookiePreflight(doctor({ name: "lock", ok: true, warn: true, detail: "abandoned lock" })), { ok: true });
+});
+
+test("refresh cookie permits only a reclaimable stale lock", () => {
+  assert.deepEqual(evaluateRefreshCookiePreflight(doctor({ name: "lock", ok: true, warn: true, detail: "abandoned lock", lock: { stale: true, reclaimable: true } })), { ok: true });
+  assert.equal(evaluateRefreshCookiePreflight(doctor({ name: "lock", ok: true, warn: true, detail: "owner alive", lock: { stale: true, reclaimable: false } })).ok, false);
+});
+
+test("refresh cookie refuses a busy profile even when no lock exists", () => {
+  assert.equal(evaluateRefreshCookiePreflight(doctor({ name: "lock", ok: true, detail: "no lock file" }, false)).ok, false);
 });

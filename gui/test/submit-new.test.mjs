@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { buildNewRequest, buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest } from "../dist/main/submit-new.js";
+import { addPickerAttachmentPaths, attachmentsArePickerApproved, buildNewRequest, buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest } from "../dist/main/submit-new.js";
 
 const valid = (overrides = {}) => ({
   prompt: "Summarize this request.",
@@ -42,6 +42,21 @@ test("new submission accepts a valid continuation and builds the exact request s
   assert.match(createRequestId(new Date("2026-09-25T12:00:00.000Z"), Buffer.from("deadbeef", "hex")), /^20260925T120000Z-deadbeef$/);
 });
 
+test("new submission attachments must have come from the native picker", () => {
+  const approved = path.resolve("picked.md");
+  assert.equal(attachmentsArePickerApproved([approved], new Set([approved])), true);
+  assert.equal(attachmentsArePickerApproved([path.resolve("unpicked.md")], new Set([approved])), false);
+});
+
+test("new submission accepts attachments picked in separate picker calls", () => {
+  const approved = new Set();
+  const first = path.resolve("first-picked.md");
+  const second = path.resolve("second-picked.md");
+  assert.deepEqual(addPickerAttachmentPaths(approved, [first]), [first]);
+  assert.deepEqual(addPickerAttachmentPaths(approved, [second]), [first, second]);
+  assert.equal(attachmentsArePickerApproved([first, second], approved), true);
+});
+
 test("new submission writes only the expected request files through its injected writer", async () => {
   const checked = validateNewSubmission(valid());
   assert.equal(checked.ok, true);
@@ -54,9 +69,11 @@ test("new submission writes only the expected request files through its injected
   const root = path.resolve("fake-runtime", "requests");
   const directory = await writeNewRequest(root, "20260925T120000Z-deadbeef", checked.value, writer);
   assert.equal(directory, path.join(root, "20260925T120000Z-deadbeef"));
-  assert.deepEqual(calls.map(([kind, file]) => [kind, path.basename(file)]), [["mkdir", "20260925T120000Z-deadbeef"], ["writeFile", "prompt.md"], ["writeFile", "request.json"]]);
-  assert.equal(calls[1][2], "Summarize this request.");
-  assert.deepEqual(JSON.parse(calls[2][2]), buildNewRequest("20260925T120000Z-deadbeef", checked.value));
+  assert.deepEqual(calls.map(([kind, file]) => [kind, path.basename(file)]), [["mkdir", "requests"], ["mkdir", "20260925T120000Z-deadbeef"], ["writeFile", "prompt.md"], ["writeFile", "request.json"]]);
+  assert.deepEqual(calls[0][2], { recursive: true });
+  assert.deepEqual(calls[1][2], { recursive: false });
+  assert.equal(calls[2][2], "Summarize this request.");
+  assert.deepEqual(JSON.parse(calls[3][2]), buildNewRequest("20260925T120000Z-deadbeef", checked.value));
 });
 
 test("new submission spawns submit with the request.json file path", () => {

@@ -29,7 +29,7 @@ export interface DoctorLock {
   pid: number;
   requestId: string | null;
   command: string;
-  heldSinceMs: number;
+  heldSinceMs: number | null;
   heartbeatAgeMs: number | null;
   stale: boolean;
   reclaimable: boolean;
@@ -267,12 +267,19 @@ function structuredLock(
   rec: NonNullable<Awaited<ReturnType<typeof readLockRecord>>>,
   verdict: Awaited<ReturnType<typeof judgeStale>>,
 ): DoctorLock {
-  const heartbeatAt = rec.heartbeatAt ? Date.parse(rec.heartbeatAt) : null;
+  // Preserve malformed persisted timestamps as an explicit null rather than
+  // letting JSON.stringify silently turn NaN into null.
+  const parseTimestamp = (value: string | undefined): number | null => {
+    if (!value) return null;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const heartbeatAt = parseTimestamp(rec.heartbeatAt);
   return {
     pid: rec.pid,
     requestId: rec.requestId,
     command: rec.command,
-    heldSinceMs: Date.parse(rec.startedAt),
+    heldSinceMs: parseTimestamp(rec.startedAt),
     heartbeatAgeMs: heartbeatAt === null ? null : Math.max(0, Date.now() - heartbeatAt),
     stale: verdict.stale,
     reclaimable: verdict.stale && verdict.reclaimable,

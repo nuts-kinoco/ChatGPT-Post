@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { aggregateState, DOCTOR_POLL_INTERVAL_MS, EMPTY_STATE, REQUESTS_POLL_INTERVAL_MS, scanRequests, type BridgeGuiState, type DoctorItem } from "./state.js";
 import { evaluateRefreshCookiePreflight, type RefreshCookiePreflightResult } from "./refresh-cookie.js";
-import { buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest, type NewSubmissionInput } from "./submit-new.js";
+import { addPickerAttachmentPaths, attachmentsArePickerApproved, buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest, type NewSubmissionInput } from "./submit-new.js";
 import { resolveBridgePaths } from "./bridge-paths.js";
 import { portableExecutablePath } from "./login-item.js";
 import * as fs from "node:fs/promises";
@@ -27,6 +27,9 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$/u;
 const CONVERSATION_URL_PATTERN = /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+(?:[/?#][^\s]*)?$/u;
 const RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
 const LOG_TAIL_MAX_BYTES = 200 * 1024;
+const DOCTOR_TIMEOUT_MS = 30_000;
+const STOP_TIMEOUT_MS = 45_000;
+const SUBMIT_TIMEOUT_MS = 60_000;
 let tray: Tray | undefined;
 let barWindow: BrowserWindow | undefined;
 let popupOpen = false;
@@ -36,8 +39,9 @@ let windowControls: WindowControlState = { alwaysOnTop: true, muted: false };
 let doctor = EMPTY_STATE.doctor;
 let scannedRequests: Awaited<ReturnType<typeof scanRequests>> = [];
 let bridgeState: BridgeGuiState = EMPTY_STATE;
+let pickerAttachmentPaths = new Set<string>();
 
-function rendererUrl(): string { return process.env.ELECTRON_RENDERER_URL ?? `file://${path.join(__dirname, "../renderer/index.html")}`; }
+function rendererUrl(): string { return !app.isPackaged && process.env.ELECTRON_RENDERER_URL ? process.env.ELECTRON_RENDERER_URL : `file://${path.join(__dirname, "../renderer/index.html")}`; }
 function createTrayIcon() { return nativeImage.createFromPath(path.join(__dirname, "../../assets/tray-icon.png")).resize({ width: 16, height: 16 }); }
 function positionWindow() {
   if (!barWindow) return;
@@ -50,6 +54,8 @@ function showBar() {
   if (!barWindow) {
     barWindow = new BrowserWindow({ width: BAR_WIDTH, height: BAR_HEIGHT, useContentSize: true, frame: false, resizable: false, skipTaskbar: true, alwaysOnTop: windowControls.alwaysOnTop, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.js") } });
     void barWindow.loadURL(rendererUrl());
+    barWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+    barWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     barWindow.on("close", (event) => {
       if (isQuitting) return;
       event.preventDefault();
@@ -182,7 +188,9 @@ function requestStop(requestId: string): Promise<StopRequestResult> {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const finish = (result: StopRequestResult) => { if (!settled) { settled = true; resolve(result); } };
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = (result: StopRequestResult) => { if (!settled) { settled = true; if (timeout) clearTimeout(timeout); resolve(result); } };
+    timeout = setTimeout(() => { child.kill(); finish({ ok: false, reason: "Stop command timed out" }); }, STOP_TIMEOUT_MS);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     child.on("error", (error) => finish({ ok: false, reason: `Could not start stop command: ${error.message}` }));
@@ -217,7 +225,9 @@ function requestSubmit(requestFilePath: string): Promise<SubmitNewResult> {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const finish = (result: SubmitNewResult) => { if (!settled) { settled = true; resolve(result); } };
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = (result: SubmitNewResult) => { if (!settled) { settled = true; if (timeout) clearTimeout(timeout); resolve(result); } };
+    timeout = setTimeout(() => { child.kill(); finish({ ok: false, reason: "Submit command timed out" }); }, SUBMIT_TIMEOUT_MS);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     child.on("error", (error) => finish({ ok: false, reason: `Could not start submit: ${error.message}` }));
@@ -256,7 +266,9 @@ function requestRefreshCookie(): Promise<RefreshCookieResult> {
     }
     let stdout = "";
     let settled = false;
-    const finish = (result: RefreshCookieResult) => { if (!settled) { settled = true; resolve(result); } };
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = (result: RefreshCookieResult) => { if (!settled) { settled = true; if (timeout) clearTimeout(timeout); resolve(result); } };
+    timeout = setTimeout(() => { child.kill(); finish({ ok: false, reason: "Doctor preflight timed out" }); }, DOCTOR_TIMEOUT_MS);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.on("error", (error) => finish({ ok: false, reason: `Could not start doctor: ${error.message}` }));
     child.on("close", () => {
@@ -283,7 +295,15 @@ function pollDoctor(): Promise<void> {
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const finish = () => { if (!settled) { settled = true; resolve(); } };
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = () => { if (!settled) { settled = true; if (timeout) clearTimeout(timeout); resolve(); } };
+    timeout = setTimeout(() => {
+      child.kill();
+      console.warn("Bridge GUI: doctor poll timed out; retrying next tick");
+      doctor = { ok: false, items: [], error: "Doctor poll timed out" };
+      publishState();
+      finish();
+    }, DOCTOR_TIMEOUT_MS);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     child.on("error", (error) => { console.warn("Bridge GUI: could not start doctor; retrying next tick", error); doctor = { ok: false, items: [], error: error.message }; publishState(); finish(); });
@@ -368,11 +388,16 @@ if (hasSingleInstanceLock) {
       const result = barWindow
         ? await dialog.showOpenDialog(barWindow, { properties: ["openFile", "multiSelections"] })
         : await dialog.showOpenDialog({ properties: ["openFile", "multiSelections"] });
-      return result.canceled ? [] : result.filePaths;
+      return result.canceled ? [...pickerAttachmentPaths] : addPickerAttachmentPaths(pickerAttachmentPaths, result.filePaths);
     });
     ipcMain.handle("bridge-gui:submit-new", async (_event, value: NewSubmissionInput): Promise<SubmitNewResult> => {
       const validated = validateNewSubmission(value);
       if (!validated.ok) return validated;
+      if (!attachmentsArePickerApproved(validated.value.attachments, pickerAttachmentPaths)) {
+        pickerAttachmentPaths.clear();
+        return { ok: false, reason: "Attachments must be selected with the file picker" };
+      }
+      pickerAttachmentPaths.clear();
       const requestId = createRequestId();
       let requestDirectory: string;
       try {

@@ -24,6 +24,31 @@ test("development falls back to the repository relative to the compiled main dir
   if (result.ok) assert.equal(result.root, repositoryRoot);
 });
 
+test("runtime and profile environment overrides use the CLI's precedence", () => {
+  const root = path.resolve("configured-bridge");
+  const runtime = path.resolve("custom-runtime");
+  const profile = path.resolve("custom-profile");
+  const main = path.resolve("gui", "dist", "main");
+  const runtimeOnly = resolveBridgePaths(false, root, main, { CHATGPT_BRIDGE_RUNTIME_DIR: runtime });
+  assert.equal(runtimeOnly.ok, true);
+  if (runtimeOnly.ok) {
+    assert.equal(runtimeOnly.requestsPath, path.join(runtime, "requests"));
+    assert.equal(runtimeOnly.profileDir, path.join(runtime, "profile"));
+  }
+  const profileOnly = resolveBridgePaths(false, root, main, { CHATGPT_BRIDGE_PROFILE_DIR: profile });
+  assert.equal(profileOnly.ok, true);
+  if (profileOnly.ok) {
+    assert.equal(profileOnly.requestsPath, path.join(root, "runtime", "requests"));
+    assert.equal(profileOnly.profileDir, profile);
+  }
+  const both = resolveBridgePaths(false, root, main, { CHATGPT_BRIDGE_RUNTIME_DIR: runtime, CHATGPT_BRIDGE_PROFILE_DIR: profile });
+  assert.equal(both.ok, true);
+  if (both.ok) {
+    assert.equal(both.requestsPath, path.join(runtime, "requests"));
+    assert.equal(both.profileDir, profile);
+  }
+});
+
 test("packaged builds reject a missing or blank configured bridge root", () => {
   for (const configuredRoot of [undefined, "   "]) {
     const result = resolveBridgePaths(true, configuredRoot, path.resolve("resources", "app.asar", "dist", "main"));

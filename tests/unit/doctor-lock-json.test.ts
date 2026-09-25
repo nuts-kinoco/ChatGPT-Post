@@ -24,14 +24,18 @@ function cfg(): BridgeConfig {
   };
 }
 
-async function writeLock(pid: number, requestId: string | null): Promise<void> {
+async function writeLock(
+  pid: number,
+  requestId: string | null,
+  startedAt = "2026-09-25T00:00:00.000Z",
+): Promise<void> {
   const path = join(runtimeDir, "locks", "bridge.lock");
   await mkdir(dirname(path), { recursive: true });
   await writeFile(
     path,
     JSON.stringify({
       pid,
-      startedAt: "2026-09-25T00:00:00.000Z",
+      startedAt,
       token: "test-token",
       command: "run",
       requestId,
@@ -89,6 +93,16 @@ describe("doctor structured lock JSON", () => {
       name: "lock",
       ok: true,
       detail: "no lock file",
+    });
+  });
+
+  it("represents malformed persisted timestamps explicitly as null", async () => {
+    runtimeDir = await mkdtemp(join(tmpdir(), "bridge-doctor-json-"));
+    await writeLock(process.pid, "request-held", "not-a-timestamp");
+
+    await expect(checkLock(cfg())).resolves.toMatchObject({
+      name: "lock",
+      lock: { heldSinceMs: null },
     });
   });
 });

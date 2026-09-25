@@ -42,6 +42,15 @@ export function buildSubmitArgs(cliPath: string, requestFilePath: string): strin
   return [cliPath, "submit", "--request", requestFilePath, "--json"];
 }
 
+export function attachmentsArePickerApproved(attachments: readonly string[], approvedPaths: ReadonlySet<string>): boolean {
+  return attachments.every((attachment) => approvedPaths.has(attachment));
+}
+
+export function addPickerAttachmentPaths(approvedPaths: Set<string>, filePaths: readonly string[]): string[] {
+  for (const filePath of filePaths) approvedPaths.add(filePath);
+  return [...approvedPaths];
+}
+
 const oneOf = <T extends readonly string[]>(value: unknown, allowed: T): value is T[number] => typeof value === "string" && (allowed as readonly string[]).includes(value);
 
 export function validateNewSubmission(value: unknown): { ok: true; value: ValidNewSubmission } | { ok: false; reason: string } {
@@ -93,6 +102,7 @@ export function buildNewRequest(requestId: string, input: ValidNewSubmission): N
 
 export async function writeNewRequest(requestsPath: string, requestId: string, input: ValidNewSubmission, writer: NewRequestWriter): Promise<string> {
   const requestDirectory = path.resolve(requestsPath, requestId);
+  await writer.mkdir(requestsPath, { recursive: true });
   await writer.mkdir(requestDirectory, { recursive: false });
   await Promise.all([
     writer.writeFile(path.join(requestDirectory, "prompt.md"), input.prompt, "utf8"),
