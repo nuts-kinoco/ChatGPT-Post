@@ -7,6 +7,8 @@ import path from "node:path";
 import { aggregateState, DOCTOR_POLL_INTERVAL_MS, EMPTY_STATE, REQUESTS_POLL_INTERVAL_MS, scanRequests, type BridgeGuiState, type DoctorItem } from "./state.js";
 import { evaluateRefreshCookiePreflight, type RefreshCookiePreflightResult } from "./refresh-cookie.js";
 import { buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest, type NewSubmissionInput } from "./submit-new.js";
+import { resolveBridgePaths } from "./bridge-paths.js";
+import { portableExecutablePath } from "./login-item.js";
 import * as fs from "node:fs/promises";
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -17,9 +19,10 @@ const BAR_WIDTH = 380;
 const BAR_HEIGHT = 40;
 const POPUP_HEIGHT = 520;
 const WINDOW_MARGIN = 12;
-const CLI_PATH = path.resolve(__dirname, "../../../dist/cli/main.js");
-const REQUESTS_PATH = path.resolve(__dirname, "../../../runtime/requests");
-const PROFILE_DIR = path.resolve(__dirname, "../../../runtime/profile");
+const bridgePaths = resolveBridgePaths(app.isPackaged, process.env.CHATGPT_BRIDGE_ROOT, __dirname);
+const CLI_PATH = bridgePaths.ok ? bridgePaths.cliPath : "";
+const REQUESTS_PATH = bridgePaths.ok ? bridgePaths.requestsPath : "";
+const PROFILE_DIR = bridgePaths.ok ? bridgePaths.profileDir : "";
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$/u;
 const CONVERSATION_URL_PATTERN = /^https:\/\/chatgpt\.com\/c\/[A-Za-z0-9-]+(?:[/?#][^\s]*)?$/u;
 const RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
@@ -27,6 +30,7 @@ const LOG_TAIL_MAX_BYTES = 200 * 1024;
 let tray: Tray | undefined;
 let barWindow: BrowserWindow | undefined;
 let popupOpen = false;
+let isQuitting = false;
 export interface WindowControlState { alwaysOnTop: boolean; muted: boolean; }
 let windowControls: WindowControlState = { alwaysOnTop: true, muted: false };
 let doctor = EMPTY_STATE.doctor;
@@ -34,7 +38,7 @@ let scannedRequests: Awaited<ReturnType<typeof scanRequests>> = [];
 let bridgeState: BridgeGuiState = EMPTY_STATE;
 
 function rendererUrl(): string { return process.env.ELECTRON_RENDERER_URL ?? `file://${path.join(__dirname, "../renderer/index.html")}`; }
-function createTrayIcon() { return nativeImage.createFromPath(path.join(__dirname, "../../assets/tray-icon.svg")).resize({ width: 16, height: 16 }); }
+function createTrayIcon() { return nativeImage.createFromPath(path.join(__dirname, "../../assets/tray-icon.png")).resize({ width: 16, height: 16 }); }
 function positionWindow() {
   if (!barWindow) return;
   const height = popupOpen ? POPUP_HEIGHT : BAR_HEIGHT;
@@ -46,7 +50,11 @@ function showBar() {
   if (!barWindow) {
     barWindow = new BrowserWindow({ width: BAR_WIDTH, height: BAR_HEIGHT, useContentSize: true, frame: false, resizable: false, skipTaskbar: true, alwaysOnTop: windowControls.alwaysOnTop, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.js") } });
     void barWindow.loadURL(rendererUrl());
-    barWindow.on("close", (event) => { event.preventDefault(); barWindow?.hide(); });
+    barWindow.on("close", (event) => {
+      if (isQuitting) return;
+      event.preventDefault();
+      barWindow?.hide();
+    });
   }
   positionWindow();
   barWindow.show();
@@ -291,9 +299,15 @@ function pollDoctor(): Promise<void> {
 async function pollRequests() { scannedRequests = await scanRequests(REQUESTS_PATH); publishState(); }
 
 if (hasSingleInstanceLock) {
-  app.on("second-instance", () => { void app.whenReady().then(showBar); });
+  app.on("before-quit", () => { isQuitting = true; });
+  app.on("second-instance", () => { if (bridgePaths.ok) void app.whenReady().then(showBar); });
 
   app.whenReady().then(() => {
+    if (!bridgePaths.ok) {
+      dialog.showErrorBox("ChatGPT Bridge root is not configured", bridgePaths.error);
+      app.quit();
+      return;
+    }
     tray = new Tray(createTrayIcon());
     tray.setToolTip("ChatGPT Bridge Control");
     tray.setContextMenu(Menu.buildFromTemplate([{ label: "Show", click: showBar }, { type: "separator" }, { label: "Quit", click: () => app.quit() }]));
@@ -303,11 +317,15 @@ if (hasSingleInstanceLock) {
     ipcMain.handle("bridge-gui:window-controls", (): WindowControlState => windowControls);
     ipcMain.handle("bridge-gui:toggle-always-on-top", (): WindowControlState => setAlwaysOnTop(!windowControls.alwaysOnTop));
     ipcMain.handle("bridge-gui:toggle-mute", (): WindowControlState => toggleMute());
-    ipcMain.handle("bridge-gui:get-autostart", (): boolean => app.getLoginItemSettings().openAtLogin);
+    ipcMain.handle("bridge-gui:get-autostart", (): boolean => {
+      const portablePath = portableExecutablePath(process.env.PORTABLE_EXECUTABLE_FILE);
+      return app.getLoginItemSettings(portablePath ? { path: portablePath } : undefined).openAtLogin;
+    });
     ipcMain.handle("bridge-gui:set-autostart", (_event, openAtLogin: unknown): boolean => {
       if (typeof openAtLogin !== "boolean") throw new TypeError("openAtLogin must be a boolean");
-      app.setLoginItemSettings({ openAtLogin });
-      return app.getLoginItemSettings().openAtLogin;
+      const portablePath = portableExecutablePath(process.env.PORTABLE_EXECUTABLE_FILE);
+      app.setLoginItemSettings(portablePath ? { openAtLogin, path: portablePath } : { openAtLogin });
+      return app.getLoginItemSettings(portablePath ? { path: portablePath } : undefined).openAtLogin;
     });
     ipcMain.handle("bridge-gui:request-detail", async (_event, requestId: unknown) => {
       try { return await readRequestDetail(requestId); }
