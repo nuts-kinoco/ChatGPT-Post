@@ -3,8 +3,10 @@
  * Chromium (headless is fine here: no ChatGPT involved, no profile). Skipped when no browser is
  * available so `npm test` stays runnable on a bare machine.
  */
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { type Browser, chromium, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ChatGptPage } from "../../src/chatgpt/page.js";
@@ -103,6 +105,44 @@ describe("selectors on the 2026-09-15 fixture", () => {
       /```typescript\nfunction hello_bridge\(\) \{\n {2}console\.log\("hello"\);\n\}\n```/,
     );
     expect(md).not.toMatch(/コピーする/);
+  });
+});
+
+describe("REL-3 route-origin fixture", () => {
+  it("records the supplied 173-second SPA transition as unsolicited History API evidence", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    const p = await browser.newPage();
+    const bridge = new ChatGptPage(p, { verifiedOnly: true });
+    const dir = await mkdtemp(join(tmpdir(), "chatgpt-bridge-route-"));
+    try {
+      await p.goto(
+        pathToFileURL(join(REPO_ROOT, "tests", "fixtures", "route-drift-20260923.html")).href,
+      );
+      await p.evaluate(() => history.pushState({}, "", "#unrelated-conversation-6ab2c806"));
+      const artifact = await bridge.recordRouteTelemetry(dir, {
+        expectedUrl: "https://chatgpt.com/c/6ab17047",
+        observedUrl: "https://chatgpt.com/c/6ab2c806",
+        recoveryAttempt: 1,
+        processNavigationInFlight: false,
+      });
+      expect(artifact).not.toBeNull();
+      const line = JSON.parse(await readFile(artifact as string, "utf8")) as {
+        processNavigationInFlight: boolean;
+        routeEvents: Array<{ source: string; processCommand?: string | null }>;
+      };
+      expect(line.processNavigationInFlight).toBe(false);
+      expect(line.routeEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source: "history.pushState" }),
+          expect.objectContaining({ source: "framenavigated", processCommand: null }),
+        ]),
+      );
+    } finally {
+      await p.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

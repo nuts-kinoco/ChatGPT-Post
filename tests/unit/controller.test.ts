@@ -67,6 +67,7 @@ function fake(
     openNewChat: async () => ({ kind: "ok" }),
     openConversation: async () => ({ kind: "ok" }),
     openProject: async () => ({ kind: "ok" }),
+    openConversationForRecovery: async () => ({ kind: "ok", draftPresent: false }),
     resolveOrCreateProject: async () => ({
       kind: "ok",
       url: "https://chatgpt.com/g/g-p-project/project",
@@ -99,6 +100,7 @@ function fake(
       return { ...o, t };
     },
     currentUrl: async () => "https://chatgpt.com/c/123",
+    recordRouteTelemetry: async () => null,
     extractLatest: async () => ({
       markdown: "# Bridge Smoke Test\n\nreq",
       method: "copy",
@@ -900,6 +902,89 @@ describe("RunController", () => {
     expect(out.result?.responseFile).toBeNull();
     expect(f.calls).not.toContain("writeResponse");
     expect(checkResultInvariants(out.result as BridgeResult)).toEqual([]);
+  });
+
+  it("REL-3: a repeated unrelated route drift is recorded, re-opened read-only twice, then fails closed when the locked conversation has no reply", async () => {
+    const target = "https://chatgpt.com/c/123";
+    const unrelated = "https://chatgpt.com/c/sidebar-top-entry";
+    let firstObservation = true;
+    let validatingRecovery = false;
+    let recoveryAttempts = 0;
+    const f = fake({
+      observe: async (t) => observation({ t, assistantCount: 0, userTurnCount: 1 }),
+      currentUrl: async () => {
+        if (validatingRecovery) {
+          validatingRecovery = false;
+          return target;
+        }
+        if (firstObservation) {
+          firstObservation = false;
+          return target;
+        }
+        return unrelated;
+      },
+      openConversationForRecovery: async (url) => {
+        recoveryAttempts++;
+        expect(url).toBe(target);
+        validatingRecovery = true;
+        return { kind: "ok", draftPresent: false };
+      },
+      recordRouteTelemetry: async (_dir, entry) => {
+        expect(entry.observedUrl).toBe(unrelated);
+        expect(entry.processNavigationInFlight).toBe(false);
+        return "/art/route-events.jsonl";
+      },
+    });
+    const out = await run(f);
+    expect(recoveryAttempts).toBe(2);
+    expect(out.result?.error?.code).toBe("CONVERSATION_MISMATCH");
+    expect(out.result?.conversationUrl).toBe(target);
+    expect(out.result?.artifacts).toContain("/art/route-events.jsonl");
+    expect(f.calls).not.toContain("writeResponse");
+  });
+
+  it("REL-3: a read-only recovery completes only after baseline-plus-one and prompt ownership prove the locked conversation reply", async () => {
+    const target = "https://chatgpt.com/c/123";
+    const unrelated = "https://chatgpt.com/c/sidebar-top-entry";
+    let drifted = false;
+    let recovered = false;
+    let ownershipChecks = 0;
+    const f = fake({
+      observe: async (t) => {
+        if (recovered)
+          return observation({
+            t,
+            assistantCount: 1,
+            userTurnCount: 1,
+            streaming: false,
+            lastAssistantEmpty: false,
+          });
+        return observation({ t, assistantCount: 0, userTurnCount: 1 });
+      },
+      currentUrl: async () => (drifted && !recovered ? unrelated : target),
+      openConversationForRecovery: async () => {
+        recovered = true;
+        return { kind: "ok", draftPresent: false };
+      },
+      verifyLatestReplyOwnership: async () => {
+        ownershipChecks++;
+        return { kind: "match" };
+      },
+      recordRouteTelemetry: async () => "/art/route-events.jsonl",
+    });
+    // The first post-dispatch tick locks the target; the next reproduces the 173-second drift.
+    const originalCurrentUrl = f.ports.chatgpt.currentUrl;
+    let urlCalls = 0;
+    f.ports.chatgpt.currentUrl = async () => {
+      urlCalls++;
+      if (urlCalls === 2) drifted = true;
+      return originalCurrentUrl();
+    };
+    const out = await run(f);
+    expect(out.result?.status).toBe("completed");
+    expect(ownershipChecks).toBe(1);
+    expect(out.result?.conversationUrl).toBe(target);
+    expect(f.calls).toContain("writeResponse");
   });
 
   // A-113 (AGY/Antigravity independent review, 2026-09-18): if the real result fails its own

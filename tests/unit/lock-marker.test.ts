@@ -222,7 +222,17 @@ describe("ProcessLock (ADR-005)", () => {
     child.kill("SIGKILL");
     await new Promise((resolve) => child.once("exit", resolve));
     const d = deps({ isProcessAlive: () => false });
-    const verdict = await judgeStale(p, await readLockRecord(p), d);
+    // On Windows a just-exited child's closed file can briefly be unreadable.  The production
+    // policy intentionally treats an unreadable *recent* lock as live; wait for the fixture's
+    // already-written JSON rather than accidentally testing that conservative fallback.
+    let record = await readLockRecord(p);
+    for (let i = 0; record === null && i < 50; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      record = await readLockRecord(p);
+    }
+    expect(record).not.toBeNull();
+    if (!record) throw new Error("hard-killed child lock never became readable");
+    const verdict = await judgeStale(p, record, d);
     expect(verdict).toMatchObject({ stale: true, reclaimable: true });
     expect((await unlockReclaimableStale(p, d)).ok).toBe(true);
     await expect(stat(p)).rejects.toThrow();

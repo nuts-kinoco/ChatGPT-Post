@@ -1,5 +1,16 @@
 # 13 — Error Model
 
+## REL-3 inline route recovery
+
+`CONVERSATION_MISMATCH` remains fail-closed. The sole exception before its terminal verdict is a
+bounded, read-only check when the first mismatch occurs in `WAITING_FOR_RESPONSE`: the bridge
+returns to its already locked URL at most twice and accepts a reply only with the same
+baseline-plus-one and preceding-user-turn ownership proof as `collect`. It never re-enters,
+clears, or sends a prompt. A recovered reply completes normally; no reply or any ambiguous proof
+still writes `CONVERSATION_MISMATCH`. `route-events.jsonl` preserves navigation-origin evidence;
+it can distinguish a bridge navigation command from a frame/History event observed while the
+observer had issued no navigation, but cannot prove which external actor caused the latter.
+
 ## REL-2 recovery update
 
 REL-2b strengthens this proof: `collect` requires the user turn immediately before the candidate

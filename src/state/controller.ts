@@ -104,6 +104,8 @@ const BROWSER_RETRY_WAIT_MS = 1_000;
  * gaps, yet bounded so a truly still-changing response keeps the existing active-timeout safety.
  */
 export const STUCK_STOP_STABILITY_MS = 15_000;
+/** Two fresh, read-only opens bound recovery from an unsolicited route drift. */
+export const CONVERSATION_RECOVERY_MAX_ATTEMPTS = 2;
 
 /**
  * The pre-submit watchdog spans every documented phase allowance at every permitted attempt,
@@ -882,14 +884,23 @@ export class RunController {
         mismatch = url;
       }
       if (mismatch !== null) {
-        const wasObserving = this.observing;
+        // The observer itself only called observe()/currentUrl() above. A mismatch while waiting
+        // may therefore be an unsolicited page/profile route change, not an observer redirect.
+        // Try the locked route a small, fixed number of times before preserving A-116's terminal
+        // fail-closed verdict. Later generating/stabilizing drifts remain terminal immediately.
+        if (
+          this.state.name === "WAITING_FOR_RESPONSE" &&
+          (await this.recoverConversationDrift(baseline, mismatch))
+        ) {
+          this.observing = false;
+          await this.dispatch({ type: "VERDICT_COMPLETE" });
+          return;
+        }
         await this.dispatch({
           type: "VERDICT_CONVERSATION_MISMATCH",
           cause: `expected ${sanitiseConversationUrl(this.conversationUrl) ?? "(none)"}, observed ${mismatch}`,
         });
-        if (!wasObserving || !this.observing) return;
-        await this.ports.clock.sleep(interval);
-        continue;
+        return;
       }
       const verdict = judge(this.history, baseline, cfg);
       if (verdict.type === "VERDICT_TIMEOUT_ACTIVE" && this.stableStuckStopCandidate(baseline)) {
@@ -927,6 +938,78 @@ export class RunController {
       }
     }
     return changedAt !== null && latest.t - changedAt >= STUCK_STOP_STABILITY_MS;
+  }
+
+  /**
+   * The sole inline response-wait recovery. It does not enter, clear, or dispatch a prompt.
+   * A count is never enough: the candidate must be baseline+1, settled, and ownership-proven
+   * against the submitted prompt, exactly as durable collect does.
+   */
+  private async recoverConversationDrift(baseline: number, observedUrl: string): Promise<boolean> {
+    const target = sanitiseConversationUrl(this.conversationUrl);
+    if (!target) return false;
+    for (let attempt = 1; attempt <= CONVERSATION_RECOVERY_MAX_ATTEMPTS; attempt++) {
+      const telemetry = {
+        expectedUrl: target,
+        observedUrl,
+        recoveryAttempt: attempt,
+        processNavigationInFlight: false as const,
+      };
+      this.ports.log("warn", JSON.stringify({ event: "route_drift", ...telemetry }));
+      try {
+        const artifact = await this.ports.chatgpt.recordRouteTelemetry(
+          this.artifactsDir,
+          telemetry,
+        );
+        if (artifact && !this.artifacts.includes(artifact)) this.artifacts.push(artifact);
+      } catch (err) {
+        this.warnings.push(`route_telemetry_failed: ${(err as Error).message.slice(0, 200)}`);
+      }
+      const opened = await this.ports.chatgpt.openConversationForRecovery(target).catch(() => null);
+      if (opened?.kind !== "ok") {
+        this.warnings.push(`route_recovery_open_failed: attempt ${attempt}`);
+        continue;
+      }
+      const actual = sanitiseConversationUrl(await this.ports.chatgpt.currentUrl().catch(() => ""));
+      if (actual !== target) {
+        this.warnings.push(
+          `route_recovery_url_mismatch: attempt ${attempt}, expected ${target}, observed ${actual ?? "(none)"}`,
+        );
+        continue;
+      }
+      const fresh = await this.ports.chatgpt
+        .observe(this.ports.clock.monotonic() - this.dispatchedAt)
+        .catch(() => null);
+      if (!fresh) {
+        this.warnings.push(`route_recovery_observe_failed: attempt ${attempt}`);
+        continue;
+      }
+      const candidate =
+        fresh.assistantCount === baseline + 1 &&
+        !fresh.streaming &&
+        !fresh.lastAssistantEmpty &&
+        fresh.composerReady &&
+        fresh.copyAvailable &&
+        !fresh.truncated &&
+        fresh.errorBanner === "none" &&
+        fresh.challenge === "none";
+      if (!candidate) {
+        this.warnings.push(`route_recovery_incomplete: attempt ${attempt}`);
+        continue;
+      }
+      const ownership = await this.ports.chatgpt.verifyLatestReplyOwnership(
+        this.prompt,
+        this.attachments.map((path) => path.split(/[\\/]/).pop() ?? path),
+      );
+      if (ownership.kind !== "match") {
+        this.warnings.push(`route_recovery_ownership_mismatch: ${ownership.cause}`);
+        continue;
+      }
+      this.history.push(fresh);
+      this.warnings.push("route_recovery_completed_after_locked_reopen");
+      return true;
+    }
+    return false;
   }
 
   /** A retryable not-sent result is honest only after its write-ahead marker is actually gone. */

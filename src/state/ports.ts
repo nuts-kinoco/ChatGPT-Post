@@ -143,6 +143,15 @@ export interface Extraction {
   modelSlug: string | null;
 }
 
+/** Structured evidence captured when the observer discovers it is no longer on its locked route. */
+export interface RouteDriftTelemetry {
+  expectedUrl: string;
+  observedUrl: string;
+  recoveryAttempt: number;
+  /** The observer never navigates; false makes that invariant explicit in the artifact. */
+  processNavigationInFlight: false;
+}
+
 export interface ChatGptPort {
   navigateAndObserveAuth(): Promise<
     AuthObservation | { kind: "dom_unexpected"; element: string; tried: string[] }
@@ -161,6 +170,18 @@ export interface ChatGptPort {
    * state, but deliberately never inspects, clears, or changes a saved composer draft.
    */
   openConversationForCollect(
+    url: string,
+  ): Promise<
+    | { kind: "ok"; draftPresent: boolean }
+    | { kind: "failed"; cause: NewChatFailure }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  >;
+  /**
+   * Read-only in-flight recovery open. Unlike collect, an actively generating target is valid:
+   * this only returns the tab to the locked route and never changes its composer or sends text.
+   */
+  openConversationForRecovery(
     url: string,
   ): Promise<
     | { kind: "ok"; draftPresent: boolean }
@@ -222,6 +243,8 @@ export interface ChatGptPort {
   ): Promise<{ kind: "cleared" } | { kind: "failed"; cause: string }>;
   observe(t: number): Promise<Observation>;
   currentUrl(): Promise<string>;
+  /** Append route-origin evidence to this run's artifact directory; failures are best-effort. */
+  recordRouteTelemetry(artifactsDir: string, drift: RouteDriftTelemetry): Promise<string | null>;
   /** Proves that the user turn immediately before the latest assistant turn is this request. */
   verifyLatestReplyOwnership(
     prompt: string,

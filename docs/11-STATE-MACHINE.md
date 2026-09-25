@@ -1,5 +1,20 @@
 # 11 — State Machine
 
+## REL-3 route-drift recovery
+
+While the controller is in `WAITING_FOR_RESPONSE`, every tick is read-only: it calls only
+`observe()` and `currentUrl()`. If the already-locked conversation route differs, the controller
+records route-origin telemetry and makes at most two read-only opens of the locked URL. Each open
+is followed by a fresh observation. Completion is allowed only for exactly `baseline + 1`, a
+settled non-streaming reply, and a matching immediately preceding submitted user turn. It then
+continues through the ordinary `VERDICT_COMPLETE` extraction path. There is no resend, composer
+write, or new state-machine retry. An absent, streaming, ambiguous, URL-mismatched, or
+ownership-mismatched reply exhausts the bound and remains `CONVERSATION_MISMATCH`.
+
+`route-events.jsonl` in the request artifact directory records browser `framenavigated`/popup and
+page History API signals, plus whether a bridge navigation command was active. The observation
+record explicitly says no process navigation was in flight.
+
 | 項目 | 値 |
 |---|---|
 | 文書版 | 1.3 (Phase 3、Codex レビュー反映。FROZEN FOR MVP v1.0、2026-09-15) |

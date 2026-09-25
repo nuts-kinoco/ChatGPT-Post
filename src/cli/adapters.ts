@@ -289,6 +289,7 @@ export function chatgptPort(
     openNewChat: () => get().openNewChat(),
     openConversation: (u) => get().openConversation(u),
     openConversationForCollect: (u) => get().openConversationForCollect(u),
+    openConversationForRecovery: (u) => get().openConversationForRecovery(u),
     openProject: (u) => get().openProject(u),
     resolveOrCreateProject: (name, control) => get().resolveOrCreateProject(name, control),
     resolvePreset: (p, m) => get().resolvePreset(p, m),
@@ -298,6 +299,7 @@ export function chatgptPort(
     clearUnsentPrompt: (prompt) => get().clearUnsentPrompt(prompt),
     observe: (t) => get().observe(t),
     currentUrl: () => get().currentUrl(),
+    recordRouteTelemetry: (dir, drift) => get().recordRouteTelemetry(dir, drift),
     verifyLatestReplyOwnership: (prompt, attachmentNames) =>
       get().verifyLatestReplyOwnership(prompt, attachmentNames),
     extractLatest: () => get().extractLatest(),

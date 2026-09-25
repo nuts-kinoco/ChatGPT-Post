@@ -50,6 +50,7 @@ function harness(): Harness {
     openNewChat: async () => ({ kind: "ok" }),
     openConversation: async () => ({ kind: "ok" }),
     openProject: async () => ({ kind: "ok" }),
+    openConversationForRecovery: async () => ({ kind: "ok", draftPresent: false }),
     resolveOrCreateProject: async () => ({
       kind: "ok",
       url: "https://chatgpt.com/g/g-p-project/project",
@@ -78,6 +79,7 @@ function harness(): Harness {
       t,
     }),
     currentUrl: async () => "https://chatgpt.com/c/1",
+    recordRouteTelemetry: async () => null,
     extractLatest: async () => ({
       markdown: "ok",
       method: "copy",

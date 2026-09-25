@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright";
 import { withTimeout } from "../browser/timeout.js";
@@ -21,6 +21,7 @@ import type {
   Extraction,
   PresetResolution,
   ProjectCreateControl,
+  RouteDriftTelemetry,
 } from "../state/ports.js";
 import type { Observation } from "./completion.js";
 import {
@@ -153,11 +154,70 @@ export class ChatGptPage implements ChatGptPort {
   private streamingCandidateLogged = false;
   /** Effort slider index before this run changed it (null = untouched). */
   private effortToRestore: number | null = null;
+  private routeNavigationCommand: string | null = null;
+  private readonly frameRouteEvents: Array<{
+    source: "framenavigated" | "popup";
+    url: string;
+    at: string;
+    processCommand: string | null;
+  }> = [];
+  private readonly routeInstrumentation: Promise<unknown>;
 
   constructor(
     private readonly page: Page,
     private readonly opts: ChatGptPageOptions,
-  ) {}
+  ) {
+    // These listeners remain live during WAITING_FOR_RESPONSE. `processCommand` is non-null
+    // only while one of this class's own explicit navigation commands is awaiting Playwright.
+    page.on("framenavigated", (frame) => {
+      if (frame !== page.mainFrame()) return;
+      this.frameRouteEvents.push({
+        source: "framenavigated",
+        url: frame.url(),
+        at: new Date().toISOString(),
+        processCommand: this.routeNavigationCommand,
+      });
+    });
+    page.on("popup", (popup) => {
+      this.frameRouteEvents.push({
+        source: "popup",
+        url: popup.url(),
+        at: new Date().toISOString(),
+        processCommand: this.routeNavigationCommand,
+      });
+    });
+    // Frame events do not see SPA History API transitions. The page-world queue is drained only
+    // when drift is observed, avoiding periodic writes or any observer-side navigation.
+    this.routeInstrumentation = page
+      .addInitScript(() => {
+        const key = "__chatgptBridgeRouteEvents";
+        const root = window as typeof window & {
+          [key: string]: Array<{ source: string; url: string; at: number }> | undefined;
+        };
+        let events = root[key];
+        if (!events) {
+          events = [];
+          root[key] = events;
+        }
+        const record = (source: string) =>
+          events.push({ source, url: location.href, at: Date.now() });
+        const originalPushState = history.pushState.bind(history);
+        history.pushState = (...args) => {
+          originalPushState(...args);
+          record("history.pushState");
+        };
+        const originalReplaceState = history.replaceState.bind(history);
+        history.replaceState = (...args) => {
+          originalReplaceState(...args);
+          record("history.replaceState");
+        };
+        addEventListener("popstate", () => record("history.popstate"));
+        addEventListener("hashchange", () => record("history.hashchange"));
+      })
+      .catch((err) => {
+        this.opts.log?.(`route telemetry init failed: ${(err as Error).message}`);
+      });
+  }
 
   private get sel() {
     return { verifiedOnly: this.opts.verifiedOnly };
@@ -180,6 +240,43 @@ export class ChatGptPage implements ChatGptPort {
 
   async currentUrl(): Promise<string> {
     return this.page.url();
+  }
+
+  private async withRouteNavigation<T>(command: string, action: () => Promise<T>): Promise<T> {
+    await this.routeInstrumentation;
+    this.routeNavigationCommand = command;
+    try {
+      return await action();
+    } finally {
+      this.routeNavigationCommand = null;
+    }
+  }
+
+  async recordRouteTelemetry(
+    artifactsDir: string,
+    drift: RouteDriftTelemetry,
+  ): Promise<string | null> {
+    await this.routeInstrumentation;
+    const historyEvents = await this.page
+      .evaluate(() => {
+        const root = window as typeof window & {
+          __chatgptBridgeRouteEvents?: Array<{ source: string; url: string; at: number }>;
+        };
+        const events = root.__chatgptBridgeRouteEvents ?? [];
+        root.__chatgptBridgeRouteEvents = [];
+        return events;
+      })
+      .catch(() => []);
+    const record = {
+      event: "route_drift",
+      observedAt: new Date().toISOString(),
+      ...drift,
+      routeEvents: [...this.frameRouteEvents.splice(0), ...historyEvents],
+    };
+    await mkdir(artifactsDir, { recursive: true });
+    const path = join(artifactsDir, "route-events.jsonl");
+    await appendFile(path, `${JSON.stringify(record)}\n`, "utf8");
+    return path;
   }
 
   /**
@@ -262,7 +359,9 @@ export class ChatGptPage implements ChatGptPort {
     AuthObservation | { kind: "dom_unexpected"; element: string; tried: string[] }
   > {
     try {
-      await this.page.goto(`${CHATGPT_ORIGIN}/`, { waitUntil: "domcontentloaded" });
+      await this.withRouteNavigation("navigate_and_observe_auth", () =>
+        this.page.goto(`${CHATGPT_ORIGIN}/`, { waitUntil: "domcontentloaded" }),
+      );
     } catch (err) {
       return { kind: "NOT_READY", cause: `navigation failed: ${(err as Error).message}` };
     }
@@ -344,9 +443,22 @@ export class ChatGptPage implements ChatGptPort {
     return this.openConversationInternal(url, true);
   }
 
+  async openConversationForRecovery(
+    url: string,
+  ): Promise<
+    | { kind: "ok"; draftPresent: boolean }
+    | { kind: "failed"; cause: NewChatFailure }
+    | { kind: "retry"; cause: string }
+    | { kind: "dom_unexpected"; element: string; tried: string[] }
+  > {
+    return this.openConversationInternal(url, true, true, "recover_conversation_route");
+  }
+
   private async openConversationInternal(
     url: string,
     allowDraft: boolean,
+    allowGenerating = false,
+    routeCommand = "open_conversation",
   ): Promise<
     | { kind: "ok"; draftPresent: boolean }
     | { kind: "failed"; cause: NewChatFailure }
@@ -363,7 +475,9 @@ export class ChatGptPage implements ChatGptPort {
       return { kind: "failed", cause: "conversation_not_found" };
     }
     try {
-      await this.page.goto(`${target.origin}${target.pathname}`, { waitUntil: "domcontentloaded" });
+      await this.withRouteNavigation(routeCommand, () =>
+        this.page.goto(`${target.origin}${target.pathname}`, { waitUntil: "domcontentloaded" }),
+      );
     } catch (err) {
       return { kind: "retry", cause: (err as Error).message };
     }
@@ -380,7 +494,7 @@ export class ChatGptPage implements ChatGptPort {
         if ((await countMatches(this.page, "assistantTurn", this.sel)) === 0) {
           return { kind: "failed", cause: "conversation_not_found" };
         }
-        if (await exists(this.page, "stopButton", this.sel))
+        if (!allowGenerating && (await exists(this.page, "stopButton", this.sel)))
           return { kind: "failed", cause: "generating" };
         const text = (await composer.locator.innerText().catch(() => "")).trim();
         if (text.length > 0 && !allowDraft) return { kind: "failed", cause: "composer_not_empty" };
