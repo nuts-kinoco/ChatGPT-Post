@@ -58,9 +58,10 @@ chatgpt-bridge login
 ```powershell
 chatgpt-bridge doctor
 chatgpt-bridge doctor --json
+chatgpt-bridge doctor --json --no-login
 ```
 
-出力項目: node / playwright / browser / profile.path / profile.exists / profile.free / profile.processes / lock / runtime dirs / login。すべて OK で exit 0、1 つでも NG で exit 1。`doctor --json` は 1 行の JSON `{ "ok": boolean, "items": DoctorItem[] }` を出力し、各 item の `name` / `ok` / `detail` / `warn` をそのまま含む。
+出力項目: node / playwright / browser / profile.path / profile.exists / profile.free / profile.processes / lock / runtime dirs / login。すべて OK で exit 0、1 つでも NG で exit 1。`doctor --json` は 1 行の JSON `{ "ok": boolean, "items": DoctorItem[] }` を出力し、各 item の `name` / `ok` / `detail` / `warn` をそのまま含む。`--no-login` はブラウザを使う login 検査を省略するため、頻繁な自動ポーリング（監視 GUI など）でロックやブラウザとの競合を避けたい場合に使う。この場合、出力に `login` 項目は含まれない。
 
 ```powershell
 chatgpt-bridge inspect-ui

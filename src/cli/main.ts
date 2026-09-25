@@ -39,7 +39,7 @@ const USAGE = `chatgpt-bridge <command> [options]
 
 commands:
   login                      専用ブラウザを開き、人間がログインする
-  doctor [--json]            環境・プロファイル・ロック・ログイン状態を診断する
+  doctor [--json] [--no-login] 環境・プロファイル・ロック・ログイン状態を診断する
   unlock --stale [--json]    dead/reused PID の stale lock だけを明示的に削除する（生存 owner は絶対に kill しない）
   run --request <path> [--json]
                              request.json を 1 件処理する。--json は result.json の内容を標準出力に 1 行で出す
@@ -219,23 +219,34 @@ async function cmdLogin(cfg: BridgeConfig, verifiedOnly: boolean): Promise<numbe
   return typeof r === "number" ? r : 1;
 }
 
-async function cmdDoctor(cfg: BridgeConfig, verifiedOnly: boolean, json: boolean): Promise<number> {
+async function cmdDoctor(
+  cfg: BridgeConfig,
+  verifiedOnly: boolean,
+  json: boolean,
+  noLogin: boolean,
+): Promise<number> {
   const logger = createLogger(cfg.logLevel);
   const items = await runDoctor({
     cfg,
-    loginProbe: async () => {
-      const r = await withBrowser(cfg, "doctor", verifiedOnly, async (ports, crash) => {
-        const page = new ChatGptPage(ports.session.currentPage, { verifiedOnly });
-        const a = await observeAuthWithRetry(page, crash);
-        if (crash.cause) return { ok: false, detail: `browser crashed: ${crash.cause}` };
-        return {
-          ok: a.kind === "AUTH_OK",
-          detail:
-            a.kind === "AUTH_OK" ? "logged in" : `${a.kind}${"cause" in a ? `: ${a.cause}` : ""}`,
-        };
-      });
-      return typeof r === "number" ? { ok: false, detail: `browser probe failed (exit ${r})` } : r;
-    },
+    loginProbe: noLogin
+      ? null
+      : async () => {
+          const r = await withBrowser(cfg, "doctor", verifiedOnly, async (ports, crash) => {
+            const page = new ChatGptPage(ports.session.currentPage, { verifiedOnly });
+            const a = await observeAuthWithRetry(page, crash);
+            if (crash.cause) return { ok: false, detail: `browser crashed: ${crash.cause}` };
+            return {
+              ok: a.kind === "AUTH_OK",
+              detail:
+                a.kind === "AUTH_OK"
+                  ? "logged in"
+                  : `${a.kind}${"cause" in a ? `: ${a.cause}` : ""}`,
+            };
+          });
+          return typeof r === "number"
+            ? { ok: false, detail: `browser probe failed (exit ${r})` }
+            : r;
+        },
   });
   const { text, ok } = formatDoctor(items);
   process.stdout.write(json ? `${JSON.stringify({ ok, items })}\n` : `${text}\n`);
@@ -943,6 +954,7 @@ export async function main(argv: string[]): Promise<number> {
       "max-bytes": { type: "string" },
       diff: { type: "string" },
       "allow-unverified": { type: "boolean", default: false },
+      "no-login": { type: "boolean", default: false },
       "timeout-ms": { type: "string" },
       "conversation-url": { type: "string" },
       since: { type: "string" },
@@ -965,7 +977,7 @@ export async function main(argv: string[]): Promise<number> {
     case "login":
       return cmdLogin(cfg, verifiedOnly);
     case "doctor":
-      return cmdDoctor(cfg, verifiedOnly, values.json ?? false);
+      return cmdDoctor(cfg, verifiedOnly, values.json ?? false, values["no-login"] ?? false);
     case "unlock":
       return cmdUnlock(cfg, values.stale ?? false, values.json ?? false);
     case "run":

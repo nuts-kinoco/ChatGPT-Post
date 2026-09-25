@@ -135,7 +135,7 @@ function parseDoctor(stdout: string): { ok: boolean; items: DoctorItem[] } {
 }
 function pollDoctor(): Promise<void> {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI_PATH, "doctor", "--json"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
+    const child = spawn(process.execPath, [CLI_PATH, "doctor", "--json", "--no-login"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
     let stdout = "";
     let stderr = "";
     let settled = false;
