@@ -14,7 +14,15 @@ export interface BridgePathsError {
 }
 
 export function resolveBridgePaths(isPackaged: boolean, configuredRoot: string | undefined, mainDirectory: string, env: NodeJS.ProcessEnv = process.env): BridgePaths | BridgePathsError {
-  const configured = configuredRoot?.trim();
+  // `set CHATGPT_BRIDGE_ROOT="C:\path"` in cmd.exe keeps the quotes in the value.
+  const configured = configuredRoot?.trim().replace(/^"(.*)"$/su, "$1").trim();
+  if (configured && !path.isAbsolute(configured)) {
+    // The portable build runs from a temporary extraction directory, so a relative root would resolve there.
+    return {
+      ok: false,
+      error: `CHATGPT_BRIDGE_ROOT must be an absolute path (got "${configured}"). Set it to the chatgpt-web-bridge repository path, then restart ChatGPT Bridge Control.`,
+    };
+  }
   const root = configured ? path.resolve(configured) : isPackaged ? null : path.resolve(mainDirectory, "../../..");
   if (!root) {
     return {

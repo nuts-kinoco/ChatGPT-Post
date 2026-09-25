@@ -10,7 +10,9 @@ npm run package
 ```
 
 The executable is written to `gui/release/`. Run it directly; it is a portable build and does not
-require an installer.
+require an installer. Each launch unpacks into its own temporary directory (`portable.unpackDirName: true`);
+with electron-builder's default fixed directory, launching the exe again (e.g. to show the bar) wiped the
+running instance's files, and every CLI call then crashed with `Invalid file descriptor to ICU data received`.
 
 This independent Electron package is the tray-resident, read-only Bridge Control monitor. It polls
 `node ../dist/cli/main.js doctor --json` and scans `../runtime/requests/`; it never invokes a
