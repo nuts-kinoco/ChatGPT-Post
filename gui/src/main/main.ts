@@ -57,16 +57,24 @@ function registerRendererProtocol() {
   });
 }
 function createTrayIcon() { return nativeImage.createFromPath(path.join(__dirname, "../../assets/tray-icon.png")).resize({ width: 16, height: 16 }); }
+function barPosition(height: number) {
+  const { workArea } = screen.getPrimaryDisplay();
+  return {
+    x: workArea.x + workArea.width - BAR_WIDTH - WINDOW_MARGIN,
+    y: workArea.y + workArea.height - height - WINDOW_MARGIN,
+  };
+}
 function positionWindow() {
   if (!barWindow) return;
   const height = popupOpen ? POPUP_HEIGHT : BAR_HEIGHT;
-  const { workArea } = screen.getPrimaryDisplay();
+  const { x, y } = barPosition(height);
   barWindow.setSize(BAR_WIDTH, height);
-  barWindow.setPosition(workArea.x + workArea.width - BAR_WIDTH - WINDOW_MARGIN, workArea.y + workArea.height - height - WINDOW_MARGIN);
+  barWindow.setPosition(x, y);
 }
 function showBar() {
   if (!barWindow) {
-    barWindow = new BrowserWindow({ width: BAR_WIDTH, height: BAR_HEIGHT, useContentSize: true, frame: false, resizable: false, skipTaskbar: true, alwaysOnTop: windowControls.alwaysOnTop, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.cjs") } });
+    const initialPosition = barPosition(BAR_HEIGHT);
+    barWindow = new BrowserWindow({ width: BAR_WIDTH, height: BAR_HEIGHT, x: initialPosition.x, y: initialPosition.y, useContentSize: true, frame: false, resizable: false, skipTaskbar: true, alwaysOnTop: windowControls.alwaysOnTop, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.cjs") } });
     if (process.env.BRIDGE_GUI_DEBUG) {
       const wc = barWindow.webContents;
       console.log("[debug] rendererUrl =", rendererUrl());
@@ -85,8 +93,12 @@ function showBar() {
       barWindow?.hide();
     });
   }
-  positionWindow();
+  // Windows can create a hidden tool window as iconic.  Give it a normal show
+  // state before applying its final bounds; bounds changes while iconic stay at
+  // the Win32 (-32000, -32000) minimized sentinel position.
+  if (barWindow.isMinimized()) barWindow.restore();
   barWindow.show();
+  positionWindow();
   barWindow.focus();
 }
 function toggleBar() { if (barWindow?.isVisible()) barWindow.hide(); else showBar(); }
