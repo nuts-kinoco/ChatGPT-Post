@@ -39,7 +39,7 @@ const USAGE = `chatgpt-bridge <command> [options]
 
 commands:
   login                      専用ブラウザを開き、人間がログインする
-  doctor                     環境・プロファイル・ロック・ログイン状態を診断する
+  doctor [--json]            環境・プロファイル・ロック・ログイン状態を診断する
   unlock --stale [--json]    dead/reused PID の stale lock だけを明示的に削除する（生存 owner は絶対に kill しない）
   run --request <path> [--json]
                              request.json を 1 件処理する。--json は result.json の内容を標準出力に 1 行で出す
@@ -219,7 +219,7 @@ async function cmdLogin(cfg: BridgeConfig, verifiedOnly: boolean): Promise<numbe
   return typeof r === "number" ? r : 1;
 }
 
-async function cmdDoctor(cfg: BridgeConfig, verifiedOnly: boolean): Promise<number> {
+async function cmdDoctor(cfg: BridgeConfig, verifiedOnly: boolean, json: boolean): Promise<number> {
   const logger = createLogger(cfg.logLevel);
   const items = await runDoctor({
     cfg,
@@ -238,7 +238,7 @@ async function cmdDoctor(cfg: BridgeConfig, verifiedOnly: boolean): Promise<numb
     },
   });
   const { text, ok } = formatDoctor(items);
-  process.stdout.write(`${text}\n`);
+  process.stdout.write(json ? `${JSON.stringify({ ok, items })}\n` : `${text}\n`);
   logger.log("debug", `doctor: ${ok ? "all ok" : "has NG"}`);
   return ok ? 0 : 1;
 }
@@ -965,7 +965,7 @@ export async function main(argv: string[]): Promise<number> {
     case "login":
       return cmdLogin(cfg, verifiedOnly);
     case "doctor":
-      return cmdDoctor(cfg, verifiedOnly);
+      return cmdDoctor(cfg, verifiedOnly, values.json ?? false);
     case "unlock":
       return cmdUnlock(cfg, values.stale ?? false, values.json ?? false);
     case "run":
