@@ -23,3 +23,10 @@ test("refresh cookie permits only a reclaimable stale lock", () => {
 test("refresh cookie refuses a busy profile even when no lock exists", () => {
   assert.equal(evaluateRefreshCookiePreflight(doctor({ name: "lock", ok: true, detail: "no lock file" }, false)).ok, false);
 });
+
+test("refresh cookie includes the process detail when doctor printed no JSON", () => {
+  assert.deepEqual(
+    evaluateRefreshCookiePreflight("", "exit 1: Error: Cannot find module 'C:\\bridge\\dist\\cli\\main.js'"),
+    { ok: false, reason: "Could not verify the request lock: doctor --json returned no JSON (exit 1: Error: Cannot find module 'C:\\bridge\\dist\\cli\\main.js')" },
+  );
+});

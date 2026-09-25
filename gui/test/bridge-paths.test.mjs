@@ -62,3 +62,18 @@ test("portable executable path is used only when the environment value is meanin
   assert.equal(portableExecutablePath(undefined), undefined);
   assert.equal(portableExecutablePath("  "), undefined);
 });
+
+test("configured bridge root tolerates surrounding quotes kept by cmd.exe `set`", () => {
+  const configuredRoot = path.resolve("configured-bridge");
+  const result = resolveBridgePaths(true, ` "${configuredRoot}" `, path.resolve("resources", "app.asar", "dist", "main"));
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.cliPath, path.join(configuredRoot, "dist", "cli", "main.js"));
+});
+
+test("configured bridge root must be absolute because the portable build runs from a temp directory", () => {
+  for (const isPackaged of [false, true]) {
+    const result = resolveBridgePaths(isPackaged, "..\\chatgpt-web-bridge", path.resolve("gui", "dist", "main"));
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.error, /absolute/);
+  }
+});

@@ -12,8 +12,9 @@ interface DoctorItem {
  * Parses the passive doctor result used before opening the manual-login window.
  * This intentionally fails closed: opening a second Chrome against the profile
  * is safe only when doctor explicitly reports no lock, or a reclaimable stale lock.
+ * `processDetail` (exit status and stderr) is appended when stdout cannot be parsed.
  */
-export function evaluateRefreshCookiePreflight(stdout: string): RefreshCookiePreflightResult {
+export function evaluateRefreshCookiePreflight(stdout: string, processDetail?: string): RefreshCookiePreflightResult {
   try {
     const line = stdout.split(/\r?\n/u).find((candidate) => candidate.trim());
     if (!line) throw new Error("doctor --json returned no JSON");
@@ -45,6 +46,7 @@ export function evaluateRefreshCookiePreflight(stdout: string): RefreshCookiePre
     if (!noLock && !reclaimableStaleLock) return { ok: false, reason: "A request lock may still own the browser profile; wait for it to finish before refreshing cookies" };
     return { ok: true };
   } catch (error) {
-    return { ok: false, reason: `Could not verify the request lock: ${error instanceof Error ? error.message : "invalid doctor output"}` };
+    const detail = processDetail ? ` (${processDetail})` : "";
+    return { ok: false, reason: `Could not verify the request lock: ${error instanceof Error ? error.message : "invalid doctor output"}${detail}` };
   }
 }

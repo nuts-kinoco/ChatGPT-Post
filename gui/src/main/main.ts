@@ -8,6 +8,7 @@ import { aggregateState, DOCTOR_POLL_INTERVAL_MS, EMPTY_STATE, REQUESTS_POLL_INT
 import { evaluateRefreshCookiePreflight, type RefreshCookiePreflightResult } from "./refresh-cookie.js";
 import { addPickerAttachmentPaths, attachmentsArePickerApproved, buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest, type NewSubmissionInput } from "./submit-new.js";
 import { resolveBridgePaths } from "./bridge-paths.js";
+import { describeCliRun, runBridgeCli } from "./cli-process.js";
 import { portableExecutablePath } from "./login-item.js";
 import { startPollLoop } from "./poll-loop.js";
 import { RENDERER_SCHEME, rendererFilePath, resolveRendererUrl } from "./renderer-protocol.js";
@@ -281,33 +282,11 @@ function parseStop(stdout: string): StopRequestResult {
   if (parsed.ok === false && typeof parsed.reason === "string" && parsed.reason) return { ok: false, reason: parsed.reason };
   throw new Error("stop --json returned an unexpected shape");
 }
-function requestStop(requestId: string): Promise<StopRequestResult> {
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(process.execPath, [CLI_PATH, "stop", requestId, "--json"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
-    } catch (error) {
-      resolve({ ok: false, reason: error instanceof Error ? `Could not start stop command: ${error.message}` : "Could not start stop command" });
-      return;
-    }
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
-    const finish = (result: StopRequestResult) => { if (!settled) { settled = true; if (timeout) clearTimeout(timeout); resolve(result); } };
-    timeout = setTimeout(() => { child.kill(); finish({ ok: false, reason: "Stop command timed out" }); }, STOP_TIMEOUT_MS);
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.on("error", (error) => finish({ ok: false, reason: `Could not start stop command: ${error.message}` }));
-    child.on("close", () => {
-      if (settled) return;
-      try { finish(parseStop(stdout)); }
-      catch (error) {
-        const reason = error instanceof Error ? error.message : "Malformed stop output";
-        finish({ ok: false, reason: `${reason}${stderr.trim() ? ` (${stderr.trim()})` : ""}` });
-      }
-    });
-  });
+async function requestStop(requestId: string): Promise<StopRequestResult> {
+  const result = await runBridgeCli({ execPath: process.execPath, cliPath: CLI_PATH, args: ["stop", requestId, "--json"], timeoutMs: STOP_TIMEOUT_MS, label: "stop command" });
+  if (!result.ok) return result;
+  try { return parseStop(result.run.stdout); }
+  catch (error) { return { ok: false, reason: `${error instanceof Error ? error.message : "Malformed stop output"} (${describeCliRun(result.run)})` }; }
 }
 function parseSubmit(stdout: string): SubmitNewResult {
   const line = stdout.split(/\r?\n/u).find((candidate) => candidate.trim());
@@ -318,33 +297,12 @@ function parseSubmit(stdout: string): SubmitNewResult {
   if (validRequestId(parsed.requestId)) return { ok: true, requestId: parsed.requestId };
   throw new Error("submit --json returned an unexpected shape");
 }
-function requestSubmit(requestFilePath: string): Promise<SubmitNewResult> {
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawn(process.execPath, buildSubmitArgs(CLI_PATH, requestFilePath), { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
-    } catch (error) {
-      resolve({ ok: false, reason: error instanceof Error ? `Could not start submit: ${error.message}` : "Could not start submit" });
-      return;
-    }
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
-    const finish = (result: SubmitNewResult) => { if (!settled) { settled = true; if (timeout) clearTimeout(timeout); resolve(result); } };
-    timeout = setTimeout(() => { child.kill(); finish({ ok: false, reason: "Submit command timed out" }); }, SUBMIT_TIMEOUT_MS);
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.on("error", (error) => finish({ ok: false, reason: `Could not start submit: ${error.message}` }));
-    child.on("close", () => {
-      if (settled) return;
-      try { finish(parseSubmit(stdout)); }
-      catch (error) {
-        const reason = error instanceof Error ? error.message : "Malformed submit output";
-        finish({ ok: false, reason: `${reason}${stderr.trim() ? ` (${stderr.trim()})` : ""}` });
-      }
-    });
-  });
+async function requestSubmit(requestFilePath: string): Promise<SubmitNewResult> {
+  const [cliPath, ...args] = buildSubmitArgs(CLI_PATH, requestFilePath);
+  const result = await runBridgeCli({ execPath: process.execPath, cliPath, args, timeoutMs: SUBMIT_TIMEOUT_MS, label: "submit" });
+  if (!result.ok) return result;
+  try { return parseSubmit(result.run.stdout); }
+  catch (error) { return { ok: false, reason: `${error instanceof Error ? error.message : "Malformed submit output"} (${describeCliRun(result.run)})` }; }
 }
 async function findChromeExecutable(): Promise<string | null> {
   const candidates = process.platform === "win32"
@@ -360,66 +318,40 @@ async function findChromeExecutable(): Promise<string | null> {
   }
   return null;
 }
-function requestRefreshCookie(): Promise<RefreshCookieResult> {
+async function requestRefreshCookie(): Promise<RefreshCookieResult> {
+  const doctorRun = await runBridgeCli({ execPath: process.execPath, cliPath: CLI_PATH, args: ["doctor", "--json", "--no-login"], timeoutMs: DOCTOR_TIMEOUT_MS, label: "doctor preflight" });
+  if (!doctorRun.ok) return doctorRun;
+  const preflight: RefreshCookiePreflightResult = evaluateRefreshCookiePreflight(doctorRun.run.stdout, describeCliRun(doctorRun.run));
+  if (!preflight.ok) return preflight;
+  let chromePath: string | null;
+  try { chromePath = await findChromeExecutable(); }
+  catch (error) { return { ok: false, reason: error instanceof Error ? `Could not find Google Chrome: ${error.message}` : "Could not find Google Chrome" }; }
+  if (!chromePath) return { ok: false, reason: "Google Chrome could not be found" };
   return new Promise((resolve) => {
-    let child;
     try {
-      child = spawn(process.execPath, [CLI_PATH, "doctor", "--json", "--no-login"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
+      const chrome = spawn(chromePath, [`--user-data-dir=${PROFILE_DIR}`, "https://chatgpt.com/"], { detached: true, stdio: "ignore" });
+      chrome.unref();
+      chrome.once("error", (error) => resolve({ ok: false, reason: `Could not open Google Chrome: ${error.message}` }));
+      chrome.once("spawn", () => resolve({ ok: true }));
     } catch (error) {
-      resolve({ ok: false, reason: error instanceof Error ? `Could not start doctor: ${error.message}` : "Could not start doctor" });
-      return;
+      resolve({ ok: false, reason: error instanceof Error ? `Could not open Google Chrome: ${error.message}` : "Could not open Google Chrome" });
     }
-    let stdout = "";
-    let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
-    const finish = (result: RefreshCookieResult) => { if (!settled) { settled = true; if (timeout) clearTimeout(timeout); resolve(result); } };
-    timeout = setTimeout(() => { child.kill(); finish({ ok: false, reason: "Doctor preflight timed out" }); }, DOCTOR_TIMEOUT_MS);
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.on("error", (error) => finish({ ok: false, reason: `Could not start doctor: ${error.message}` }));
-    child.on("close", () => {
-      if (settled) return;
-      const preflight: RefreshCookiePreflightResult = evaluateRefreshCookiePreflight(stdout);
-      if (!preflight.ok) { finish(preflight); return; }
-      void findChromeExecutable().then((chromePath) => {
-        if (!chromePath) { finish({ ok: false, reason: "Google Chrome could not be found" }); return; }
-        try {
-          const chrome = spawn(chromePath, [`--user-data-dir=${PROFILE_DIR}`, "https://chatgpt.com/"], { detached: true, stdio: "ignore" });
-          chrome.unref();
-          chrome.once("error", (error) => finish({ ok: false, reason: `Could not open Google Chrome: ${error.message}` }));
-          chrome.once("spawn", () => finish({ ok: true }));
-        } catch (error) {
-          finish({ ok: false, reason: error instanceof Error ? `Could not open Google Chrome: ${error.message}` : "Could not open Google Chrome" });
-        }
-      }, (error) => finish({ ok: false, reason: error instanceof Error ? `Could not find Google Chrome: ${error.message}` : "Could not find Google Chrome" }));
-    });
   });
 }
-function pollDoctor(): Promise<void> {
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI_PATH, "doctor", "--json", "--no-login"], { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, windowsHide: true });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
-    const finish = () => { if (!settled) { settled = true; if (timeout) clearTimeout(timeout); resolve(); } };
-    timeout = setTimeout(() => {
-      child.kill();
-      console.warn("Bridge GUI: doctor poll timed out; retrying next tick");
-      doctor = { ok: false, items: [], error: "Doctor poll timed out" };
-      publishState();
-      finish();
-    }, DOCTOR_TIMEOUT_MS);
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.on("error", (error) => { console.warn("Bridge GUI: could not start doctor; retrying next tick", error); doctor = { ok: false, items: [], error: error.message }; publishState(); finish(); });
-    child.on("close", () => {
-      if (settled) return;
-      try { doctor = parseDoctor(stdout); }
-      catch (error) { console.warn(`Bridge GUI: doctor output could not be parsed; retrying next tick${stderr ? `: ${stderr.trim()}` : ""}`, error); doctor = { ok: false, items: [], error: error instanceof Error ? error.message : "Malformed doctor output" }; }
-      publishState();
-      finish();
-    });
-  });
+async function pollDoctor(): Promise<void> {
+  const result = await runBridgeCli({ execPath: process.execPath, cliPath: CLI_PATH, args: ["doctor", "--json", "--no-login"], timeoutMs: DOCTOR_TIMEOUT_MS, label: "doctor poll" });
+  if (!result.ok) {
+    console.warn(`Bridge GUI: ${result.reason}; retrying next tick`);
+    doctor = { ok: false, items: [], error: result.reason };
+  } else {
+    try { doctor = parseDoctor(result.run.stdout); }
+    catch (error) {
+      const reason = `${error instanceof Error ? error.message : "Malformed doctor output"} (${describeCliRun(result.run)})`;
+      console.warn(`Bridge GUI: doctor output could not be parsed; retrying next tick: ${reason}${result.run.stderr.trim() ? `\n${result.run.stderr.trim()}` : ""}`);
+      doctor = { ok: false, items: [], error: reason };
+    }
+  }
+  publishState();
 }
 async function pollRequests() { scannedRequests = await scanRequests(REQUESTS_PATH); publishState(); }
 
