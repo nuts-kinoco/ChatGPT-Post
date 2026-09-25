@@ -1,5 +1,17 @@
 # Bridge Control GUI
 
+## Packaged Windows build
+
+From `gui/`, create the portable Windows executable with:
+
+```powershell
+npm install
+npm run package
+```
+
+The executable is written to `gui/release/`. Run it directly; it is a portable build and does not
+require an installer.
+
 This independent Electron package is the tray-resident, read-only Bridge Control monitor. It polls
 `node ../dist/cli/main.js doctor --json` and scans `../runtime/requests/`; it never invokes a
 mutating CLI command or writes under `runtime/`.
