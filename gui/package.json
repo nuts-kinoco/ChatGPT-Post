@@ -14,6 +14,7 @@
     "build:main": "tsc -p tsconfig.main.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build:main && node --test test/*.test.mjs",
     "start": "npm run build && electron ."
   },
   "dependencies": {

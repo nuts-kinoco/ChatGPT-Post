@@ -20,6 +20,19 @@ export interface DoctorItem {
   detail: string;
   /** true = informational warning, does not fail doctor */
   warn?: boolean;
+  /** Present only for a successfully parsed single-slot bridge lock. */
+  lock?: DoctorLock;
+}
+
+/** Machine-readable single-slot lock state for `doctor --json` consumers. */
+export interface DoctorLock {
+  pid: number;
+  requestId: string | null;
+  command: string;
+  heldSinceMs: number;
+  heartbeatAgeMs: number | null;
+  stale: boolean;
+  reclaimable: boolean;
 }
 
 export interface DoctorDeps {
@@ -232,18 +245,37 @@ export async function checkLock(cfg: BridgeConfig): Promise<DoctorItem> {
   }
   const rec = await readLockRecord(path);
   const verdict = await judgeStale(path, rec, defaultLockDeps);
+  const lock = rec ? structuredLock(rec, verdict) : undefined;
   if (verdict.stale) {
     return {
       name: "lock",
       ok: true,
       warn: true,
       detail: `abandoned lock: ${lockDetail(rec, verdict.reason)}; ${verdict.reclaimable ? "safe to run unlock --stale" : "owner is still alive; do not auto-reclaim"}`,
+      ...(lock ? { lock } : {}),
     };
   }
   return {
     name: "lock",
     ok: false,
     detail: `held: ${lockDetail(rec, verdict.reason)}`,
+    ...(lock ? { lock } : {}),
+  };
+}
+
+function structuredLock(
+  rec: NonNullable<Awaited<ReturnType<typeof readLockRecord>>>,
+  verdict: Awaited<ReturnType<typeof judgeStale>>,
+): DoctorLock {
+  const heartbeatAt = rec.heartbeatAt ? Date.parse(rec.heartbeatAt) : null;
+  return {
+    pid: rec.pid,
+    requestId: rec.requestId,
+    command: rec.command,
+    heldSinceMs: Date.parse(rec.startedAt),
+    heartbeatAgeMs: heartbeatAt === null ? null : Math.max(0, Date.now() - heartbeatAt),
+    stale: verdict.stale,
+    reclaimable: verdict.stale && verdict.reclaimable,
   };
 }
 

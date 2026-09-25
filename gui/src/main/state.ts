@@ -4,7 +4,8 @@ import path from "node:path";
 export const DOCTOR_POLL_INTERVAL_MS = 3_000;
 export const REQUESTS_POLL_INTERVAL_MS = 2_000;
 export type RequestStatus = "Running" | "Unknown" | "Completed" | "Failed" | "Blocked";
-export interface DoctorItem { name: string; ok: boolean; detail: string; warn?: string; }
+export interface DoctorLock { requestId: string | null; }
+export interface DoctorItem { name: string; ok: boolean; detail: string; warn?: string; lock?: DoctorLock; }
 export interface BridgeRequest { requestId: string; caller: string; project: string; title: string; status: RequestStatus; startedAt: string; completedAt: string | undefined; requestMtimeMs: number; terminalSortMs: number | undefined; }
 export interface BridgeGuiState { doctor: { ok: boolean; items: DoctorItem[]; error?: string }; lockHeld: boolean | null; requests: BridgeRequest[]; updatedAt: string; }
 interface RequestMetadata { caller?: unknown; project?: unknown; title?: unknown; }
@@ -26,9 +27,20 @@ function terminalStatus(result: ResultFile): RequestStatus { if (result.status =
 export function aggregateState(doctor: BridgeGuiState["doctor"], scannedRequests: ScannedRequest[]): BridgeGuiState {
   const lockItem = doctor.items.find((item) => item.name === "lock");
   const lockHeld = lockItem ? !lockItem.ok : null;
+  const lockedRequestId =
+    lockHeld === true && typeof lockItem?.lock?.requestId === "string"
+      ? lockItem.lock.requestId
+      : undefined;
+  const lockedRequestMatches =
+    lockedRequestId !== undefined &&
+    scannedRequests.some((request) => request.requestId === lockedRequestId);
   const newestResultlessMtime = Math.max(...scannedRequests.filter((request) => !request.hasResult).map((request) => request.requestMtimeMs), -Infinity);
   const requests = scannedRequests.map((request) => {
-    const status = request.hasResult && request.result ? terminalStatus(request.result) : lockHeld === true && request.requestMtimeMs === newestResultlessMtime ? "Running" : "Unknown";
+    const status = request.hasResult && request.result
+      ? terminalStatus(request.result)
+      : lockHeld === true && (lockedRequestMatches ? request.requestId === lockedRequestId : request.requestMtimeMs === newestResultlessMtime)
+        ? "Running"
+        : "Unknown";
     const { hasResult: _hasResult, result: _result, ...publicRequest } = request;
     return { ...publicRequest, status };
   });
