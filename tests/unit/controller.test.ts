@@ -24,6 +24,8 @@ function observation(o: Partial<Observation>): Observation {
   return {
     t: 0,
     assistantCount: 1,
+    userTurnCount: 1,
+    composerText: "",
     lastAssistantHash: "h",
     lastAssistantEmpty: false,
     streaming: false,
@@ -80,9 +82,18 @@ function fake(
     enterPrompt: async () => ({ kind: "ok" }),
     snapshotBaseline: async () => ({
       kind: "ok",
-      baseline: { assistantCount: 0, url: "https://chatgpt.com/", presetLabel: "Pro" },
+      baseline: {
+        assistantCount: 0,
+        userTurnCount: 0,
+        url: "https://chatgpt.com/",
+        presetLabel: "Pro",
+      },
     }),
     dispatchSubmit: async () => ({ kind: "dispatched", url: "https://chatgpt.com/c/123" }),
+    clearUnsentPrompt: async () => {
+      calls.push("clearUnsentPrompt");
+      return { kind: "cleared" };
+    },
     observe: async (t) => {
       const o = timeline[Math.min(obsIndex++, timeline.length - 1)] ?? observation({});
       return { ...o, t };
@@ -585,6 +596,111 @@ describe("RunController", () => {
     expect(out.result?.error?.cause).toBe("preset_changed");
     expect(out.result?.submitted).toBe("no");
     expect(f.calls).toContain("deleteMarker");
+  });
+
+  it("A-155: a retained exact draft after the click is SUBMIT_NOT_CONFIRMED, safe to retry, and never observed", async () => {
+    const f = fake({
+      dispatchSubmit: async () => ({
+        kind: "not_confirmed",
+        cause: "composer retained the exact prompt",
+        url: "https://chatgpt.com/c/123",
+      }),
+      observe: async () => {
+        throw new Error("must not enter response observation for an unsent prompt");
+      },
+    });
+    const out = await run(f);
+    expect(out.result?.error?.code).toBe("SUBMIT_NOT_CONFIRMED");
+    expect(out.result?.submitted).toBe("no");
+    expect(out.result?.error?.retryable).toBe(true);
+    expect(f.calls).toContain("deleteMarker");
+    expect(f.calls).not.toContain("updateMarker");
+  });
+
+  it("A-155: a cleared composer without a user turn remains SUBMIT_STATE_UNKNOWN", async () => {
+    const f = fake({
+      dispatchSubmit: async () => ({
+        kind: "unknown",
+        cause: "composer cleared but no turn",
+        url: "https://chatgpt.com/c/123",
+      }),
+    });
+    const out = await run(f);
+    expect(out.result?.error?.code).toBe("SUBMIT_STATE_UNKNOWN");
+    expect(out.result?.submitted).toBe("unknown");
+    expect(f.calls).not.toContain("deleteMarker");
+  });
+
+  it("A-155: failed marker cleanup downgrades a not-sent observation to unknown", async () => {
+    const f = fake({
+      dispatchSubmit: async () => ({
+        kind: "not_confirmed",
+        cause: "composer retained the exact prompt",
+        url: "https://chatgpt.com/c/123",
+      }),
+    });
+    f.ports.lock.deleteMarker = async () => {
+      throw new Error("sharing violation");
+    };
+    const out = await run(f);
+    expect(out.result?.error?.code).toBe("SUBMIT_STATE_UNKNOWN");
+    expect(out.result?.submitted).toBe("unknown");
+    expect(out.result?.error?.retryable).toBe(false);
+  });
+
+  it("A-155b: an existing-chat dispatch with an exact retained draft is cleaned then fails early", async () => {
+    let observations = 0;
+    const f = fake({
+      observe: async (t) => {
+        observations++;
+        return observation({
+          t,
+          assistantCount: 0,
+          userTurnCount: 0,
+          composerText: "hi",
+          streaming: false,
+        });
+      },
+    });
+    f.ports.contracts.validate = async () => ({
+      kind: "valid",
+      request: {
+        schemaVersion: "1.0",
+        requestId: "req-00000001",
+        promptFile: "p",
+        preset: "current",
+        newChat: false,
+        responseFormat: "markdown",
+      },
+      prompt: "hi",
+      timeoutMs: 60_000,
+      attachments: [],
+      attachmentBytes: 0,
+    });
+    const out = await run(f);
+    expect(out.result?.error?.code).toBe("SUBMIT_NOT_CONFIRMED");
+    expect(out.result?.submitted).toBe("no");
+    expect(observations).toBeLessThan(80); // 35 s grace, never the 60 s response timeout
+    expect(f.calls).toContain("clearUnsentPrompt");
+    expect(f.calls).toContain("deleteMarker");
+  });
+
+  it("A-155b: a moved new-chat URL with a retained composer is unknown and never cleaned/retried", async () => {
+    const f = fake({
+      observe: async (t) =>
+        observation({
+          t,
+          assistantCount: 0,
+          userTurnCount: 0,
+          composerText: "hi",
+          streaming: false,
+        }),
+    });
+    const out = await run(f);
+    expect(out.result?.error?.code).toBe("SUBMIT_STATE_UNKNOWN");
+    expect(out.result?.submitted).toBe("unknown");
+    expect(f.calls).not.toContain("clearUnsentPrompt");
+    expect(f.calls).not.toContain("deleteMarker");
   });
 
   it("timeout while stalled (not streaming): GENERATION_TIMEOUT, submitted yes", async () => {

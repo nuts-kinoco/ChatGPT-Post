@@ -135,3 +135,17 @@ Each `run` lock records PID, OS process start identity, and a five-second heartb
 For detached Windows `submit` children, `taskkill`/`TerminateProcess` does not deliver those handlers. `run` therefore has an internal two-window watchdog. After validation but before dispatch, its deadline is the existing allowed pre-submit work: `3×BROWSER_STARTED(60 s) + 3×AUTH_CHECKED(90 s) + 2×NEW_CHAT_READY(30 s) + 2×PRESET_VERIFIED(60 s) + 2×1 s` browser retry waits, plus (only with attachments) `2×uploadBudgetMs(totalBytes)`, plus `RUN_CLEANUP_BUDGET_MS` (30 s). The multipliers are the existing retry limits, so every permitted full retry remains legitimate while a launch/CDP/pre-submit hang is still bounded. On confirmed dispatch it cancels that timer and re-arms from `dispatchedAt` for `timeoutMs + fallbackStabilizationMs(5 s) + IMAGE_CAPTURE_BUDGET_MS(120 s) + RUN_CLEANUP_BUDGET_MS(30 s)`. Thus `timeoutMs` remains a submit-to-completion limit rather than a run-start limit.
 
 When either outer deadline fires, `forceTerminal()` is started, but it is not trusted to settle: an independent 15-second hard grace ends the process even if result writing, CDP close, or async lock release is hung. Immediately before that hard exit, the run makes only a synchronous token-and-PID-checked unlink of its owned lock. If that cannot be done (for example, sharing violation or ownership changed), the exited PID makes the remaining lock reclaimable through the ordinary stale-lock policy. Signal handlers remain a foreground-run convenience, not the detached-run guarantee.
+
+## A-155 submit-not-confirmed
+
+`SUBMIT_NOT_CONFIRMED` is a failed exit-1 result with `submitted: "no"` and
+`error.retryable: true`. It is emitted only when the post-click bounded check still finds the exact
+prompt in the composer, no matching new verified user turn, no stop button, no accepted new-chat URL,
+and the composer was never observed empty after the click. The bridge must clear both the draft and
+all registry-verified composer attachment chips before it removes the submit marker. Any cleanup
+failure, a restored draft, or a moved new-chat conversation URL is `SUBMIT_STATE_UNKNOWN`, not
+retryable. The same requestId may be retried only after `SUBMIT_NOT_CONFIRMED`.
+
+`SUBMIT_STATE_UNKNOWN` remains the outcome for an emptied, restored, otherwise changed, or
+uncleanable composer without direct user-turn/generation evidence. It is never safe to resend; use
+`collect` if a conversation URL was recorded. No automatic second click is performed in either case.

@@ -279,6 +279,7 @@ export function chatgptPort(
     page ??= new ChatGptPage(session.currentPage, {
       verifiedOnly,
       log: (m) => logger.log("debug", m),
+      acceptanceLog: (m) => logger.log("info", m),
       imageViaViewer,
     });
     return page;
@@ -293,7 +294,8 @@ export function chatgptPort(
     resolvePreset: (p, m) => get().resolvePreset(p, m),
     enterPrompt: (t, a) => get().enterPrompt(t, a),
     snapshotBaseline: (l) => get().snapshotBaseline(l),
-    dispatchSubmit: (l) => get().dispatchSubmit(l),
+    dispatchSubmit: (baseline, opts) => get().dispatchSubmit(baseline, opts),
+    clearUnsentPrompt: (prompt) => get().clearUnsentPrompt(prompt),
     observe: (t) => get().observe(t),
     currentUrl: () => get().currentUrl(),
     verifyLatestReplyOwnership: (prompt, attachmentNames) =>

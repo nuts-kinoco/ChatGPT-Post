@@ -129,6 +129,8 @@ export interface ProjectCreateControl {
 
 export interface Baseline {
   assistantCount: number;
+  /** A-155: a new user turn is direct acceptance evidence after the send click. */
+  userTurnCount: number;
   url: string;
   presetLabel: string;
 }
@@ -203,12 +205,21 @@ export interface ChatGptPort {
     | { kind: "dom_unexpected"; element: string; tried: string[] }
   >;
   dispatchSubmit(
-    baselineLabel: string,
+    baseline: Baseline,
+    opts: { newChat: boolean },
   ): Promise<
     | { kind: "dispatched"; url: string }
+    /** The click may have sent; never retry when acceptance evidence is incomplete. */
+    | { kind: "unknown"; cause: string; url: string }
+    /** The composer still contains the exact prompt and no acceptance signal appeared. */
+    | { kind: "not_confirmed"; cause: string; url: string }
     | { kind: "failed"; cause: SubmitFailure }
     | { kind: "aborted" }
   >;
+  /** Clears only a currently exact, proven-unsent draft (including its composer attachment chips). */
+  clearUnsentPrompt(
+    expectedPrompt: string,
+  ): Promise<{ kind: "cleared" } | { kind: "failed"; cause: string }>;
   observe(t: number): Promise<Observation>;
   currentUrl(): Promise<string>;
   /** Proves that the user turn immediately before the latest assistant turn is this request. */

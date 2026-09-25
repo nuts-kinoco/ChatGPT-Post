@@ -99,5 +99,7 @@ describe("attachment guard (A-068, SEC)", () => {
   it("upload budget grows with size", () => {
     expect(uploadBudgetMs(0)).toBe(60_000);
     expect(uploadBudgetMs(3 * 1024 * 1024)).toBe(105_000);
+    // A-155: the wait is based on aggregate bytes, so eleven images receive eleven allowances.
+    expect(uploadBudgetMs(11 * 3 * 1024 * 1024)).toBe(555_000);
   });
 });

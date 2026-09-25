@@ -90,7 +90,17 @@ export interface ChatGptPageOptions {
   log?: (message: string) => void;
   /** A-092: the viewer "保存" download crashes Chrome stable under automation (2026-09-15); opt-in only. */
   imageViaViewer?: boolean;
+  /** A-155 test/production bound for proving a send click was accepted. */
+  submitAcceptanceTimeoutMs?: number;
+  /** Acceptance evidence is operationally relevant and is emitted at info level by the adapter. */
+  acceptanceLog?: (message: string) => void;
 }
+
+/**
+ * A-155b: Pro can spend several seconds transitioning from send to visible thinking, especially
+ * after large uploads. Thirty seconds only delays a safe retry; a shorter verdict can double-send.
+ */
+export const DEFAULT_SUBMIT_ACCEPTANCE_TIMEOUT_MS = 30_000;
 
 function hostOf(url: string): string {
   try {
@@ -138,8 +148,8 @@ function normaliseComposerInnerText(text: string): string {
 
 export class ChatGptPage implements ChatGptPort {
   private locale: Locale = "ja";
-  private sendButton: Locator | null = null;
   private lastError: string | null = null;
+  private lastEnteredPrompt = "";
   private streamingCandidateLogged = false;
   /** Effort slider index before this run changed it (null = untouched). */
   private effortToRestore: number | null = null;
@@ -975,16 +985,90 @@ export class ChatGptPage implements ChatGptPort {
    * deliberately best-effort: the original failure remains the useful result if the page is no
    * longer actionable.
    */
-  private async clearComposerAfterFailedPrompt(composer: Locator): Promise<void> {
+  private async clearComposerAfterFailedPrompt(
+    composer: Locator,
+  ): Promise<{ kind: "cleared" } | { kind: "failed"; cause: string }> {
     try {
       await composer.fill("");
     } catch (err) {
-      try {
-        this.opts.log?.(`prompt cleanup failed: ${(err as Error).message}`);
-      } catch {
-        // Logging must not turn the original prompt-entry failure into a new failure.
-      }
+      return { kind: "failed", cause: `composer text cleanup failed: ${(err as Error).message}` };
     }
+    // Attachment chips survive fill(""). Their remove control is deliberately registry-backed and
+    // verified in the captured Japanese DOM; an unrecognised UI must remain untouched and unknown.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const chipCount = await countMatches(this.page, "attachmentChip", this.sel);
+      if (chipCount === 0) return { kind: "cleared" };
+      const removeButtons = await all(this.page, "attachmentRemoveButton", this.sel).catch(
+        () => [],
+      );
+      if (removeButtons.length !== chipCount) {
+        return {
+          kind: "failed",
+          cause: `attachment cleanup unavailable: ${chipCount} chip(s), ${removeButtons.length} verified remove control(s)`,
+        };
+      }
+      try {
+        await removeButtons[0]?.click({ timeout: 5_000 });
+      } catch (err) {
+        return {
+          kind: "failed",
+          cause: `attachment cleanup click failed: ${(err as Error).message}`,
+        };
+      }
+      const before = chipCount;
+      while (Date.now() < deadline) {
+        if ((await countMatches(this.page, "attachmentChip", this.sel)) < before) break;
+        await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 100);
+      }
+      if ((await countMatches(this.page, "attachmentChip", this.sel)) >= before)
+        return { kind: "failed", cause: "attachment cleanup did not remove a chip" };
+    }
+    return { kind: "failed", cause: "attachment cleanup timed out" };
+  }
+
+  /**
+   * Used by the controller's URL-only acceptance guard. Re-check the exact draft before altering
+   * it so a human or ChatGPT restoration race is never silently erased or made retryable.
+   */
+  async clearUnsentPrompt(
+    expectedPrompt: string,
+  ): Promise<{ kind: "cleared" } | { kind: "failed"; cause: string }> {
+    let composer: Locator;
+    try {
+      composer = await resolve(this.page, "composer", this.sel);
+    } catch (err) {
+      return { kind: "failed", cause: `composer cleanup unavailable: ${(err as Error).message}` };
+    }
+    const actual = normaliseComposerInnerText(await composer.innerText().catch(() => ""));
+    if (actual !== normalisePrompt(expectedPrompt))
+      return { kind: "failed", cause: "composer no longer retains the exact unsent prompt" };
+    return this.clearComposerAfterFailedPrompt(composer);
+  }
+
+  private async acceptedUserTurn(baseline: Baseline, expected: string): Promise<boolean> {
+    const count = await countMatches(this.page, "userTurn", this.sel);
+    // A virtualized long thread can lazily mount an older turn after the baseline. Count alone is
+    // not acceptance evidence: require precisely one new turn and that its text is this prompt.
+    if (count !== baseline.userTurnCount + 1) return false;
+    const turn = await latest(this.page, "userTurn", this.sel);
+    const text = turn ? normalisePrompt(await turn.innerText().catch(() => "")) : "";
+    return text === expected;
+  }
+
+  private logAcceptanceEvidence(kind: "userTurn" | "stopButton" | "url"): void {
+    this.opts.acceptanceLog?.(`submit acceptance evidence: ${kind}`);
+  }
+
+  /** `Locator.isEnabled()` only covers native disabled. ChatGPT also uses ARIA/data state while uploads run. */
+  private async sendButtonEnabled(button: Locator): Promise<boolean> {
+    if (!(await button.isEnabled().catch(() => false))) return false;
+    const [ariaDisabled, dataDisabled, disabled] = await Promise.all([
+      button.getAttribute("aria-disabled").catch(() => "true"),
+      button.getAttribute("data-disabled").catch(() => "true"),
+      button.getAttribute("disabled").catch(() => ""),
+    ]);
+    return ariaDisabled !== "true" && dataDisabled !== "true" && disabled === null;
   }
 
   async enterPrompt(
@@ -1005,6 +1089,7 @@ export class ChatGptPage implements ChatGptPort {
       return { kind: "retry", cause: (err as Error).message };
     }
     const expected = normalisePrompt(text);
+    this.lastEnteredPrompt = expected;
     let lastSeen = "";
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -1020,11 +1105,13 @@ export class ChatGptPage implements ChatGptPort {
         }
       } catch (err) {
         const cause = (err as Error).message;
-        await this.clearComposerAfterFailedPrompt(composer);
+        const cleanup = await this.clearComposerAfterFailedPrompt(composer);
+        if (cleanup.kind === "failed") this.opts.log?.(`prompt cleanup failed: ${cleanup.cause}`);
         return { kind: "retry", cause };
       }
     }
-    await this.clearComposerAfterFailedPrompt(composer);
+    const cleanup = await this.clearComposerAfterFailedPrompt(composer);
+    if (cleanup.kind === "failed") this.opts.log?.(`prompt cleanup failed: ${cleanup.cause}`);
     return {
       kind: "mismatch",
       cause: `composer content differs (expected ${expected.length} chars, saw ${lastSeen.length} chars)`,
@@ -1084,10 +1171,7 @@ export class ChatGptPage implements ChatGptPort {
     const upDeadline = Date.now() + budget;
     while (Date.now() < upDeadline) {
       const send = await probe(this.page, "sendButton", this.sel);
-      const ariaDisabled = send.locator
-        ? await send.locator.getAttribute("aria-disabled").catch(() => null)
-        : "true";
-      if (send.found && send.enabled && ariaDisabled !== "true") {
+      if (send.found && send.locator && (await this.sendButtonEnabled(send.locator))) {
         const names = await this.page
           .locator("form [role=group][aria-label]")
           .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label") ?? ""))
@@ -1113,30 +1197,45 @@ export class ChatGptPage implements ChatGptPort {
     const label = (await this.readPresetLabel()) ?? "";
     if (label !== expectedLabel) return { kind: "preset_changed" };
     try {
-      this.sendButton = await resolve(this.page, "sendButton", this.sel);
+      await resolve(this.page, "sendButton", this.sel);
     } catch (err) {
       if (err instanceof DomUnexpected)
         return { kind: "dom_unexpected", element: err.element, tried: err.tried };
       throw err;
     }
-    const assistantCount = await countMatches(this.page, "assistantTurn", this.sel);
-    return { kind: "ok", baseline: { assistantCount, url: this.page.url(), presetLabel: label } };
+    const [assistantCount, userTurnCount] = await Promise.all([
+      countMatches(this.page, "assistantTurn", this.sel),
+      countMatches(this.page, "userTurn", this.sel),
+    ]);
+    return {
+      kind: "ok",
+      baseline: { assistantCount, userTurnCount, url: this.page.url(), presetLabel: label },
+    };
   }
 
   async dispatchSubmit(
-    baselineLabel: string,
+    baseline: Baseline,
+    opts: { newChat: boolean },
   ): Promise<
     | { kind: "dispatched"; url: string }
+    | { kind: "unknown"; cause: string; url: string }
+    | { kind: "not_confirmed"; cause: string; url: string }
     | { kind: "failed"; cause: "click_failed" | "send_button_missing" | "send_button_disabled" }
     | { kind: "aborted" }
   > {
     const label = (await this.readPresetLabel()) ?? "";
-    if (label !== baselineLabel) return { kind: "aborted" };
-    const btn = this.sendButton;
-    if (!btn) return { kind: "failed", cause: "send_button_missing" };
+    if (label !== baseline.presetLabel) return { kind: "aborted" };
+    let btn: Locator;
+    try {
+      // The composer can re-render while uploads finish. Resolve immediately before clicking;
+      // snapshotBaseline only proves that a button existed, never that its old Locator is current.
+      btn = await resolve(this.page, "sendButton", this.sel);
+    } catch {
+      return { kind: "failed", cause: "send_button_missing" };
+    }
     if (!(await btn.isVisible().catch(() => false)))
       return { kind: "failed", cause: "send_button_missing" };
-    if (!(await btn.isEnabled().catch(() => false)))
+    if (!(await this.sendButtonEnabled(btn)))
       return { kind: "failed", cause: "send_button_disabled" };
     try {
       await btn.click({ timeout: 5000 });
@@ -1144,13 +1243,82 @@ export class ChatGptPage implements ChatGptPort {
       this.lastError = (err as Error).message;
       return { kind: "failed", cause: "click_failed" };
     }
-    return { kind: "dispatched", url: this.page.url() };
+    const deadline =
+      Date.now() + (this.opts.submitAcceptanceTimeoutMs ?? DEFAULT_SUBMIT_ACCEPTANCE_TIMEOUT_MS);
+    let composerCleared = false;
+    const expected = normalisePrompt(this.lastEnteredPrompt ?? "");
+    while (Date.now() < deadline) {
+      const [userTurnAccepted, streaming, composer] = await Promise.all([
+        this.acceptedUserTurn(baseline, expected),
+        exists(this.page, "stopButton", this.sel),
+        probe(this.page, "composer", this.sel),
+      ]);
+      const url = this.page.url();
+      const movedToConversation =
+        opts.newChat &&
+        url !== baseline.url &&
+        (() => {
+          try {
+            const u = new URL(url);
+            return u.origin === CHATGPT_ORIGIN && CONVERSATION_PATH_RE.test(u.pathname);
+          } catch {
+            return false;
+          }
+        })();
+      if (userTurnAccepted) {
+        this.logAcceptanceEvidence("userTurn");
+        return { kind: "dispatched", url };
+      }
+      if (streaming) {
+        this.logAcceptanceEvidence("stopButton");
+        return { kind: "dispatched", url };
+      }
+      if (movedToConversation) {
+        this.logAcceptanceEvidence("url");
+        return { kind: "dispatched", url };
+      }
+      if (composer.found && composer.locator) {
+        const text = normaliseComposerInnerText(await composer.locator.innerText().catch(() => ""));
+        composerCleared ||= text.length === 0;
+      }
+      await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 100);
+    }
+    const composer = await probe(this.page, "composer", this.sel);
+    const actual = composer.locator
+      ? normaliseComposerInnerText(await composer.locator.innerText().catch(() => ""))
+      : "";
+    if (expected.length > 0 && actual === expected && !composerCleared && composer.locator) {
+      const cleanup = await this.clearComposerAfterFailedPrompt(composer.locator);
+      if (cleanup.kind === "cleared") {
+        return {
+          kind: "not_confirmed",
+          cause:
+            "send click produced no matching new user turn, stop button, or accepted URL; composer retained the exact prompt",
+          url: this.page.url(),
+        };
+      }
+      return {
+        kind: "unknown",
+        cause: `send click had no acceptance evidence and safe draft cleanup failed: ${cleanup.cause}`,
+        url: this.page.url(),
+      };
+    }
+    return {
+      kind: "unknown",
+      cause: composerCleared
+        ? "composer cleared after send click but no user turn or generation signal was confirmed"
+        : "send click completed but acceptance evidence was ambiguous",
+      url: this.page.url(),
+    };
   }
 
   // ---------- observation ----------
 
   async observe(t: number): Promise<Observation> {
-    const assistantCount = await countMatches(this.page, "assistantTurn", this.sel);
+    const [assistantCount, userTurnCount] = await Promise.all([
+      countMatches(this.page, "assistantTurn", this.sel),
+      countMatches(this.page, "userTurn", this.sel),
+    ]);
     let lastText = "";
     let latestTurn: Locator | null = null;
     if (assistantCount > 0) {
@@ -1172,6 +1340,9 @@ export class ChatGptPage implements ChatGptPort {
       }
     }
     const composer = await probe(this.page, "composer", this.sel);
+    const composerText = composer.locator
+      ? normaliseComposerInnerText(await composer.locator.innerText().catch(() => ""))
+      : "";
     const composerReady = !streaming && composer.found && composer.enabled === true;
     const copyAvailable = latestTurn ? await exists(latestTurn, "copyTurnButton", this.sel) : false;
     const truncated = await exists(this.page, "continueButton", this.safetyCheckOpts);
@@ -1207,6 +1378,8 @@ export class ChatGptPage implements ChatGptPort {
     return {
       t,
       assistantCount,
+      userTurnCount,
+      composerText,
       lastAssistantHash: sha1(lastText),
       lastAssistantEmpty: lastText.trim().length === 0,
       streaming,

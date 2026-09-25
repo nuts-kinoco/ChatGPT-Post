@@ -54,6 +54,7 @@ function expectedSubmitted(result: BridgeResult): BridgeResult["submitted"] | nu
   const err = result.error;
   if (!err) return null;
   if (err.code === "SUBMIT_STATE_UNKNOWN") return "unknown";
+  if (err.code === "SUBMIT_NOT_CONFIRMED") return "no";
   if (err.phase === "PROMPT_SUBMITTING") {
     return err.code === "MODEL_NOT_VERIFIABLE" && err.cause === "preset_changed" ? "no" : "unknown";
   }

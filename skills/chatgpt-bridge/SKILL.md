@@ -14,6 +14,13 @@ form needs `--prompt-file`; `--since` is recovery metadata, not a DOM-time filte
 
 For `GENERATION_TIMEOUT`, `GENERATION_TIMEOUT_ACTIVE`, `SUBMIT_STATE_UNKNOWN`, or `CONVERSATION_MISMATCH`, do not resend. Run `chatgpt-bridge collect <requestId> --json`: it opens only the recorded conversation under the normal lock and recovers only one reply proven by the marker baseline. It never sends and preserves the original failed result in favor of a separately marked recovery. `wait` exit 6 / `status: "waiting_timeout"` is retryable, not final; call `wait` again or `collect`.
 
+`SUBMIT_NOT_CONFIRMED` is the sole send failure safe to retry: it has `submitted: "no"` and
+`error.retryable: true`, and proves the exact prompt remained in the composer with no matching new
+user turn, stop button, or accepted new-chat URL. The bridge cleared that draft and every
+registry-verified composer attachment chip, then removed its marker. Do not retry
+`SUBMIT_STATE_UNKNOWN`; a cleared, restored, changed, uncleanable, or URL-moved composer is ambiguous
+and deliberately stays unsafe.
+
 他プロジェクトの Claude Code / Codex から ChatGPT Web を「外部アドバイザー」として使うための手順。このスキルは **`chatgpt-bridge` が `npm link` 済みで、専用プロファイルにログイン済み**であることを前提にする（`chatgpt-bridge doctor` で確認）。詳細は `S:\Projects\chatgpt-web-bridge\docs\20-COMMAND-REFERENCE.md`。
 
 ## 使いどころ

@@ -39,6 +39,7 @@ export type ElementKey =
   | "modelExpander"
   | "modelRadio"
   | "assistantTurn"
+  | "userTurn"
   | "assistantTurnBody"
   | "copyTurnButton"
   | "continueButton"
@@ -49,6 +50,7 @@ export type ElementKey =
   | "blockingDialog"
   | "fileInput"
   | "attachmentChip"
+  | "attachmentRemoveButton"
   | "turnImage"
   | "imageViewer"
   | "imageSaveButton"
@@ -69,6 +71,15 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "プロンプト入力欄（ProseMirror contenteditable）",
     mode: "unique",
     candidates: [
+      // A-157: captured DOM structural parse only (not a live Playwright count): the redesign
+      // form is `data-chatgpt-composer` and its editor is the sole `data-composer-markdown`
+      // contenteditable. The old `#prompt-textarea` id is absent.
+      {
+        kind: "css",
+        selector: 'form[data-chatgpt-composer] [contenteditable="true"][data-composer-markdown]',
+        verifiedOn:
+          "2026-09-24 chatgpt.com ja (redesign, dom.raw.html 2026-09-24T23-31-24-931Z; structural parse, not live Playwright count)",
+      },
       { kind: "css", selector: "#prompt-textarea", verifiedOn: "2026-09-15 chatgpt.com ja" },
       {
         kind: "role",
@@ -88,6 +99,12 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "送信ボタン（入力欄が空のときは音声ボタンに置き換わる）",
     mode: "unique",
     candidates: [
+      {
+        kind: "css",
+        selector: 'button[type="submit"][aria-label="送信"]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (1-typed-unsent.html read-only capture; structural parse)",
+      },
       {
         kind: "role",
         role: "button",
@@ -111,6 +128,15 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "新規チャット（複数存在するため操作には使わず、新規チャットは URL 遷移で行う）",
     mode: "presence",
     candidates: [
+      // A-157: captured DOM structural parse only (not a live Playwright count): the current
+      // home-page control is a unique `<button aria-label="新しいチャット">`; role=button by name
+      // would also match the sidebar's text row, so use its exact aria label.
+      {
+        kind: "css",
+        selector: 'button[aria-label="新しいチャット"]',
+        verifiedOn:
+          "2026-09-24 chatgpt.com ja (redesign, dom.raw.html 2026-09-24T23-31-24-931Z; structural parse, not live Playwright count)",
+      },
       { kind: "testid", testId: "create-new-chat-button", verifiedOn: "2026-09-15 chatgpt.com ja" },
       {
         kind: "role",
@@ -125,6 +151,15 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "思考 effort / モデル選択メニューのトリガ（composer 右側、現在値をラベル表示）",
     mode: "unique",
     candidates: [
+      // A-157: captured DOM structural parse only (not a live Playwright count): the trigger is
+      // the only `[data-codex-intelligence-trigger=true][aria-haspopup=menu]`, outside the old
+      // `data-composer-transition-slot=trailing` wrapper.
+      {
+        kind: "css",
+        selector: '[data-codex-intelligence-trigger="true"][aria-haspopup="menu"]',
+        verifiedOn:
+          "2026-09-24 chatgpt.com ja (redesign, dom.raw.html 2026-09-24T23-31-24-931Z; structural parse, not live Playwright count)",
+      },
       {
         kind: "css",
         selector: 'form [data-composer-transition-slot="trailing"] button[aria-haspopup="menu"]',
@@ -139,6 +174,12 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     mode: "unique",
     candidates: [
       {
+        kind: "css",
+        selector: 'div[role="menu"][data-radix-menu-content]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (2-picker-open.html read-only capture; structural parse)",
+      },
+      {
         kind: "testid",
         testId: "composer-intelligence-picker-content",
         verifiedOn: "2026-09-15 chatgpt.com ja",
@@ -151,6 +192,13 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     mode: "unique",
     scope: "pickerMenu",
     candidates: [
+      {
+        kind: "css",
+        selector:
+          '[role="menuitem"][data-reasoning-slider="true"] [data-model-picker-power-slider] [role="slider"]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (2-picker-open.html read-only capture; structural parse)",
+      },
       {
         kind: "css",
         selector: "[data-model-reasoning-effort-slider] [role=slider]",
@@ -167,6 +215,12 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     candidates: [
       {
         kind: "css",
+        selector: '[role="menuitem"][data-reasoning-slider="true"]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (2-picker-open.html read-only capture; structural parse)",
+      },
+      {
+        kind: "css",
         selector: "[role=menuitem][aria-describedby]:has([data-model-reasoning-effort-slider])",
         verifiedOn: "2026-09-15 chatgpt.com ja",
       },
@@ -179,6 +233,12 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     mode: "unique",
     scope: "pickerMenu",
     candidates: [
+      {
+        kind: "css",
+        selector: '[role="menuitem"][data-model-picker-view-toggle="true"]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (2-picker-open.html read-only capture; structural parse)",
+      },
       {
         kind: "css",
         selector: "[role=menuitem][aria-expanded]",
@@ -200,6 +260,16 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "現在の選択表示（modelPicker のテキスト）",
     mode: "unique",
     candidates: [
+      // A-157: captured DOM structural parse only (not a live Playwright count): within the
+      // current trigger, the visible label follows its aria-hidden measurement span under the
+      // stable tooltip marker. Hashed `ModelPickerTriggerLabel-*` classes are intentionally avoided.
+      {
+        kind: "css",
+        selector:
+          '[data-codex-intelligence-trigger="true"] [data-tooltip-overflow-target="true"] [aria-hidden="true"] + span',
+        verifiedOn:
+          "2026-09-24 chatgpt.com ja (redesign, dom.raw.html 2026-09-24T23-31-24-931Z; structural parse, not live Playwright count)",
+      },
       {
         kind: "css",
         selector: 'form [data-composer-transition-slot="trailing"] button[aria-haspopup="menu"]',
@@ -213,6 +283,14 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "assistant ターン（本文 + 応答アクションバーを含む section）",
     mode: "count",
     candidates: [
+      // The role marker itself is not an ancestor of the body/actions. This turn wrapper contains
+      // exactly one marker, Markdown body, and copy control for each captured assistant reply.
+      {
+        kind: "css",
+        selector: 'div[data-content-search-turn-key]:has(h4[data-conversation-role="assistant"])',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (4-existing-conversation.html read-only capture; structural parse, 2 turns)",
+      },
       {
         kind: "css",
         selector: 'section[data-turn="assistant"]',
@@ -225,12 +303,43 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
       },
     ],
   },
+  userTurn: {
+    key: "userTurn",
+    purpose: "user ターン（送信受理の確認専用。操作には使わない）",
+    mode: "count",
+    candidates: [
+      // The :user search-unit wrapper is one per user message and its text is the prompt alone;
+      // the narrower bubble is deliberately not used as the turn scope.
+      {
+        kind: "css",
+        selector: 'div[data-content-search-unit-key$=":user"]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (4-existing-conversation.html read-only capture; structural parse, 2 turns)",
+      },
+      {
+        kind: "css",
+        selector: 'section[data-turn="user"]',
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+      {
+        kind: "css",
+        selector: '[data-message-author-role="user"]',
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
   assistantTurnBody: {
     key: "assistantTurnBody",
     purpose: "ターン本文（Markdown レンダリング部分）",
     mode: "unique",
     scope: "assistantTurn",
     candidates: [
+      {
+        kind: "css",
+        selector: '[data-markdown-text-style="assistant-message"]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (4-existing-conversation.html read-only capture; structural parse)",
+      },
       {
         kind: "css",
         selector: '[data-message-author-role="assistant"] .markdown',
@@ -245,6 +354,12 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     mode: "presence",
     scope: "assistantTurn",
     candidates: [
+      {
+        kind: "css",
+        selector: '[class~="turn-action-controls"] button[aria-label="メッセージをコピーする"]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (4-existing-conversation.html read-only capture; structural parse)",
+      },
       {
         kind: "testid",
         testId: "copy-turn-action-button",
@@ -327,6 +442,14 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "composer のファイル入力（hidden、multiple。Playwright setInputFiles の対象）",
     mode: "unique",
     candidates: [
+      // A-157: captured DOM structural parse only (not a live Playwright count): the redesign
+      // has three hidden inputs with generated ids; only the generic file input omits `accept`.
+      {
+        kind: "css",
+        selector: 'form[data-chatgpt-composer] input[type="file"]:not([accept])',
+        verifiedOn:
+          "2026-09-24 chatgpt.com ja (redesign, dom.raw.html 2026-09-24T23-31-24-931Z; structural parse, not live Playwright count)",
+      },
       {
         kind: "css",
         selector: 'form input[type="file"]#upload-files',
@@ -406,6 +529,14 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "A Project row in the sidebar Project list",
     mode: "count",
     candidates: [
+      // A-157: captured DOM structural parse only (not a live Playwright count): each Project is
+      // now a role=button div carrying `data-app-action-sidebar-project-row`, not an `li` wrapper.
+      {
+        kind: "css",
+        selector: '[data-app-action-sidebar-project-row][role="button"]',
+        verifiedOn:
+          "2026-09-24 chatgpt.com ja (redesign, dom.raw.html 2026-09-24T23-31-24-931Z; structural parse, not live Playwright count)",
+      },
       // A-145 follow-up (live-verified 2026-09-22): the row's `[data-testid="project-folder-icon"]`
       // icon is itself transient -- polled every ~700ms for 20s+ against the real sidebar, it read
       // 0 continuously from ~t=3s onward while the actual row (this `group/project-unfurl-row`
@@ -425,6 +556,15 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     mode: "unique",
     scope: "projectSidebarItem",
     candidates: [
+      // A-157: captured DOM structural parse only (not a live Playwright count): the Project row
+      // itself is the role=button navigation control. `:scope` selects that scoped row, while the
+      // predicate prevents it from matching the old `li` fixture/fallback shape.
+      {
+        kind: "css",
+        selector: ':scope[data-app-action-sidebar-project-row][role="button"]',
+        verifiedOn:
+          "2026-09-24 chatgpt.com ja (redesign, dom.raw.html 2026-09-24T23-31-24-931Z; structural parse, not live Playwright count)",
+      },
       {
         kind: "css",
         selector: 'button[aria-label="プロジェクトのホームを開く"]',
@@ -437,6 +577,14 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
     purpose: "Open the New Project creation dialog from the sidebar",
     mode: "unique",
     candidates: [
+      // A-157: captured DOM structural parse only (not a live Playwright count): the current
+      // sidebar create control has `data-app-action-sidebar-project-create` (and no old aria label).
+      {
+        kind: "css",
+        selector: "[data-app-action-sidebar-project-create]",
+        verifiedOn:
+          "2026-09-24 chatgpt.com ja (redesign, dom.raw.html 2026-09-24T23-31-24-931Z; structural parse, not live Playwright count)",
+      },
       {
         kind: "css",
         selector: '[aria-label="プロジェクトを新規作成"]',
@@ -471,9 +619,37 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
       "添付チップ（aria-label = ファイル名。サーバー側で「name(1).ext」に改名されることがある）",
     mode: "count",
     candidates: [
+      // The non-hashed composer-attachment group is the per-file container, nested under the
+      // stable attachments collection; its uploading indicator and remove button share this node.
+      {
+        kind: "css",
+        selector: '[data-composer-attachments] [class~="group/composer-attachment"]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (3-attachment-chip.html read-only capture; structural parse)",
+      },
       {
         kind: "css",
         selector: "form [role=group][aria-label]",
+        verifiedOn: "2026-09-15 chatgpt.com ja",
+      },
+    ],
+  },
+  attachmentRemoveButton: {
+    key: "attachmentRemoveButton",
+    purpose:
+      "composer attachment chip remove button (Japanese aria-label observed in the verified capture)",
+    mode: "count",
+    candidates: [
+      {
+        kind: "css",
+        selector:
+          '[data-composer-attachments] [class~="group/composer-attachment"] button[aria-label$="を削除"]',
+        verifiedOn:
+          "2026-09-25 chatgpt.com ja (3-attachment-chip.html read-only capture; structural parse)",
+      },
+      {
+        kind: "css",
+        selector: 'form [role="group"][aria-label] > button[aria-label*="削除"]',
         verifiedOn: "2026-09-15 chatgpt.com ja",
       },
     ],

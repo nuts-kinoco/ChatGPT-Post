@@ -9,7 +9,9 @@ import { type Browser, chromium, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ChatGptPage } from "../../src/chatgpt/page.js";
 import {
+  all,
   countMatches,
+  ELEMENTS,
   exists,
   latest,
   parseTriggerLabel,
@@ -55,6 +57,7 @@ describe("selectors on the 2026-09-15 fixture", () => {
     expect(await exists(page, "stopButton", sel)).toBe(false);
     expect(await exists(page, "loginCta", sel)).toBe(false);
     expect(await countMatches(page, "assistantTurn", sel)).toBe(1);
+    expect(await countMatches(page, "userTurn", sel)).toBe(1);
     expect(await countMatches(page, "attachmentChip", sel)).toBe(2);
     const fileInput = await probe(page, "fileInput", sel);
     expect(fileInput.matches).toBe(0); // hidden inputs are not "visible": attachFiles uses count(), not probe()
@@ -100,6 +103,160 @@ describe("selectors on the 2026-09-15 fixture", () => {
       /```typescript\nfunction hello_bridge\(\) \{\n {2}console\.log\("hello"\);\n\}\n```/,
     );
     expect(md).not.toMatch(/コピーする/);
+  });
+});
+
+describe("A-157 selectors on the 2026-09-24 redesign fixture", () => {
+  async function redesignPage(): Promise<Page> {
+    if (!browser) throw new Error("browser unavailable");
+    const fixturePage = await browser.newPage();
+    await fixturePage.setContent(
+      await readFile(
+        join(REPO_ROOT, "tests", "fixtures", "chatgpt-2026-09-24-redesign.html"),
+        "utf8",
+      ),
+    );
+    return fixturePage;
+  }
+
+  it("resolves the redesigned composer and the generated-id file input shape", async ({ skip }) => {
+    if (!browser) return skip();
+    const fixturePage = await redesignPage();
+    try {
+      const composerCandidate = ELEMENTS.composer.candidates[0];
+      expect(composerCandidate).toMatchObject({
+        kind: "css",
+        selector: 'form[data-chatgpt-composer] [contenteditable="true"][data-composer-markdown]',
+      });
+      const composer = await resolve(fixturePage, "composer", sel);
+      expect(await composer.getAttribute("data-composer-markdown")).toBe("");
+      expect(await composer.getAttribute("aria-label")).toBe("ChatGPT に聞く");
+      const fileInputCandidate = ELEMENTS.fileInput.candidates[0];
+      expect(fileInputCandidate).toMatchObject({
+        kind: "css",
+        selector: 'form[data-chatgpt-composer] input[type="file"]:not([accept])',
+      });
+      if (fileInputCandidate?.kind !== "css") throw new Error("expected A-157 file-input CSS");
+      expect(await fixturePage.locator(fileInputCandidate.selector).count()).toBe(1);
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("resolves the redesigned model trigger and its visible effort label", async ({ skip }) => {
+    if (!browser) return skip();
+    const fixturePage = await redesignPage();
+    try {
+      expect(
+        await (await resolve(fixturePage, "modelPicker", sel)).getAttribute(
+          "data-codex-intelligence-trigger",
+        ),
+      ).toBe("true");
+      expect(await (await resolve(fixturePage, "modelPickerCurrentLabel", sel)).innerText()).toBe(
+        "中程度",
+      );
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("resolves the aria-labelled new-chat button without matching the sidebar text row", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    const fixturePage = await redesignPage();
+    try {
+      expect(
+        await (await resolve(fixturePage, "newChatButton", sel)).getAttribute("aria-label"),
+      ).toBe("新しいチャット");
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("resolves redesigned Project rows, their row-as-home control, and the create control", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    const fixturePage = await redesignPage();
+    try {
+      expect(await countMatches(fixturePage, "projectSidebarItem", sel)).toBe(1);
+      const item = fixturePage.locator("[data-app-action-sidebar-project-row]").first();
+      expect(
+        await (await resolve(item, "projectOpenHomeButton", sel)).getAttribute(
+          "data-app-action-sidebar-project-row",
+        ),
+      ).toBe("");
+      expect(
+        await (await resolve(fixturePage, "newProjectButton", sel)).getAttribute(
+          "data-app-action-sidebar-project-create",
+        ),
+      ).toBe("");
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("resolves the typed send control and all open-picker controls from their new attributes", async ({
+    skip,
+  }) => {
+    if (!browser) return skip();
+    const fixturePage = await redesignPage();
+    try {
+      expect(await (await resolve(fixturePage, "sendButton", sel)).getAttribute("aria-label")).toBe(
+        "送信",
+      );
+      const menu = await resolve(fixturePage, "pickerMenu", sel);
+      expect(await menu.getAttribute("data-radix-menu-content")).toBe("");
+      expect(
+        await (await resolve(menu, "effortSliderRow", sel)).getAttribute("data-reasoning-slider"),
+      ).toBe("true");
+      expect(await (await resolve(menu, "effortSlider", sel)).getAttribute("aria-valuenow")).toBe(
+        "1",
+      );
+      expect(
+        await (await resolve(menu, "modelExpander", sel)).getAttribute(
+          "data-model-picker-view-toggle",
+        ),
+      ).toBe("true");
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("scopes attachment removal to the redesigned composer chip", async ({ skip }) => {
+    if (!browser) return skip();
+    const fixturePage = await redesignPage();
+    try {
+      expect(await countMatches(fixturePage, "attachmentChip", sel)).toBe(1);
+      const removeButtons = await all(fixturePage, "attachmentRemoveButton", sel);
+      expect(removeButtons).toHaveLength(1);
+      const removeButton = removeButtons[0];
+      if (!removeButton) throw new Error("expected redesigned attachment remove button");
+      expect(await removeButton.getAttribute("aria-label")).toBe("sample.ts を削除");
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("uses turn wrappers that scope each assistant body and copy action", async ({ skip }) => {
+    if (!browser) return skip();
+    const fixturePage = await redesignPage();
+    try {
+      expect(await countMatches(fixturePage, "assistantTurn", sel)).toBe(2);
+      expect(await countMatches(fixturePage, "userTurn", sel)).toBe(2);
+      const user = await latest(fixturePage, "userTurn", sel);
+      if (!user) throw new Error("expected redesigned user turn");
+      expect(await user.innerText()).toBe("Reply with exactly: ok");
+      const assistant = await latest(fixturePage, "assistantTurn", sel);
+      const body = await probe(assistant ?? fixturePage, "assistantTurnBody", sel);
+      expect(body.found).toBe(true);
+      if (!body.locator) throw new Error("expected redesigned assistant Markdown body");
+      expect(await body.locator.innerText()).toBe("ok");
+      expect(await exists(assistant ?? fixturePage, "copyTurnButton", sel)).toBe(true);
+    } finally {
+      await fixturePage.close();
+    }
   });
 });
 
@@ -210,6 +367,294 @@ describe("ChatGptPage recovery ownership fixtures (A-154)", () => {
 });
 
 describe("ChatGptPage prompt cleanup on a fixture", () => {
+  async function submitFixture(
+    body: string,
+    timeoutMs = 200,
+  ): Promise<{ page: Page; chat: ChatGptPage; acceptanceEvidence: string[] }> {
+    if (!browser) throw new Error("browser unavailable");
+    const fixturePage = await browser.newPage();
+    await fixturePage.setContent(`
+      <form>
+        <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+        <button type="button" data-testid="send-button">send</button>
+        ${body}
+      </form>
+    `);
+    const acceptanceEvidence: string[] = [];
+    const chat = new ChatGptPage(fixturePage, {
+      verifiedOnly: true,
+      pollIntervalMs: 10,
+      submitAcceptanceTimeoutMs: timeoutMs,
+      acceptanceLog: (message) => acceptanceEvidence.push(message),
+    });
+    // The submit fixtures deliberately isolate acceptance from picker mechanics.
+    (chat as unknown as { readPresetLabel: () => Promise<string> }).readPresetLabel = async () =>
+      "Pro";
+    await expect(chat.enterPrompt("expected prompt", [])).resolves.toEqual({ kind: "ok" });
+    return { page: fixturePage, chat, acceptanceEvidence };
+  }
+
+  it("A-155: a click that does nothing is not sent, cleans the composer, and is never re-clicked", async ({
+    skip,
+  }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const { page: fixturePage, chat } = await submitFixture(`
+      <script>
+        window.clicks = 0;
+        document.querySelector('[data-testid=send-button]').addEventListener('click', () => window.clicks++);
+      </script>
+    `);
+    try {
+      await expect(
+        chat.dispatchSubmit(
+          { assistantCount: 0, userTurnCount: 0, url: "about:blank", presetLabel: "Pro" },
+          { newChat: false },
+        ),
+      ).resolves.toMatchObject({ kind: "not_confirmed" });
+      await expect(fixturePage.locator("#prompt-textarea").textContent()).resolves.toBe("");
+      await expect(
+        fixturePage.evaluate(() => (window as typeof window & { clicks: number }).clicks),
+      ).resolves.toBe(1);
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("A-155b: a draft cleared then restored remains unknown, never retryable", async ({ skip }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const { page: fixturePage, chat } = await submitFixture(`
+      <script>
+        document.querySelector('[data-testid=send-button]').addEventListener('click', () => {
+          const composer = document.querySelector('#prompt-textarea');
+          composer.textContent = '';
+          setTimeout(() => { composer.textContent = 'expected prompt'; }, 20);
+        });
+      </script>
+    `);
+    try {
+      await expect(
+        chat.dispatchSubmit(
+          { assistantCount: 0, userTurnCount: 0, url: "about:blank", presetLabel: "Pro" },
+          { newChat: false },
+        ),
+      ).resolves.toMatchObject({ kind: "unknown" });
+      await expect(fixturePage.locator("#prompt-textarea").innerText()).resolves.toBe(
+        "expected prompt",
+      );
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("A-155: slow acceptance inside the bounded window is dispatched", async ({ skip }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const {
+      page: fixturePage,
+      chat,
+      acceptanceEvidence,
+    } = await submitFixture(
+      `
+      <script>
+        window.clicks = 0;
+        document.querySelector('[data-testid=send-button]').addEventListener('click', () => {
+          window.clicks++;
+          setTimeout(() => {
+            document.querySelector('#prompt-textarea').textContent = '';
+            document.body.insertAdjacentHTML('beforeend', '<section data-turn="user">expected prompt</section>');
+          }, 30);
+        });
+      </script>
+    `,
+      500,
+    );
+    try {
+      await expect(
+        chat.dispatchSubmit(
+          { assistantCount: 0, userTurnCount: 0, url: "about:blank", presetLabel: "Pro" },
+          { newChat: false },
+        ),
+      ).resolves.toMatchObject({ kind: "dispatched" });
+      expect(acceptanceEvidence).toContain("submit acceptance evidence: userTurn");
+      await expect(
+        fixturePage.evaluate(() => (window as typeof window & { clicks: number }).clicks),
+      ).resolves.toBe(1);
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("A-155b: a matching user turn that appears at 25 seconds is dispatched", async ({ skip }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const { page: fixturePage, chat } = await submitFixture(
+      `
+      <script>
+        document.querySelector('[data-testid=send-button]').addEventListener('click', () => {
+          setTimeout(() => {
+            document.querySelector('#prompt-textarea').textContent = '';
+            document.body.insertAdjacentHTML('beforeend', '<section data-turn="user">expected prompt</section>');
+          }, 25000);
+        });
+      </script>
+    `,
+      30_000,
+    );
+    try {
+      await expect(
+        chat.dispatchSubmit(
+          { assistantCount: 0, userTurnCount: 0, url: "about:blank", presetLabel: "Pro" },
+          { newChat: false },
+        ),
+      ).resolves.toMatchObject({ kind: "dispatched" });
+    } finally {
+      await fixturePage.close();
+    }
+  }, 35_000);
+
+  it("A-155b: a retained draft plus a moved new-chat URL is unknown", async ({ skip }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const fixturePage = await browser.newPage();
+    await fixturePage.route("https://chatgpt.com/", (route) =>
+      route.fulfill({ body: "<html></html>" }),
+    );
+    await fixturePage.goto("https://chatgpt.com/");
+    try {
+      await fixturePage.setContent(`
+        <form>
+          <div id="prompt-textarea" contenteditable="true" role="textbox"></div>
+          <button type="button" data-testid="send-button">send</button>
+        </form>
+        <script>
+          document.querySelector('[data-testid=send-button]').addEventListener('click', () => {
+            history.pushState({}, '', '/c/accepted-request');
+          });
+        </script>
+      `);
+      const chat = new ChatGptPage(fixturePage, {
+        verifiedOnly: true,
+        pollIntervalMs: 10,
+        submitAcceptanceTimeoutMs: 200,
+      });
+      (chat as unknown as { readPresetLabel: () => Promise<string> }).readPresetLabel = async () =>
+        "Pro";
+      await expect(chat.enterPrompt("expected prompt", [])).resolves.toEqual({ kind: "ok" });
+      await expect(
+        chat.dispatchSubmit(
+          { assistantCount: 0, userTurnCount: 0, url: "https://chatgpt.com/", presetLabel: "Pro" },
+          { newChat: true },
+        ),
+      ).resolves.toMatchObject({ kind: "dispatched" });
+      await expect(fixturePage.locator("#prompt-textarea").innerText()).resolves.toBe(
+        "expected prompt",
+      );
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("A-155b: not-sent cleanup removes composer text and every verified attachment chip", async ({
+    skip,
+  }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const { page: fixturePage, chat } = await submitFixture(`
+      <div role="group" aria-label="one.png"><button aria-label="ファイル 1 を削除：one.png"></button></div>
+      <div role="group" aria-label="two.png"><button aria-label="ファイル 2 を削除：two.png"></button></div>
+      <script>
+        document.querySelectorAll('[aria-label*="削除"]').forEach((button) =>
+          button.addEventListener('click', () => button.parentElement.remove()),
+        );
+      </script>
+    `);
+    try {
+      await expect(
+        chat.dispatchSubmit(
+          { assistantCount: 0, userTurnCount: 0, url: "about:blank", presetLabel: "Pro" },
+          { newChat: false },
+        ),
+      ).resolves.toMatchObject({ kind: "not_confirmed" });
+      await expect(fixturePage.locator("#prompt-textarea").innerText()).resolves.toMatch(/^\s*$/);
+      await expect(fixturePage.locator('form [role="group"]').count()).resolves.toBe(0);
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("A-155: a cleared composer without a turn remains conservatively unknown", async ({
+    skip,
+  }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const { page: fixturePage, chat } = await submitFixture(`
+      <script>
+        window.clicks = 0;
+        document.querySelector('[data-testid=send-button]').addEventListener('click', () => {
+          window.clicks++;
+          document.querySelector('#prompt-textarea').textContent = '';
+        });
+      </script>
+    `);
+    try {
+      await expect(
+        chat.dispatchSubmit(
+          { assistantCount: 0, userTurnCount: 0, url: "about:blank", presetLabel: "Pro" },
+          { newChat: false },
+        ),
+      ).resolves.toMatchObject({ kind: "unknown" });
+      await expect(
+        fixturePage.evaluate(() => (window as typeof window & { clicks: number }).clicks),
+      ).resolves.toBe(1);
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
+  it("A-155: aria-disabled send during upload is never clicked", async ({ skip }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const { page: fixturePage, chat } = await submitFixture(`
+      <script>
+        window.clicks = 0;
+        const button = document.querySelector('[data-testid=send-button]');
+        button.setAttribute('aria-disabled', 'true');
+        button.addEventListener('click', () => window.clicks++);
+      </script>
+    `);
+    try {
+      await expect(
+        chat.dispatchSubmit(
+          { assistantCount: 0, userTurnCount: 0, url: "about:blank", presetLabel: "Pro" },
+          { newChat: false },
+        ),
+      ).resolves.toEqual({ kind: "failed", cause: "send_button_disabled" });
+      await expect(
+        fixturePage.evaluate(() => (window as typeof window & { clicks: number }).clicks),
+      ).resolves.toBe(0);
+    } finally {
+      await fixturePage.close();
+    }
+  });
+
   it("clears a mismatched composer before returning", async ({ skip }) => {
     if (!browser) {
       skip();

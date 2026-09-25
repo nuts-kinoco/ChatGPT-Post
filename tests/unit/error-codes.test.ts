@@ -12,6 +12,8 @@ function obs(o: Partial<Observation>): Observation {
   return {
     t: 0,
     assistantCount: 1,
+    userTurnCount: 1,
+    composerText: "",
     lastAssistantHash: "h",
     lastAssistantEmpty: false,
     streaming: false,
@@ -63,7 +65,12 @@ function harness(): Harness {
     enterPrompt: async () => ({ kind: "ok" }),
     snapshotBaseline: async () => ({
       kind: "ok",
-      baseline: { assistantCount: 0, url: "https://chatgpt.com/", presetLabel: "高" },
+      baseline: {
+        assistantCount: 0,
+        userTurnCount: 0,
+        url: "https://chatgpt.com/",
+        presetLabel: "高",
+      },
     }),
     dispatchSubmit: async () => ({ kind: "dispatched", url: "https://chatgpt.com/c/1" }),
     observe: async (t) => ({
@@ -204,6 +211,19 @@ const ROWS: Row[] = [
     status: "failed",
     inject: (h) => {
       h.ports.lock.markerExists = async () => true;
+    },
+  },
+  {
+    code: "SUBMIT_NOT_CONFIRMED",
+    exit: 1,
+    submitted: "no",
+    status: "failed",
+    inject: (h) => {
+      h.ports.chatgpt.dispatchSubmit = async () => ({
+        kind: "not_confirmed",
+        cause: "composer retained exact prompt",
+        url: "https://chatgpt.com/c/1",
+      });
     },
   },
   {

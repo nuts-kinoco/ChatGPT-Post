@@ -251,3 +251,26 @@ stateDiagram-v2
   FAILED --> [*]
   MANUAL_INTERVENTION --> [*]
 ```
+
+## A-155 send acceptance gate
+
+`DISPATCH_SUBMIT` resolves a fresh, enabled send button immediately before its only click. It then
+waits at most 30 seconds for a new verified `userTurn` whose text exactly matches the prompt, a
+verified stop button, or (new chats only) a move to a verified conversation URL. Thirty seconds is
+intentional: a late Pro-thinking transition only delays a safe retry, whereas a premature verdict
+can double-send. `userTurn` uses the captured, verified selectors
+`section[data-turn="user"]` and `[data-message-author-role="user"]`; both match the 2026-09-15
+fixture. Count-only user-turn acceptance is forbidden because a virtualized long thread can lazily
+mount an older turn after the baseline. Each acceptance evidence kind is logged at info level.
+
+If the exact prompt remains in the composer and no acceptance signal appears, the page clears that
+draft and its registry-verified attachment chips before it emits `SUBMIT_NOT_CONFIRMED`; a missing
+or mismatched verified chip-removal control fails closed to `SUBMIT_STATE_UNKNOWN`. This retryable
+outcome also requires that the composer was never observed empty after the click. The controller
+then deletes the write-ahead marker, reports `submitted: "no"` and `error.retryable: true`, and never
+clicks again. A cleared/mutated/restored composer without a turn is `SUBMIT_STATE_UNKNOWN`, retaining
+the marker and forbidding a retry. After URL-only dispatch, the observation loop has a separate 35
+second grace. A moved new-chat conversation URL is delivery evidence and therefore always becomes
+unknown; otherwise the controller rechecks and clears the exact draft plus chips before it can report
+not-confirmed. No user turn, assistant turn, or stop button by itself permits a retry if any state is
+ambiguous.

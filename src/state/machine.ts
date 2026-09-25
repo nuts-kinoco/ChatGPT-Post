@@ -60,6 +60,8 @@ export type Event =
   | { type: "MARKER_WRITTEN" }
   | { type: "MARKER_WRITE_FAILED"; cause: string }
   | { type: "SUBMIT_DISPATCHED" }
+  | { type: "SUBMIT_STATE_UNKNOWN"; cause: string }
+  | { type: "SUBMIT_NOT_CONFIRMED"; cause: string }
   | { type: "SUBMIT_FAILED"; cause: SubmitFailure }
   | { type: "SUBMIT_ABORTED"; cause: "preset_changed" }
   | { type: "VERDICT_WAITING" }
@@ -68,6 +70,8 @@ export type Event =
   | { type: "VERDICT_COMPLETE" }
   | { type: "VERDICT_TIMEOUT" }
   | { type: "VERDICT_TIMEOUT_ACTIVE" }
+  | { type: "VERDICT_SUBMIT_NOT_CONFIRMED"; cause: string }
+  | { type: "VERDICT_SUBMIT_STATE_UNKNOWN"; cause: string }
   | { type: "VERDICT_CONVERSATION_MISMATCH"; cause: string }
   | { type: "VERDICT_CHAT_ERROR"; cause: ChatErrorCause }
   | { type: "VERDICT_RATE_LIMITED" }
@@ -204,6 +208,7 @@ export function isTerminal(s: MachineState): boolean {
 
 function submittedFor(phase: StateName, code: ErrorCode, cause: string | null): Submitted {
   if (code === "SUBMIT_STATE_UNKNOWN") return "unknown";
+  if (code === "SUBMIT_NOT_CONFIRMED") return "no";
   if (phase === "PROMPT_SUBMITTING") {
     return code === "MODEL_NOT_VERIFIABLE" && cause === "preset_changed" ? "no" : "unknown";
   }
@@ -542,6 +547,15 @@ export function transition(s: MachineState, ev: Event): Transition {
             { kind: "SEAL_TRACE" },
             { kind: "START_OBSERVATION_LOOP" },
           ]);
+        case "SUBMIT_STATE_UNKNOWN":
+          return fail(s, "SUBMIT_STATE_UNKNOWN", { cause: ev.cause, submitted: "unknown" });
+        case "SUBMIT_NOT_CONFIRMED":
+          // The controller removed the write-ahead marker before emitting this retryable result.
+          return fail(s, "SUBMIT_NOT_CONFIRMED", {
+            cause: ev.cause,
+            submitted: "no",
+            effects: FAIL_AFTER_BROWSER,
+          });
         case "SUBMIT_FAILED":
           return fail(s, "PROMPT_SUBMIT_FAILED", { cause: ev.cause });
         case "SUBMIT_ABORTED":
@@ -582,6 +596,14 @@ export function transition(s: MachineState, ev: Event): Transition {
           // under a distinct code so callers don't blindly retry into a second concurrent
           // generation on the same shared profile.
           return verdictFail("GENERATION_TIMEOUT_ACTIVE");
+        case "VERDICT_SUBMIT_NOT_CONFIRMED":
+          return fail(s, "SUBMIT_NOT_CONFIRMED", {
+            cause: ev.cause,
+            submitted: "no",
+            effects: [{ kind: "STOP_OBSERVATION_LOOP" }, ...FAIL_AFTER_BROWSER],
+          });
+        case "VERDICT_SUBMIT_STATE_UNKNOWN":
+          return verdictFail("SUBMIT_STATE_UNKNOWN", ev.cause);
         case "VERDICT_CONVERSATION_MISMATCH":
           // A-116 (ChatGPT Pro redesign review, 2026-09-18, §3.1): the page navigated to a
           // *different* conversation than the one this request bound after dispatch. Reproduced

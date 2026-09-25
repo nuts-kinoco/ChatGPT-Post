@@ -1,0 +1,111 @@
+<!--
+  Sanitized, hand-built fixture of the read-only home-page dump:
+  runtime/artifacts/inspect-ui/2026-09-24T23-31-24-931Z/dom.raw.html.
+  Extended from the 2026-09-24 home-page dump with sanitized markup shapes from the separate
+  2026-09-25 read-only typed composer, open picker, attachment, and conversation captures.
+-->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>ChatGPT redesign fixture</title>
+  <style>
+    button, [role="button"] { display: inline-block; min-width: 16px; min-height: 16px; }
+    [role="menuitem"], [role="slider"] { display: block; min-width: 16px; min-height: 16px; }
+    form { display: block; min-width: 320px; }
+    [contenteditable="true"] { display: block; min-height: 24px; min-width: 200px; }
+  </style>
+</head>
+<body>
+  <aside>
+    <button type="button" aria-label="新しいチャット"></button>
+    <div
+      data-app-action-sidebar-project-row
+      data-app-action-sidebar-project-id="g-p-fixture"
+      data-app-action-sidebar-project-label="Current Project"
+      role="button"
+      tabindex="0"
+    >
+      <span>Current Project</span>
+      <button type="button" aria-label="Current Project のプロジェクトアクション"></button>
+      <button type="button" aria-label="Current Project で新しいチャット"></button>
+    </div>
+    <button type="button" data-app-action-sidebar-project-create aria-label="新しいプロジェクトを追加"></button>
+  </aside>
+
+  <form data-chatgpt-composer data-composer-placement="home" data-thread-find-composer="true">
+    <input id="_r_o0_" type="file" accept="image/*,video/*" aria-label="写真または動画を添付" hidden multiple>
+    <input id="_r_nv_" type="file" accept="image/*" aria-label="写真を添付" hidden multiple>
+    <input id="_r_nu_" type="file" aria-label="ファイルを添付" hidden multiple>
+    <div
+      contenteditable="true"
+      role="textbox"
+      aria-multiline="true"
+      aria-label="ChatGPT に聞く"
+      data-composer-markdown
+      data-virtualkeyboard="true"
+    ><p data-empty-paragraph data-placeholder="ChatGPT に聞く"><br></p></div>
+    <button
+      type="button"
+      aria-label="ChatGPT モデルを選択"
+      aria-haspopup="menu"
+      aria-expanded="false"
+      data-codex-intelligence-trigger="true"
+      data-composer-navigation-target="reasoning"
+      data-selected-reasoning-effort="medium"
+    >
+      <span data-composer-dropdown-foreground="tertiary" data-composer-dropdown-viewport="expanded">
+        <span data-composer-footer-collapse="none">
+          <span data-tooltip-overflow-target="true">
+            <span><span aria-hidden="true">Thinkingの思考量</span><span>中程度</span></span>
+          </span>
+        </span>
+      </span>
+    </button>
+    <button type="button" aria-label="ファイルなどを追加" data-composer-navigation-target="add-context"></button>
+    <button type="submit" aria-label="送信"></button>
+    <button type="button" aria-label="音声入力" aria-busy="false"></button>
+    <button type="button" aria-label="音声会話を開始"></button>
+    <div data-composer-attachments>
+      <div>
+        <span class="group/composer-attachment">
+          <span class="composer-attachment-surface">
+            <span role="progressbar" aria-label="sample.ts をアップロード中"></span>
+          </span>
+          <button type="button" aria-label="sample.ts を削除"></button>
+        </span>
+      </div>
+    </div>
+  </form>
+
+  <div role="menu" data-radix-menu-content>
+    <div role="menuitem" data-reasoning-slider="true" aria-describedby="power-label" aria-label="出力パワー">
+      <div data-model-picker-power-slider><span role="slider" aria-valuenow="1" aria-valuemax="4"></span></div>
+    </div>
+    <div role="menuitem" data-model-picker-view-toggle="true" aria-expanded="false" aria-label="モデルを選択"></div>
+    <div role="menuitemradio" data-model-selected="true" aria-checked="true">最新</div>
+  </div>
+
+  <section data-conversation-fixture>
+    <div data-turn-key="fixture-turn-1" data-content-search-turn-key="fixture-turn-1">
+      <div data-content-search-unit-key="fixture-turn-1:user">
+        <div data-user-message-bubble="true">Reply with exactly: ok</div>
+      </div>
+      <h4 class="sr-only" data-conversation-role="assistant" tabindex="-1">ChatGPT の発言:</h4>
+      <div data-content-search-unit-key="fixture-turn-1:assistant">
+        <div data-markdown-text-style="assistant-message">ok</div>
+        <div class="turn-action-controls"><button type="button" aria-label="メッセージをコピーする"></button></div>
+      </div>
+    </div>
+    <div data-turn-key="fixture-turn-2" data-content-search-turn-key="fixture-turn-2">
+      <div data-content-search-unit-key="fixture-turn-2:user">
+        <div data-user-message-bubble="true">Reply with exactly: ok</div>
+      </div>
+      <h4 class="sr-only" data-conversation-role="assistant" tabindex="-1">ChatGPT の発言:</h4>
+      <div data-content-search-unit-key="fixture-turn-2:assistant">
+        <div data-markdown-text-style="assistant-message">ok</div>
+        <div class="turn-action-controls"><button type="button" aria-label="メッセージをコピーする"></button></div>
+      </div>
+    </div>
+  </section>
+</body>
+</html>

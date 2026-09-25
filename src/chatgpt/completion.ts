@@ -3,6 +3,10 @@ import type { Event } from "../state/machine.js";
 export interface Observation {
   t: number;
   assistantCount: number;
+  /** A-155: user-turn baseline proves the click was accepted before a reply starts. */
+  userTurnCount: number;
+  /** Normalised composer text; only used to distinguish a retained draft from ambiguity. */
+  composerText: string;
   lastAssistantHash: string;
   lastAssistantEmpty: boolean;
   streaming: boolean;

@@ -4,7 +4,12 @@ import {
   judge,
   type Observation,
 } from "../chatgpt/completion.js";
-import { CHATGPT_ORIGIN, CONVERSATION_PATH_RE, classifyProject } from "../chatgpt/page.js";
+import {
+  CHATGPT_ORIGIN,
+  CONVERSATION_PATH_RE,
+  classifyProject,
+  normalisePrompt,
+} from "../chatgpt/page.js";
 import { slugMatches } from "../chatgpt/selectors.js";
 import { uploadBudgetMs } from "../contracts/attachments.js";
 import type {
@@ -29,6 +34,11 @@ import type { Baseline, Ports, ProjectCreateControl } from "./ports.js";
 
 /** 15 §4: result.json carries no secrets — cause/warnings are redacted and length-capped. */
 export const RESULT_TEXT_MAX = 500;
+/**
+ * A-155b: post-URL acceptance gets a slightly longer 35s guard than the page's 30s click gate.
+ * A premature retry can double-send a Pro request; waiting merely delays a safe retry.
+ */
+export const SUBMIT_ACCEPTANCE_GRACE_MS = 35_000;
 export function sanitiseResultText(text: string): string {
   const r = redactSecrets(text);
   return r.length <= RESULT_TEXT_MAX ? r : `${r.slice(0, RESULT_TEXT_MAX)}…`;
@@ -554,13 +564,17 @@ export class RunController {
         }
       }
       case "DISPATCH_SUBMIT": {
-        const d = await chatgpt.dispatchSubmit(this.requireBaseline().presetLabel);
+        const d = await chatgpt.dispatchSubmit(this.requireBaseline(), {
+          newChat: this.requireRequest().newChat,
+        });
         if (d.kind === "dispatched") {
           this.conversationUrl = d.url.startsWith("https://chatgpt.com/") ? d.url : null;
           this.dispatchedAt = this.ports.clock.monotonic();
           this.opts.onSubmitDispatched?.(this.timeoutMs);
           return { type: "SUBMIT_DISPATCHED" };
         }
+        if (d.kind === "unknown") return { type: "SUBMIT_STATE_UNKNOWN", cause: d.cause };
+        if (d.kind === "not_confirmed") return this.submitNotConfirmedEvent(d.cause);
         if (d.kind === "failed") return { type: "SUBMIT_FAILED", cause: d.cause };
         return { type: "SUBMIT_ABORTED", cause: "preset_changed" };
       }
@@ -751,6 +765,7 @@ export class RunController {
     };
     const interval = this.opts.observationIntervalMs ?? 250;
     const baseline = this.requireBaseline().assistantCount;
+    const userBaseline = this.requireBaseline().userTurnCount;
     while (this.observing && !this.state.terminal) {
       if (this.interruption) {
         this.observing = false;
@@ -780,12 +795,67 @@ export class RunController {
       }
       this.history.push(obs);
       if (this.history.length > 4000) this.history.splice(0, this.history.length - 4000);
+      const url = await this.ports.chatgpt.currentUrl().catch(() => "");
+      const request = this.requireRequest();
+      const baselineState = this.requireBaseline();
+      const isConversationUrl = (candidate: string): boolean => {
+        try {
+          const parsed = new URL(candidate);
+          return parsed.origin === CHATGPT_ORIGIN && CONVERSATION_PATH_RE.test(parsed.pathname);
+        } catch {
+          return false;
+        }
+      };
+      const movedNewChatUrl =
+        request.newChat &&
+        ((url !== baselineState.url && isConversationUrl(url)) ||
+          (this.conversationUrl !== baselineState.url &&
+            this.conversationUrl !== null &&
+            isConversationUrl(this.conversationUrl)));
+      // A-155: URL acceptance for a new chat is useful, but is not enough to justify a 50-minute
+      // response wait. It is nevertheless delivery evidence, never retryable. The exact retained
+      // draft can prove no send only if it was never observed empty during this entire grace.
+      if (
+        t >= SUBMIT_ACCEPTANCE_GRACE_MS &&
+        obs.userTurnCount <= userBaseline &&
+        obs.assistantCount <= baseline &&
+        !obs.streaming
+      ) {
+        this.observing = false;
+        const composerEverCleared = this.history.some(
+          (entry) => normalisePrompt(entry.composerText).length === 0,
+        );
+        const acceptance = movedNewChatUrl
+          ? {
+              type: "VERDICT_SUBMIT_STATE_UNKNOWN" as const,
+              cause:
+                "new-chat URL moved to a conversation but no user turn or generation signal was confirmed",
+            }
+          : normalisePrompt(obs.composerText) === normalisePrompt(this.prompt) &&
+              !composerEverCleared
+            ? await this.clearThenSubmitNotConfirmed(
+                "no new user turn or generation signal after accepted dispatch; composer retained the exact prompt",
+              )
+            : {
+                type: "VERDICT_SUBMIT_STATE_UNKNOWN" as const,
+                cause: composerEverCleared
+                  ? "composer cleared during post-dispatch acceptance grace, then no user turn or generation signal was confirmed"
+                  : "no new user turn or generation signal after accepted dispatch; composer state is ambiguous",
+              };
+        await this.dispatch(
+          acceptance.type === "SUBMIT_NOT_CONFIRMED"
+            ? { type: "VERDICT_SUBMIT_NOT_CONFIRMED", cause: acceptance.cause }
+            : acceptance.type === "SUBMIT_STATE_UNKNOWN"
+              ? { type: "VERDICT_SUBMIT_STATE_UNKNOWN", cause: acceptance.cause }
+              : acceptance,
+        );
+        return;
+      }
       // The URL right after dispatch may be a transient client id; keep the latest until locked.
       // A-106: a chat started inside a Project (openProject) lives under /g/g-p-.../c/<id>, not
       // the plain /c/<id> — CONVERSATION_PATH_RE covers both.
       // Codex review of A-106, High: origin must be checked too, not just the pathname shape —
       // otherwise a same-shaped path on a different origin would be captured as conversationUrl.
-      const url = await this.ports.chatgpt.currentUrl();
       let matchedPath: string | null = null;
       try {
         const u = new URL(url);
@@ -857,6 +927,31 @@ export class RunController {
       }
     }
     return changedAt !== null && latest.t - changedAt >= STUCK_STOP_STABILITY_MS;
+  }
+
+  /** A retryable not-sent result is honest only after its write-ahead marker is actually gone. */
+  private async submitNotConfirmedEvent(cause: string): Promise<Event> {
+    try {
+      await this.ports.lock.deleteMarker(this.requireId());
+      return { type: "SUBMIT_NOT_CONFIRMED", cause };
+    } catch (err) {
+      return {
+        type: "SUBMIT_STATE_UNKNOWN",
+        cause: `${cause}; marker cleanup failed: ${(err as Error).message}`,
+      };
+    }
+  }
+
+  /** Never make an observer-only inference retryable until the exact draft and its chips are gone. */
+  private async clearThenSubmitNotConfirmed(cause: string): Promise<Event> {
+    const cleanup = await this.ports.chatgpt.clearUnsentPrompt(this.prompt);
+    if (cleanup.kind === "failed") {
+      return {
+        type: "SUBMIT_STATE_UNKNOWN",
+        cause: `${cause}; safe composer cleanup failed: ${cleanup.cause}`,
+      };
+    }
+    return this.submitNotConfirmedEvent(cause);
   }
 
   /** Fresh navigation is the only automatic recovery action: it never enters or dispatches text. */
@@ -947,7 +1042,7 @@ export class RunController {
           : {
               code: term.code,
               message: messageFor(term.code, safeCause),
-              retryable: false,
+              retryable: term.code === "SUBMIT_NOT_CONFIRMED",
               phase: this.state.phase,
               cause: safeFieldCause,
             },
@@ -1062,6 +1157,8 @@ export function messageFor(code: ErrorCode, cause: string | null): string {
       return "プロファイルパスが通常のブラウザプロファイルを指すか、symlink / junction を含みます。CHATGPT_BRIDGE_PROFILE_DIR を専用ディレクトリにしてください。";
     case "SUBMIT_STATE_UNKNOWN":
       return "前回の実行が送信直前〜終端前に終了したため送信状態が不明です。再送せず先に chatgpt-bridge collect <requestId> を実行し、marker の会話 URL/baseline で唯一の回答を安全に回収してください。";
+    case "SUBMIT_NOT_CONFIRMED":
+      return "The prompt remained in the composer and no user turn or generation signal appeared after send. It was not submitted; retrying this requestId is safe.";
     case "PROFILE_IN_USE":
       return "専用プロファイルを別の Chrome が開いています。そのウィンドウを閉じてから再実行してください。";
     case "BROWSER_LAUNCH_FAILED":

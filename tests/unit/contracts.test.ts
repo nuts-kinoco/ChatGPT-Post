@@ -181,14 +181,25 @@ describe("result.json schema + invariants (AC-007)", () => {
     for (const code of ERROR_CODES.filter((c) => !NO_RESULT_CODES.includes(c))) {
       const result = baseResult({
         status: statusFor(code),
-        // SUBMIT_STATE_UNKNOWN is special-cased to "unknown" regardless of phase (invariants.ts
+        // Submit acceptance outcomes are special-cased regardless of phase (invariants.ts
         // expectedSubmitted()); every other code here uses phase: GENERATING, a post-submission
         // state, so "yes" is what the real controller would produce for it.
-        submitted: code === "SUBMIT_STATE_UNKNOWN" ? "unknown" : "yes",
+        submitted:
+          code === "SUBMIT_STATE_UNKNOWN"
+            ? "unknown"
+            : code === "SUBMIT_NOT_CONFIRMED"
+              ? "no"
+              : "yes",
         responseFile: null,
         extractionMethod: null,
         extractionQuality: null,
-        error: { code, message: "m", retryable: false, phase: "GENERATING", cause: null },
+        error: {
+          code,
+          message: "m",
+          retryable: code === "SUBMIT_NOT_CONFIRMED",
+          phase: "GENERATING",
+          cause: null,
+        },
       });
       expect(checkResultInvariants(result), `error code ${code} should validate`).toEqual([]);
     }
