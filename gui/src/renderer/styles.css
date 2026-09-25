@@ -4,5 +4,15 @@
 
 html, body, #root { height: 100%; margin: 0; overflow: hidden; }
 body { background: #121417; }
+.bar-drag-region { -webkit-app-region: drag; user-select: none; }
+.bar-window button,
+.bar-window a,
+.bar-window input,
+.bar-window select,
+.bar-window textarea,
+.bar-window label,
+.bar-window summary,
+.bar-window [role="button"],
+.bar-window [role="switch"] { -webkit-app-region: no-drag; }
 @keyframes completion-toast-fade { from { opacity: 1; } to { opacity: 0; } }
 .completion-toast { animation: completion-toast-fade 350ms ease-in 5650ms forwards; }

@@ -11,6 +11,7 @@ import { resolveBridgePaths } from "./bridge-paths.js";
 import { portableExecutablePath } from "./login-item.js";
 import { startPollLoop } from "./poll-loop.js";
 import { RENDERER_SCHEME, rendererFilePath, resolveRendererUrl } from "./renderer-protocol.js";
+import { bottomRightPosition, clampToWorkArea, fitsWithinAnyWorkArea, isSavedPositionValid, type WindowBounds, type WindowPosition } from "./bar-position.js";
 import * as fs from "node:fs/promises";
 
 protocol.registerSchemesAsPrivileged([
@@ -46,6 +47,10 @@ let doctor = EMPTY_STATE.doctor;
 let scannedRequests: Awaited<ReturnType<typeof scanRequests>> = [];
 let bridgeState: BridgeGuiState = EMPTY_STATE;
 let pickerAttachmentPaths = new Set<string>();
+let savedBarPosition: WindowPosition | undefined;
+let loadingBarPosition: Promise<void> | undefined;
+let saveBarPositionTimeout: NodeJS.Timeout | undefined;
+let lastProgrammaticBounds: WindowBounds | undefined;
 
 function rendererUrl(): string { return resolveRendererUrl(app.isPackaged, process.env.ELECTRON_RENDERER_URL); }
 function registerRendererProtocol() {
@@ -58,41 +63,105 @@ function registerRendererProtocol() {
   });
 }
 function createTrayIcon() { return nativeImage.createFromPath(path.join(__dirname, "../../assets/tray-icon.png")).resize({ width: 16, height: 16 }); }
-function barPosition(height: number) {
-  const { workArea } = screen.getPrimaryDisplay();
-  return {
-    x: workArea.x + workArea.width - BAR_WIDTH - WINDOW_MARGIN,
-    y: workArea.y + workArea.height - height - WINDOW_MARGIN,
-  };
+function barPositionFilePath() { return path.join(app.getPath("userData"), "bar-position.json"); }
+function isWindowPosition(value: unknown): value is WindowPosition {
+  return isRecord(value) && typeof value.x === "number" && Number.isFinite(value.x) && typeof value.y === "number" && Number.isFinite(value.y);
 }
-function positionWindow() {
-  if (!barWindow) return;
-  const height = popupOpen ? POPUP_HEIGHT : BAR_HEIGHT;
-  const { x, y } = barPosition(height);
-  barWindow.setSize(BAR_WIDTH, height);
-  barWindow.setPosition(x, y);
-}
-function showBar() {
-  if (!barWindow) {
-    const initialPosition = barPosition(BAR_HEIGHT);
-    barWindow = new BrowserWindow({ width: BAR_WIDTH, height: BAR_HEIGHT, x: initialPosition.x, y: initialPosition.y, useContentSize: true, frame: false, resizable: false, skipTaskbar: true, alwaysOnTop: windowControls.alwaysOnTop, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.cjs") } });
-    if (process.env.BRIDGE_GUI_DEBUG) {
-      const wc = barWindow.webContents;
-      console.log("[debug] rendererUrl =", rendererUrl());
-      wc.on("console-message", (e) => console.log("[renderer console]", e.level, e.message, e.sourceId, e.lineNumber));
-      wc.on("did-fail-load", (_e, code, desc, url) => console.log("[did-fail-load]", code, desc, url));
-      wc.on("preload-error", (_e, p, err) => console.log("[preload-error]", p, err));
-      wc.on("render-process-gone", (_e, d) => console.log("[render-process-gone]", d));
-      wc.on("did-finish-load", () => console.log("[did-finish-load]", wc.getURL()));
+async function loadBarPosition() {
+  if (loadingBarPosition) return loadingBarPosition;
+  loadingBarPosition = (async () => {
+    try {
+      const parsed: unknown = JSON.parse(await fs.readFile(barPositionFilePath(), "utf8"));
+      if (isWindowPosition(parsed)) savedBarPosition = parsed;
+    } catch (error) {
+      if (isRecord(error) && error.code !== "ENOENT") console.warn("Bridge GUI: could not load saved bar position", error);
     }
-    void barWindow.loadURL(rendererUrl());
-    barWindow.webContents.on("will-navigate", (event) => event.preventDefault());
-    barWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    barWindow.on("close", (event) => {
-      if (isQuitting) return;
-      event.preventDefault();
-      barWindow?.hide();
-    });
+  })();
+  return loadingBarPosition;
+}
+async function writeBarPosition(position: WindowPosition) {
+  const filePath = barPositionFilePath();
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(temporaryPath, `${JSON.stringify(position)}\n`, "utf8");
+    await fs.rename(temporaryPath, filePath);
+  } catch (error) {
+    console.warn("Bridge GUI: could not save bar position", error);
+    try { await fs.rm(temporaryPath, { force: true }); } catch { /* Best-effort cleanup only. */ }
+  }
+}
+function rememberBarPosition(bounds: WindowBounds) {
+  savedBarPosition = { x: bounds.x, y: bounds.y };
+  if (saveBarPositionTimeout) clearTimeout(saveBarPositionTimeout);
+  saveBarPositionTimeout = setTimeout(() => {
+    saveBarPositionTimeout = undefined;
+    if (savedBarPosition) void writeBarPosition(savedBarPosition);
+  }, 250);
+}
+function sameBounds(first: WindowBounds, second: WindowBounds) {
+  return first.x === second.x && first.y === second.y && first.width === second.width && first.height === second.height;
+}
+function currentWorkAreas() { return screen.getAllDisplays().map(({ workArea }) => workArea); }
+function applyWindowBounds(bounds: WindowBounds) {
+  if (!barWindow) return;
+  lastProgrammaticBounds = bounds;
+  barWindow.setBounds(bounds);
+}
+function positionWindow(): WindowBounds | undefined {
+  if (!barWindow) return undefined;
+  const height = popupOpen ? POPUP_HEIGHT : BAR_HEIGHT;
+  const currentBounds = barWindow.getBounds();
+  const display = screen.getDisplayMatching(currentBounds);
+  const bounds = clampToWorkArea({ x: currentBounds.x, y: currentBounds.y, width: BAR_WIDTH, height }, display.workArea);
+  applyWindowBounds(bounds);
+  return bounds;
+}
+function ensureWindowIsOnOneDisplay() {
+  if (!barWindow || fitsWithinAnyWorkArea(barWindow.getBounds(), currentWorkAreas())) return;
+  const bounds = positionWindow();
+  if (bounds) rememberBarPosition(bounds);
+}
+function onBarMoved() {
+  if (!barWindow) return;
+  const bounds = barWindow.getBounds();
+  if (lastProgrammaticBounds && sameBounds(bounds, lastProgrammaticBounds)) {
+    lastProgrammaticBounds = undefined;
+    return;
+  }
+  const display = screen.getDisplayMatching(bounds);
+  const clamped = clampToWorkArea(bounds, display.workArea);
+  rememberBarPosition(clamped);
+  if (!sameBounds(bounds, clamped)) applyWindowBounds(clamped);
+}
+async function showBar() {
+  if (!barWindow) {
+    await loadBarPosition();
+    if (!barWindow) {
+      const primaryWorkArea = screen.getPrimaryDisplay().workArea;
+      const initialPosition = savedBarPosition && isSavedPositionValid(savedBarPosition, BAR_WIDTH, BAR_HEIGHT, currentWorkAreas())
+        ? savedBarPosition
+        : bottomRightPosition(primaryWorkArea, BAR_WIDTH, BAR_HEIGHT, WINDOW_MARGIN);
+      barWindow = new BrowserWindow({ width: BAR_WIDTH, height: BAR_HEIGHT, x: initialPosition.x, y: initialPosition.y, useContentSize: true, frame: false, resizable: false, skipTaskbar: true, alwaysOnTop: windowControls.alwaysOnTop, show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.cjs") } });
+      if (process.env.BRIDGE_GUI_DEBUG) {
+        const wc = barWindow.webContents;
+        console.log("[debug] rendererUrl =", rendererUrl());
+        wc.on("console-message", (e) => console.log("[renderer console]", e.level, e.message, e.sourceId, e.lineNumber));
+        wc.on("did-fail-load", (_e, code, desc, url) => console.log("[did-fail-load]", code, desc, url));
+        wc.on("preload-error", (_e, p, err) => console.log("[preload-error]", p, err));
+        wc.on("render-process-gone", (_e, d) => console.log("[render-process-gone]", d));
+        wc.on("did-finish-load", () => console.log("[did-finish-load]", wc.getURL()));
+      }
+      void barWindow.loadURL(rendererUrl());
+      barWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+      barWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      barWindow.on("moved", onBarMoved);
+      barWindow.on("close", (event) => {
+        if (isQuitting) return;
+        event.preventDefault();
+        barWindow?.hide();
+      });
+    }
   }
   // Windows can create a hidden tool window as iconic.  Give it a normal show
   // state before applying its final bounds; bounds changes while iconic stay at
@@ -102,7 +171,7 @@ function showBar() {
   positionWindow();
   barWindow.focus();
 }
-function toggleBar() { if (barWindow?.isVisible()) barWindow.hide(); else showBar(); }
+function toggleBar() { if (barWindow?.isVisible()) barWindow.hide(); else void showBar(); }
 function setAlwaysOnTop(alwaysOnTop: boolean): WindowControlState {
   windowControls = { ...windowControls, alwaysOnTop };
   barWindow?.setAlwaysOnTop(alwaysOnTop);
@@ -367,8 +436,8 @@ if (hasSingleInstanceLock) {
     }
     tray = new Tray(createTrayIcon());
     tray.setToolTip("ChatGPT Bridge Control");
-    tray.setContextMenu(Menu.buildFromTemplate([{ label: "Show", click: showBar }, { type: "separator" }, { label: "Quit", click: () => app.quit() }]));
-    tray.on("click", showBar);
+    tray.setContextMenu(Menu.buildFromTemplate([{ label: "Show", click: () => void showBar() }, { type: "separator" }, { label: "Quit", click: () => app.quit() }]));
+    tray.on("click", () => void showBar());
     ipcMain.on("bridge-gui:subscribe", (event) => event.sender.send("bridge-gui:state", bridgeState));
     ipcMain.on("bridge-gui:toggle-popup", () => { popupOpen = !popupOpen; positionWindow(); });
     ipcMain.handle("bridge-gui:window-controls", (): WindowControlState => windowControls);
@@ -448,9 +517,9 @@ if (hasSingleInstanceLock) {
     if (!hotkeyRegistered) console.warn("Bridge GUI: global hotkey CommandOrControl+Shift+C is already in use; continuing without it");
     startPollLoop(pollDoctor, DOCTOR_POLL_INTERVAL_MS);
     startPollLoop(pollRequests, REQUESTS_POLL_INTERVAL_MS);
-    screen.on("display-metrics-changed", positionWindow);
-    screen.on("display-added", positionWindow);
-    screen.on("display-removed", positionWindow);
+    screen.on("display-metrics-changed", ensureWindowIsOnOneDisplay);
+    screen.on("display-added", ensureWindowIsOnOneDisplay);
+    screen.on("display-removed", ensureWindowIsOnOneDisplay);
   });
 
   app.on("will-quit", () => { globalShortcut.unregister("CommandOrControl+Shift+C"); });

@@ -102,8 +102,9 @@ function App() {
   const toggleAlwaysOnTop = () => { void window.bridgeGui.toggleAlwaysOnTop().then(setControls); };
   const toggleMute = () => { void window.bridgeGui.toggleMute().then(setControls); };
 
-  return <main className="relative overflow-hidden font-mono text-[11px] text-ink">
+  return <main className="bar-window relative overflow-hidden font-mono text-[11px] text-ink">
     <div className="flex h-10 border border-line bg-base">
+      <div className="bar-drag-region flex w-5 shrink-0 items-center justify-center border-r border-line text-ink-3" title="Drag to move the bar" aria-hidden="true"><span>⋮</span></div>
       <button type="button" onClick={() => window.bridgeGui.togglePopup()} className="flex min-w-0 flex-1 items-center px-3 text-left hover:bg-raised">
         <span className={`mr-2 h-2 w-2 rounded-full ${active ? color[active.status] : "bg-ink-3"}`} />
         <span className="text-ink-2">{active ? code[active.status] : "IDLE"}</span>
