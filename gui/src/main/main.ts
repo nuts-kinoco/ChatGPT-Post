@@ -9,6 +9,7 @@ import { evaluateRefreshCookiePreflight, type RefreshCookiePreflightResult } fro
 import { addPickerAttachmentPaths, attachmentsArePickerApproved, buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest, type NewSubmissionInput } from "./submit-new.js";
 import { resolveBridgePaths } from "./bridge-paths.js";
 import { portableExecutablePath } from "./login-item.js";
+import { startPollLoop } from "./poll-loop.js";
 import { RENDERER_SCHEME, rendererFilePath, resolveRendererUrl } from "./renderer-protocol.js";
 import * as fs from "node:fs/promises";
 
@@ -443,12 +444,13 @@ if (hasSingleInstanceLock) {
       }
       return requestSubmit(path.join(requestDirectory, "request.json"));
     });
-    void pollDoctor();
-    void pollRequests();
     const hotkeyRegistered = globalShortcut.register("CommandOrControl+Shift+C", toggleBar);
     if (!hotkeyRegistered) console.warn("Bridge GUI: global hotkey CommandOrControl+Shift+C is already in use; continuing without it");
-    setInterval(() => { void pollDoctor(); }, DOCTOR_POLL_INTERVAL_MS);
-    setInterval(() => { void pollRequests(); }, REQUESTS_POLL_INTERVAL_MS);
+    startPollLoop(pollDoctor, DOCTOR_POLL_INTERVAL_MS);
+    startPollLoop(pollRequests, REQUESTS_POLL_INTERVAL_MS);
+    screen.on("display-metrics-changed", positionWindow);
+    screen.on("display-added", positionWindow);
+    screen.on("display-removed", positionWindow);
   });
 
   app.on("will-quit", () => { globalShortcut.unregister("CommandOrControl+Shift+C"); });

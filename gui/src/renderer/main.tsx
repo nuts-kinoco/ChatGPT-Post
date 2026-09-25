@@ -8,6 +8,7 @@ import { COMPLETION_TOAST_DURATION_MS, terminalTransitionsSinceLastPoll } from "
 import "./styles.css";
 
 const INITIAL: BridgeGuiState = { doctor: { ok: false, items: [], error: "Connecting" }, lockHeld: null, requests: [], updatedAt: new Date(0).toISOString() };
+const NOTICE_DURATION_MS = 8_000;
 const terminal = new Set<RequestStatus>(["Completed", "Failed", "Blocked"]);
 const color: Record<RequestStatus, string> = { Running: "bg-ok", Unknown: "bg-info", Completed: "bg-ink-3", Failed: "bg-err", Blocked: "bg-warn" };
 const code: Record<RequestStatus, string> = { Running: "RUN", Unknown: "UNK", Completed: "DONE", Failed: "FAIL", Blocked: "BLOCK" };
@@ -70,6 +71,11 @@ function App() {
 
   useEffect(() => { controlsRef.current = controls; }, [controls]);
   useEffect(() => {
+    if (!notice) return;
+    const timeoutId = window.setTimeout(() => setNotice(null), NOTICE_DURATION_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
+  useEffect(() => {
     const timeoutIds = new Set<number>();
     const off = window.bridgeGui.onState((next) => {
       const transitions = terminalTransitionsSinceLastPoll(previousRequests.current, next.requests);
@@ -110,7 +116,7 @@ function App() {
     </div>
     <Popup state={state} now={now} choose={setSelected} showNotice={setNotice} newRequest={() => setNewRequest(true)} openSettings={() => setSettings(true)} />
     {completionToasts.length > 0 && <div aria-live="polite" className="pointer-events-none absolute bottom-3 left-3 right-3 z-20 space-y-2">{completionToasts.map((toast) => <p key={toast.id} role="status" className="completion-toast rounded border border-info/50 bg-raised p-2 text-info">{toast.message}</p>)}</div>}
-    {notice && <p role="status" className="absolute bottom-3 left-3 right-3 z-20 rounded border border-ok/40 bg-raised p-2 text-ok">{notice}</p>}
+    {notice && <p role="status" className="pointer-events-none absolute bottom-3 left-3 right-3 z-20 rounded border border-ok/40 bg-raised p-2 text-ok">{notice}</p>}
     {selected && <Drawer id={selected} back={() => setSelected(null)} />}
     {newRequest && <NewRequestModal close={() => setNewRequest(false)} showNotice={setNotice} />}
     {settings && <SettingsModal close={() => setSettings(false)} />}
