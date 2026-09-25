@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("bridgeGui", {
   windowControls(): Promise<WindowControlState> { return ipcRenderer.invoke("bridge-gui:window-controls"); },
   toggleAlwaysOnTop(): Promise<WindowControlState> { return ipcRenderer.invoke("bridge-gui:toggle-always-on-top"); },
   toggleMute(): Promise<WindowControlState> { return ipcRenderer.invoke("bridge-gui:toggle-mute"); },
+  getAutostart(): Promise<boolean> { return ipcRenderer.invoke("bridge-gui:get-autostart"); },
+  setAutostart(openAtLogin: boolean): Promise<boolean> { return ipcRenderer.invoke("bridge-gui:set-autostart", openAtLogin); },
   requestDetail(requestId: string): Promise<RequestDetail | { error: string }> { return ipcRenderer.invoke("bridge-gui:request-detail", requestId); },
   openConversation(requestId: string): Promise<boolean> { return ipcRenderer.invoke("bridge-gui:open-conversation", requestId); },
   stopRequest(requestId: string): Promise<StopRequestResult> { return ipcRenderer.invoke("bridge-gui:stop", requestId); },

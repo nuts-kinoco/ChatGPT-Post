@@ -9,6 +9,9 @@ import { evaluateRefreshCookiePreflight, type RefreshCookiePreflightResult } fro
 import { buildSubmitArgs, createRequestId, validateNewSubmission, writeNewRequest, type NewSubmissionInput } from "./submit-new.js";
 import * as fs from "node:fs/promises";
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) app.quit();
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BAR_WIDTH = 380;
 const BAR_HEIGHT = 40;
@@ -287,77 +290,87 @@ function pollDoctor(): Promise<void> {
 }
 async function pollRequests() { scannedRequests = await scanRequests(REQUESTS_PATH); publishState(); }
 
-app.whenReady().then(() => {
-  tray = new Tray(createTrayIcon());
-  tray.setToolTip("ChatGPT Bridge Control");
-  tray.setContextMenu(Menu.buildFromTemplate([{ label: "Show", click: showBar }, { type: "separator" }, { label: "Quit", click: () => app.quit() }]));
-  tray.on("click", showBar);
-  ipcMain.on("bridge-gui:subscribe", (event) => event.sender.send("bridge-gui:state", bridgeState));
-  ipcMain.on("bridge-gui:toggle-popup", () => { popupOpen = !popupOpen; positionWindow(); });
-  ipcMain.handle("bridge-gui:window-controls", (): WindowControlState => windowControls);
-  ipcMain.handle("bridge-gui:toggle-always-on-top", (): WindowControlState => setAlwaysOnTop(!windowControls.alwaysOnTop));
-  ipcMain.handle("bridge-gui:toggle-mute", (): WindowControlState => toggleMute());
-  ipcMain.handle("bridge-gui:request-detail", async (_event, requestId: unknown) => {
-    try { return await readRequestDetail(requestId); }
-    catch (error) { return { error: error instanceof Error ? error.message : "Could not load request detail" }; }
-  });
-  ipcMain.handle("bridge-gui:open-conversation", async (_event, requestId: unknown) => {
-    try {
-      const detail = await readRequestDetail(requestId);
-      if (!detail.conversationUrl) return false;
-      await shell.openExternal(detail.conversationUrl);
-      return true;
-    } catch { return false; }
-  });
-  ipcMain.handle("bridge-gui:stop", async (_event, requestId: unknown): Promise<StopRequestResult> => {
-    if (!validRequestId(requestId)) return { ok: false, reason: "Invalid request id" };
-    const running = bridgeState.requests.find((request) => request.requestId === requestId && request.status === "Running");
-    if (!running) return { ok: false, reason: "Request is no longer running" };
-    try {
-      const options: MessageBoxOptions = {
-        type: "warning",
-        title: "Stop running request?",
-        message: "Stop this running request?",
-        detail: `Title: ${running.title}\nRequest ID: ${running.requestId}\n\nStopping is cooperative: the running process will stop after its next poll.`,
-        buttons: ["Cancel", "Stop Request"],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      };
-      const confirmation = barWindow
-        ? await dialog.showMessageBox(barWindow, options)
-        : await dialog.showMessageBox(options);
-      if (confirmation.response !== 1) return { ok: false, reason: "Stop cancelled" };
-      return await requestStop(requestId);
-    } catch (error) {
-      return { ok: false, reason: error instanceof Error ? `Could not request stop: ${error.message}` : "Could not request stop" };
-    }
-  });
-  ipcMain.handle("bridge-gui:refresh-cookie", async (): Promise<RefreshCookieResult> => requestRefreshCookie());
-  ipcMain.handle("bridge-gui:choose-new-attachments", async (): Promise<string[]> => {
-    const result = barWindow
-      ? await dialog.showOpenDialog(barWindow, { properties: ["openFile", "multiSelections"] })
-      : await dialog.showOpenDialog({ properties: ["openFile", "multiSelections"] });
-    return result.canceled ? [] : result.filePaths;
-  });
-  ipcMain.handle("bridge-gui:submit-new", async (_event, value: NewSubmissionInput): Promise<SubmitNewResult> => {
-    const validated = validateNewSubmission(value);
-    if (!validated.ok) return validated;
-    const requestId = createRequestId();
-    let requestDirectory: string;
-    try {
-      requestDirectory = await writeNewRequest(REQUESTS_PATH, requestId, validated.value, fs);
-    } catch (error) {
-      return { ok: false, reason: error instanceof Error ? `Could not create request files: ${error.message}` : "Could not create request files" };
-    }
-    return requestSubmit(path.join(requestDirectory, "request.json"));
-  });
-  void pollDoctor();
-  void pollRequests();
-  const hotkeyRegistered = globalShortcut.register("CommandOrControl+Shift+C", toggleBar);
-  if (!hotkeyRegistered) console.warn("Bridge GUI: global hotkey CommandOrControl+Shift+C is already in use; continuing without it");
-  setInterval(() => { void pollDoctor(); }, DOCTOR_POLL_INTERVAL_MS);
-  setInterval(() => { void pollRequests(); }, REQUESTS_POLL_INTERVAL_MS);
-});
+if (hasSingleInstanceLock) {
+  app.on("second-instance", () => { void app.whenReady().then(showBar); });
 
-app.on("will-quit", () => { globalShortcut.unregister("CommandOrControl+Shift+C"); });
+  app.whenReady().then(() => {
+    tray = new Tray(createTrayIcon());
+    tray.setToolTip("ChatGPT Bridge Control");
+    tray.setContextMenu(Menu.buildFromTemplate([{ label: "Show", click: showBar }, { type: "separator" }, { label: "Quit", click: () => app.quit() }]));
+    tray.on("click", showBar);
+    ipcMain.on("bridge-gui:subscribe", (event) => event.sender.send("bridge-gui:state", bridgeState));
+    ipcMain.on("bridge-gui:toggle-popup", () => { popupOpen = !popupOpen; positionWindow(); });
+    ipcMain.handle("bridge-gui:window-controls", (): WindowControlState => windowControls);
+    ipcMain.handle("bridge-gui:toggle-always-on-top", (): WindowControlState => setAlwaysOnTop(!windowControls.alwaysOnTop));
+    ipcMain.handle("bridge-gui:toggle-mute", (): WindowControlState => toggleMute());
+    ipcMain.handle("bridge-gui:get-autostart", (): boolean => app.getLoginItemSettings().openAtLogin);
+    ipcMain.handle("bridge-gui:set-autostart", (_event, openAtLogin: unknown): boolean => {
+      if (typeof openAtLogin !== "boolean") throw new TypeError("openAtLogin must be a boolean");
+      app.setLoginItemSettings({ openAtLogin });
+      return app.getLoginItemSettings().openAtLogin;
+    });
+    ipcMain.handle("bridge-gui:request-detail", async (_event, requestId: unknown) => {
+      try { return await readRequestDetail(requestId); }
+      catch (error) { return { error: error instanceof Error ? error.message : "Could not load request detail" }; }
+    });
+    ipcMain.handle("bridge-gui:open-conversation", async (_event, requestId: unknown) => {
+      try {
+        const detail = await readRequestDetail(requestId);
+        if (!detail.conversationUrl) return false;
+        await shell.openExternal(detail.conversationUrl);
+        return true;
+      } catch { return false; }
+    });
+    ipcMain.handle("bridge-gui:stop", async (_event, requestId: unknown): Promise<StopRequestResult> => {
+      if (!validRequestId(requestId)) return { ok: false, reason: "Invalid request id" };
+      const running = bridgeState.requests.find((request) => request.requestId === requestId && request.status === "Running");
+      if (!running) return { ok: false, reason: "Request is no longer running" };
+      try {
+        const options: MessageBoxOptions = {
+          type: "warning",
+          title: "Stop running request?",
+          message: "Stop this running request?",
+          detail: `Title: ${running.title}\nRequest ID: ${running.requestId}\n\nStopping is cooperative: the running process will stop after its next poll.`,
+          buttons: ["Cancel", "Stop Request"],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        };
+        const confirmation = barWindow
+          ? await dialog.showMessageBox(barWindow, options)
+          : await dialog.showMessageBox(options);
+        if (confirmation.response !== 1) return { ok: false, reason: "Stop cancelled" };
+        return await requestStop(requestId);
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? `Could not request stop: ${error.message}` : "Could not request stop" };
+      }
+    });
+    ipcMain.handle("bridge-gui:refresh-cookie", async (): Promise<RefreshCookieResult> => requestRefreshCookie());
+    ipcMain.handle("bridge-gui:choose-new-attachments", async (): Promise<string[]> => {
+      const result = barWindow
+        ? await dialog.showOpenDialog(barWindow, { properties: ["openFile", "multiSelections"] })
+        : await dialog.showOpenDialog({ properties: ["openFile", "multiSelections"] });
+      return result.canceled ? [] : result.filePaths;
+    });
+    ipcMain.handle("bridge-gui:submit-new", async (_event, value: NewSubmissionInput): Promise<SubmitNewResult> => {
+      const validated = validateNewSubmission(value);
+      if (!validated.ok) return validated;
+      const requestId = createRequestId();
+      let requestDirectory: string;
+      try {
+        requestDirectory = await writeNewRequest(REQUESTS_PATH, requestId, validated.value, fs);
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? `Could not create request files: ${error.message}` : "Could not create request files" };
+      }
+      return requestSubmit(path.join(requestDirectory, "request.json"));
+    });
+    void pollDoctor();
+    void pollRequests();
+    const hotkeyRegistered = globalShortcut.register("CommandOrControl+Shift+C", toggleBar);
+    if (!hotkeyRegistered) console.warn("Bridge GUI: global hotkey CommandOrControl+Shift+C is already in use; continuing without it");
+    setInterval(() => { void pollDoctor(); }, DOCTOR_POLL_INTERVAL_MS);
+    setInterval(() => { void pollRequests(); }, REQUESTS_POLL_INTERVAL_MS);
+  });
+
+  app.on("will-quit", () => { globalShortcut.unregister("CommandOrControl+Shift+C"); });
+}
