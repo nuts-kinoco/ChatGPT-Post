@@ -46,6 +46,16 @@ export function clampToWorkArea(bounds: WindowBounds, workArea: DisplayWorkArea)
   };
 }
 
+/**
+ * Places the popup at the bar's anchor whenever it fits below the bar.  Near
+ * an edge, only the popup is moved to keep it inside the work area; callers
+ * retain the anchor separately so closing can restore the collapsed bar.
+ */
+export function popupBoundsForAnchor(anchor: WindowPosition, width: number, popupHeight: number, workArea: DisplayWorkArea): WindowBounds {
+  const downward = boundsAt(anchor, width, popupHeight);
+  return fitsWithinWorkArea(downward, workArea) ? downward : clampToWorkArea(downward, workArea);
+}
+
 export function bottomRightPosition(workArea: DisplayWorkArea, width: number, height: number, margin: number): WindowPosition {
   const fitted = clampToWorkArea({
     x: workArea.x + workArea.width - width - margin,
