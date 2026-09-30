@@ -4,6 +4,41 @@ import { gfm } from "turndown-plugin-gfm";
 
 let service: TurndownService | undefined;
 
+// Turndown collapses ordinary text-node whitespace before custom rules run. Protect only leading
+// whitespace in recognised CodeMirror line elements so the code-viewer rule can restore it.
+const CODE_INDENT_SPACE = "\uE000";
+const CODE_INDENT_TAB = "\uE001";
+
+function protectCodeViewerIndentation(html: string): string {
+  return html.replace(
+    /(<[A-Za-z][^>]*\bclass=(?:"[^"]*cm-line[^"]*"|'[^']*cm-line[^']*'|[^\s>]*cm-line[^\s>][^>]*)[^>]*>)([ \t]+)/g,
+    (_match, opening: string, indentation: string) =>
+      `${opening}${indentation
+        .replaceAll(" ", CODE_INDENT_SPACE)
+        .replaceAll("\t", CODE_INDENT_TAB)}`,
+  );
+}
+
+function restoreCodeViewerWhitespace(text: string): string {
+  return text.replaceAll(CODE_INDENT_SPACE, " ").replaceAll(CODE_INDENT_TAB, "\t");
+}
+
+function codeViewerLines(node: HTMLElement): HTMLElement[] {
+  const matchesLine = (child: Element) =>
+    child.classList.contains("cm-line") ||
+    child.getAttribute("class")?.includes("cm-line") === true;
+  if (node.classList.contains("cm-content")) {
+    return Array.from(node.querySelectorAll<HTMLElement>(".cm-line, [class*='cm-line']"));
+  }
+  const direct = Array.from(node.children).filter(matchesLine) as HTMLElement[];
+  return direct.length >= 2 ? direct : [];
+}
+
+function fenceFor(text: string): string {
+  const longestBacktickRun = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
+  return "`".repeat(Math.max(3, longestBacktickRun + 1));
+}
+
 function build(): TurndownService {
   const td = new TurndownService({
     headingStyle: "atx",
@@ -13,6 +48,25 @@ function build(): TurndownService {
     emDelimiter: "*",
   });
   td.use(gfm);
+
+  // Some code viewers (notably CodeMirror) render one block element per source line instead of a
+  // <pre><code>. Join only recognised line children, before Turndown can turn them into paragraphs.
+  td.addRule("lineElementCodeViewer", {
+    filter: (node) => {
+      if (node.nodeType !== 1) return false;
+      const el = node as HTMLElement;
+      if (codeViewerLines(el).length === 0) return false;
+      const parent = el.parentElement;
+      return parent === null || codeViewerLines(parent).length === 0;
+    },
+    replacement: (_content, node) => {
+      const text = codeViewerLines(node as HTMLElement)
+        .map((line) => restoreCodeViewerWhitespace(line.textContent ?? ""))
+        .join("\n");
+      const fence = fenceFor(text);
+      return `\n\n${fence}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}\n\n`;
+    },
+  });
 
   // KaTeX: prefer the TeX source stored in <annotation encoding="application/x-tex">
   td.addRule("katex", {
@@ -50,8 +104,10 @@ function build(): TurndownService {
           .trim();
         if (header && header.length <= 30 && !/\s/.test(header)) lang = header.toLowerCase();
       }
-      const fence = text.includes("```") ? "````" : "```";
-      return `\n\n${fence}${lang}\n${text.replace(/\n$/, "")}\n${fence}\n\n`;
+      // `textContent` is deliberately used without Turndown's normal escaping or paragraph
+      // handling: code is data, including its leading spaces and newlines.
+      const fence = fenceFor(text);
+      return `\n\n${fence}${lang}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}\n\n`;
     },
   });
   return td;
@@ -60,5 +116,5 @@ function build(): TurndownService {
 /** DOM (HTML string) -> Markdown. Throws on conversion failure so callers can degrade. */
 export function htmlToMarkdown(html: string): string {
   service ??= build();
-  return service.turndown(html).trim();
+  return restoreCodeViewerWhitespace(service.turndown(protectCodeViewerIndentation(html)).trim());
 }

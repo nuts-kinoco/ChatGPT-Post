@@ -12,7 +12,12 @@ import type {
 } from "../contracts/types.js";
 import { COPY_CAPTURE_GLOBAL } from "../extraction/copy-capture.js";
 import { htmlToMarkdown } from "../extraction/markdown.js";
-import { verifyCandidate } from "../extraction/verify.js";
+import {
+  verifyCandidate,
+  verifyCompleteness,
+  verifyStructure,
+  verifyWhitespaceStructure,
+} from "../extraction/verify.js";
 import type { NewChatFailure } from "../state/machine.js";
 import type {
   AuthObservation,
@@ -24,6 +29,7 @@ import type {
   RouteDriftTelemetry,
 } from "../state/ports.js";
 import type { Observation } from "./completion.js";
+import { normalisePrompt, userTurnMatchesPrompt } from "./prompt-match.js";
 import {
   all,
   build,
@@ -127,9 +133,7 @@ function sha1(text: string): string {
  * normalisation (via NFKC), and trimming only the string's own leading/trailing whitespace; all
  * other internal whitespace — including indentation — is preserved and compared literally.
  */
-export function normalisePrompt(text: string): string {
-  return text.normalize("NFKC").replace(/\r\n?/g, "\n").trim();
-}
+export { normalisePrompt } from "./prompt-match.js";
 
 /**
  * ChatGPT's ProseMirror composer turns each newline inserted through Playwright's contenteditable
@@ -290,7 +294,6 @@ export class ChatGptPage implements ChatGptPort {
     prompt: string,
     attachmentNames: string[],
   ): Promise<{ kind: "match" } | { kind: "mismatch"; cause: string }> {
-    const expected = normalisePrompt(prompt);
     const observed = await this.page
       .evaluate(() => {
         const turns: Array<{ role: string; text: string }> = [];
@@ -318,13 +321,15 @@ export class ChatGptPage implements ChatGptPort {
     if (observed === null)
       return { kind: "mismatch", cause: "candidate reply has no preceding readable user turn" };
     const actual = normalisePrompt(observed);
+    const promptMatches = userTurnMatchesPrompt(observed, prompt);
     if (attachmentNames.length === 0)
-      return actual === expected
+      return promptMatches
         ? { kind: "match" }
         : { kind: "mismatch", cause: "preceding user turn does not match submitted prompt" };
     const names = attachmentNames.map((name) => normalisePrompt(name));
     const hasAllNames = names.every((name) => actual.includes(name));
-    return actual === expected || (actual.startsWith(expected) && hasAllNames)
+    return promptMatches ||
+      (userTurnMatchesPrompt(observed, prompt, { allowTrailingText: true }) && hasAllNames)
       ? { kind: "match" }
       : {
           kind: "mismatch",
@@ -484,26 +489,37 @@ export class ChatGptPage implements ChatGptPort {
     }
     const deadline = Date.now() + (this.opts.newChatTimeoutMs ?? 30_000);
     while (Date.now() < deadline) {
+      const now = new URL(this.page.url());
+      // A redirect is the actual absence signal. Check it independently of composer rendering so
+      // a redirected page without a composer cannot be misreported as a transient history delay.
+      if (now.origin !== CHATGPT_ORIGIN || now.pathname !== target.pathname)
+        return { kind: "failed", cause: "conversation_not_found" };
       const composer = await probe(this.page, "composer", this.sel);
       if (composer.found && composer.locator) {
-        await this.page.waitForTimeout(1000); // history renders after the composer
-        const now = new URL(this.page.url());
-        // Codex P6-1: a redirect to another origin with a composer must never receive the prompt
-        if (now.origin !== CHATGPT_ORIGIN || now.pathname !== target.pathname) {
-          return { kind: "failed", cause: "conversation_not_found" };
+        const [assistantTurns, userTurns] = await Promise.all([
+          countMatches(this.page, "assistantTurn", this.sel),
+          countMatches(this.page, "userTurn", this.sel),
+        ]);
+        if (assistantTurns > 0) {
+          if (!allowGenerating && (await exists(this.page, "stopButton", this.sel)))
+            return { kind: "failed", cause: "generating" };
+          const text = (await composer.locator.innerText().catch(() => "")).trim();
+          if (text.length > 0 && !allowDraft)
+            return { kind: "failed", cause: "composer_not_empty" };
+          return { kind: "ok", draftPresent: text.length > 0 };
         }
-        if ((await countMatches(this.page, "assistantTurn", this.sel)) === 0) {
-          return { kind: "failed", cause: "conversation_not_found" };
-        }
-        if (!allowGenerating && (await exists(this.page, "stopButton", this.sel)))
-          return { kind: "failed", cause: "generating" };
-        const text = (await composer.locator.innerText().catch(() => "")).trim();
-        if (text.length > 0 && !allowDraft) return { kind: "failed", cause: "composer_not_empty" };
-        return { kind: "ok", draftPresent: text.length > 0 };
+        // A matching route plus a composer proves neither absence nor ownership. Keep polling
+        // because ChatGPT can render the composer well before its history (including while a
+        // long conversation is generating). `userTurns` is read deliberately so both turn kinds
+        // are sampled during the bounded history-render window.
+        void userTurns;
       }
       await this.page.waitForTimeout(this.opts.pollIntervalMs ?? 250);
     }
-    return { kind: "retry", cause: "composer did not appear in the conversation" };
+    const now = new URL(this.page.url());
+    if (now.origin === CHATGPT_ORIGIN && now.pathname === target.pathname)
+      return { kind: "retry", cause: "history_not_rendered" };
+    return { kind: "failed", cause: "conversation_not_found" };
   }
 
   /**
@@ -1167,8 +1183,8 @@ export class ChatGptPage implements ChatGptPort {
     // not acceptance evidence: require precisely one new turn and that its text is this prompt.
     if (count !== baseline.userTurnCount + 1) return false;
     const turn = await latest(this.page, "userTurn", this.sel);
-    const text = turn ? normalisePrompt(await turn.innerText().catch(() => "")) : "";
-    return text === expected;
+    const text = turn ? await turn.innerText().catch(() => "") : "";
+    return userTurnMatchesPrompt(text, expected);
   }
 
   /**
@@ -1604,18 +1620,61 @@ export class ChatGptPage implements ChatGptPort {
       // No Markdown body: an image-only turn (A-091) carries only UI captions ("編集"). Text is
       // empty but the turn is not, provided a large image is present; images are captured later.
       const imgCount = await countMatches(turn, "turnImage", this.sel);
-      if (imgCount > 0) return { markdown: "", method: "dom", quality: "full", modelSlug };
+      if (imgCount > 0)
+        return { markdown: "", method: "dom", quality: "full", warnings: [], modelSlug };
       const raw = (await turn.innerText().catch(() => "")).trim();
       if (raw.length === 0) return { kind: "empty", cause: "empty" };
-      return { markdown: raw, method: "innerText", quality: "degraded", modelSlug };
+      return { markdown: raw, method: "innerText", quality: "degraded", warnings: [], modelSlug };
     }
     const body = bodyProbe.locator;
     const innerText = await body.innerText().catch(() => "");
     if (innerText.trim().length === 0) {
       const imgCount = await countMatches(turn, "turnImage", this.sel);
-      if (imgCount > 0) return { markdown: "", method: "dom", quality: "full", modelSlug };
+      if (imgCount > 0)
+        return { markdown: "", method: "dom", quality: "full", warnings: [], modelSlug };
       return { kind: "empty", cause: "empty" };
     }
+
+    const html = await body.innerHTML().catch(() => "");
+    const integrity = (markdown: string) => {
+      const warnings: string[] = [];
+      if (html) {
+        const structure = verifyStructure(markdown, html);
+        if (!structure.ok) warnings.push(`extraction_structure_degraded: ${structure.reason}`);
+      }
+      const whitespace = verifyWhitespaceStructure(markdown, innerText);
+      if (!whitespace.ok) warnings.push(`extraction_structure_degraded: ${whitespace.reason}`);
+      const completeness = verifyCompleteness(markdown);
+      if (!completeness.ok) warnings.push(`extraction_possibly_truncated: ${completeness.reason}`);
+      return {
+        warnings,
+        quality: warnings.length === 0 ? ("full" as const) : ("degraded" as const),
+      };
+    };
+    const structuralFallback: {
+      candidate: { markdown: string; method: "copy" | "dom"; reason: string } | null;
+    } = { candidate: null };
+    const acceptCandidate = (markdown: string, method: "copy" | "dom"): Extraction | null => {
+      const coverage = verifyCandidate(markdown, innerText);
+      if (!coverage.ok) {
+        this.opts.log?.(`${method} conversion rejected: ${coverage.reason}`);
+        return null;
+      }
+      const checked = integrity(markdown);
+      const structureWarning = checked.warnings.find((warning) =>
+        warning.startsWith("extraction_structure_degraded:"),
+      );
+      if (structureWarning) {
+        structuralFallback.candidate = {
+          markdown,
+          method,
+          reason: structureWarning.replace(/^extraction_structure_degraded:\s*/, ""),
+        };
+        this.opts.log?.(`${method} conversion structure degraded: ${structureWarning}`);
+        return null;
+      }
+      return { markdown, method, quality: checked.quality, warnings: checked.warnings, modelSlug };
+    };
 
     // 1. copy capture (page-side shim; no system clipboard)
     try {
@@ -1636,9 +1695,8 @@ export class ChatGptPage implements ChatGptPort {
           COPY_CAPTURE_GLOBAL,
         );
         if (typeof captured === "string" && captured.trim().length > 0) {
-          const v = verifyCandidate(captured, innerText);
-          if (v.ok) return { markdown: captured, method: "copy", quality: "full", modelSlug };
-          this.opts.log?.(`copy capture rejected: ${v.reason}`);
+          const accepted = acceptCandidate(captured, "copy");
+          if (accepted) return accepted;
         }
       }
     } catch (err) {
@@ -1647,17 +1705,69 @@ export class ChatGptPage implements ChatGptPort {
 
     // 2. DOM -> Markdown
     try {
-      const html = await body.innerHTML();
+      if (!html) throw new Error("assistant body HTML is empty");
       const md = htmlToMarkdown(html);
-      const v = verifyCandidate(md, innerText);
-      if (v.ok) return { markdown: md, method: "dom", quality: "full", modelSlug };
-      this.opts.log?.(`dom conversion rejected: ${v.reason}`);
+      const accepted = acceptCandidate(md, "dom");
+      if (accepted) return accepted;
     } catch (err) {
       this.opts.log?.(`dom conversion failed: ${(err as Error).message}`);
     }
 
-    // 3. innerText
-    return { markdown: innerText, method: "innerText", quality: "degraded", modelSlug };
+    // 3. DOM-independent fallback. `innerText` retains code-viewer line boundaries even when a
+    // converter sees only line elements. It remains degraded because labels such as "Python" or
+    // "Copy" can be present, but must be preferred over a structurally lossy Markdown candidate.
+    const innerStructure = verifyWhitespaceStructure(innerText, innerText);
+    const completeness = verifyCompleteness(innerText);
+    const degraded = structuralFallback.candidate;
+    if (degraded && !innerStructure.ok) {
+      const checked = integrity(degraded.markdown);
+      return {
+        markdown: degraded.markdown,
+        method: degraded.method,
+        quality: "degraded",
+        warnings: [
+          ...checked.warnings,
+          `extraction_structure_degraded: innerText fallback also failed: ${innerStructure.reason}`,
+        ],
+        modelSlug,
+      };
+    }
+    const fallbackReason = degraded
+      ? `${degraded.reason}; innerText used instead`
+      : "DOM conversion was unavailable or failed coverage; innerText used instead";
+    return {
+      markdown: innerText,
+      method: "innerText",
+      quality: "degraded",
+      warnings: [
+        `extraction_structure_degraded: ${fallbackReason}`,
+        ...(completeness.ok ? [] : [`extraction_possibly_truncated: ${completeness.reason}`]),
+      ],
+      modelSlug,
+    };
+  }
+
+  /** Best-effort bounded DOM evidence for degraded extraction diagnostics. */
+  async captureLatestAssistantBody(
+    artifactsDir: string,
+  ): Promise<{ path: string; warning?: string }> {
+    const turn = await latest(this.page, "assistantTurn", this.sel);
+    if (!turn) throw new Error("latest assistant turn is unavailable");
+    const bodyProbe = await probe(turn, "assistantTurnBody", this.sel);
+    if (!bodyProbe.found || !bodyProbe.locator) throw new Error("assistant body is unavailable");
+    const outerHtml = await bodyProbe.locator.evaluate((element) => element.outerHTML);
+    const limit = 400 * 1024;
+    let bounded = outerHtml;
+    let warning: string | undefined;
+    if (Buffer.byteLength(bounded, "utf8") > limit) {
+      bounded = Buffer.from(bounded, "utf8").subarray(0, limit).toString("utf8");
+      while (Buffer.byteLength(bounded, "utf8") > limit) bounded = bounded.slice(0, -1);
+      warning = `assistant_body_capture_truncated: limited to ${limit} bytes`;
+    }
+    await mkdir(artifactsDir, { recursive: true });
+    const path = join(artifactsDir, "assistant-body.html");
+    await writeFile(path, bounded, "utf8");
+    return warning ? { path, warning } : { path };
   }
 
   /**

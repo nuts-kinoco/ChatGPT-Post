@@ -22,6 +22,10 @@ import {
 } from "../../src/chatgpt/selectors.js";
 import { REPO_ROOT } from "../../src/contracts/schema.js";
 import { htmlToMarkdown } from "../../src/extraction/markdown.js";
+import {
+  collapsedLongJapaneseUserTurn,
+  longJapanesePrompt,
+} from "../fixtures/collapsed-long-japanese-user-turn.js";
 
 let browser: Browser | null = null;
 let page: Page;
@@ -375,6 +379,28 @@ describe("ChatGptPage recovery ownership fixtures (A-154)", () => {
     }
   });
 
+  it("accepts the collapsed long user turn immediately before the recovered reply", async ({
+    skip,
+  }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const recovery = await browser.newPage();
+    try {
+      await recovery.setContent(`
+        <div data-message-author-role="user">${collapsedLongJapaneseUserTurn}</div>
+        <div data-message-author-role="assistant">candidate reply</div>
+      `);
+      const chatgpt = new ChatGptPage(recovery, { verifiedOnly: true });
+      await expect(chatgpt.verifyLatestReplyOwnership(longJapanesePrompt, [])).resolves.toEqual({
+        kind: "match",
+      });
+    } finally {
+      await recovery.close();
+    }
+  });
+
   it("opens collect with a saved draft without altering its text", async ({ skip }) => {
     if (!browser) {
       skip();
@@ -400,6 +426,66 @@ describe("ChatGptPage recovery ownership fixtures (A-154)", () => {
       await expect(recovery.locator("#prompt-textarea").innerText()).resolves.toBe(
         "human saved draft",
       );
+    } finally {
+      await recovery.close();
+    }
+  });
+
+  it("waits for delayed history instead of calling a matching conversation not found", async ({
+    skip,
+  }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const recovery = await browser.newPage();
+    const url = "https://chatgpt.com/c/delayed-history";
+    try {
+      await recovery.route(url, (route) =>
+        route.fulfill({
+          contentType: "text/html",
+          body: `<div id="prompt-textarea" contenteditable="true"></div><script>setTimeout(() => document.body.insertAdjacentHTML('beforeend', '<section data-turn="user">prompt</section><section data-turn="assistant">reply</section>'), 25)</script>`,
+        }),
+      );
+      const chatgpt = new ChatGptPage(recovery, {
+        verifiedOnly: true,
+        newChatTimeoutMs: 500,
+        pollIntervalMs: 5,
+      });
+      await expect(chatgpt.openConversationForCollect(url)).resolves.toEqual({
+        kind: "ok",
+        draftPresent: false,
+      });
+    } finally {
+      await recovery.close();
+    }
+  });
+
+  it("returns history_not_rendered, not conversation_not_found, when the route has no turns", async ({
+    skip,
+  }) => {
+    if (!browser) {
+      skip();
+      return;
+    }
+    const recovery = await browser.newPage();
+    const url = "https://chatgpt.com/c/no-rendered-history";
+    try {
+      await recovery.route(url, (route) =>
+        route.fulfill({
+          contentType: "text/html",
+          body: '<div id="prompt-textarea" contenteditable="true"></div>',
+        }),
+      );
+      const chatgpt = new ChatGptPage(recovery, {
+        verifiedOnly: true,
+        newChatTimeoutMs: 40,
+        pollIntervalMs: 5,
+      });
+      await expect(chatgpt.openConversationForCollect(url)).resolves.toEqual({
+        kind: "retry",
+        cause: "history_not_rendered",
+      });
     } finally {
       await recovery.close();
     }

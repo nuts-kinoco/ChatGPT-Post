@@ -113,6 +113,7 @@ export type Effect =
   | { kind: "STOP_OBSERVATION_LOOP" }
   | { kind: "EXTRACT_LATEST" }
   | { kind: "WRITE_RESPONSE_MD" }
+  | { kind: "CAPTURE_ASSISTANT_BODY" }
   | { kind: "SEAL_TRACE" }
   | { kind: "STOP_TRACE"; mode: "failure" | "success" | "best-effort" }
   | { kind: "CAPTURE"; bestEffort: boolean }
@@ -128,6 +129,7 @@ export type EffectKind = Effect["kind"];
 /** Effects that never produce an event; failures go to result.json.warnings[] (11 §1). */
 export const BEST_EFFORT_EFFECTS: ReadonlySet<EffectKind> = new Set<EffectKind>([
   "CAPTURE",
+  "CAPTURE_ASSISTANT_BODY",
   "SEAL_TRACE",
   "STOP_TRACE",
   "INSPECT_UI_REPORT",
@@ -632,6 +634,7 @@ export function transition(s: MachineState, ev: Event): Transition {
         case "EXTRACTED":
           return move(s, "WRITING_RESULT", [
             { kind: "WRITE_RESPONSE_MD" },
+            { kind: "CAPTURE_ASSISTANT_BODY" },
             { kind: "WRITE_RESULT" },
           ]);
         case "EXTRACTION_EMPTY":

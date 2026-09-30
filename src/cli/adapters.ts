@@ -324,6 +324,7 @@ export function chatgptPort(
     verifyLatestReplyOwnership: (prompt, attachmentNames) =>
       get().verifyLatestReplyOwnership(prompt, attachmentNames),
     extractLatest: () => get().extractLatest(),
+    captureLatestAssistantBody: (dir) => get().captureLatestAssistantBody(dir),
     inspectUiReport: (dir, o) => get().inspectUiReport(dir, o),
     restoreEffort: () => get().restoreEffort(),
     captureImages: (dir, signal) => get().captureImages(dir, signal),

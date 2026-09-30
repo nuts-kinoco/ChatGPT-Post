@@ -122,7 +122,11 @@ describe("state machine (11-STATE-MACHINE)", () => {
 
   it("success path writes the terminal result before trace finalization", () => {
     const t = transition(at("EXTRACTING"), { type: "EXTRACTED" });
-    expect(t.effects.map((e) => e.kind)).toEqual(["WRITE_RESPONSE_MD", "WRITE_RESULT"]);
+    expect(t.effects.map((e) => e.kind)).toEqual([
+      "WRITE_RESPONSE_MD",
+      "CAPTURE_ASSISTANT_BODY",
+      "WRITE_RESULT",
+    ]);
   });
 
   it("DISPATCH_SUBMIT only appears on PROMPT_ENTERED --MARKER_WRITTEN--> PROMPT_SUBMITTING", () => {

@@ -106,6 +106,19 @@ describe("collectLatestReply (A-153)", () => {
     });
   });
 
+  it("reports an inconclusive, retryable history-render delay with an inspectable URL", async () => {
+    const f = portsFor(observation(5));
+    f.ports.chatgpt.openConversationForCollect = async () => ({
+      kind: "retry" as const,
+      cause: "history_not_rendered",
+    });
+    await expect(collectLatestReply(identity, f.ports)).resolves.toMatchObject({
+      ok: false,
+      code: "COLLECT_HISTORY_NOT_RENDERED",
+      message: expect.stringContaining(identity.conversationUrl),
+    });
+  });
+
   it("fails closed when more than one reply could belong to the submit", async () => {
     const f = portsFor(observation(6));
     await expect(collectLatestReply(identity, f.ports)).resolves.toMatchObject({

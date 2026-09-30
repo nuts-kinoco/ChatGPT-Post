@@ -143,6 +143,8 @@ export interface Extraction {
   markdown: string;
   method: ExtractionMethod;
   quality: ExtractionQuality;
+  /** Non-fatal extraction-integrity concerns that must reach result.json. */
+  warnings?: string[];
   /** data-message-model-slug of the extracted turn, if present. */
   modelSlug: string | null;
 }
@@ -255,6 +257,8 @@ export interface ChatGptPort {
     attachmentNames: string[],
   ): Promise<{ kind: "match" } | { kind: "mismatch"; cause: string }>;
   extractLatest(): Promise<Extraction | { kind: "empty"; cause: "empty" | "canvas" }>;
+  /** Saves a bounded outerHTML diagnostic for a degraded extraction. Best-effort at the controller. */
+  captureLatestAssistantBody(artifactsDir: string): Promise<{ path: string; warning?: string }>;
   /**
    * A-091: saves images rendered in the latest assistant turn (generated images) into `dir`.
    * Best-effort: in-page fetch of the same img.src first (A-069 / A-092); viewer download opt-in.

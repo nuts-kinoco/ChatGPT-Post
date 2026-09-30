@@ -112,6 +112,10 @@ function fake(
       quality: "full",
       modelSlug: "gpt-5-6",
     }),
+    captureLatestAssistantBody: async (dir) => {
+      calls.push("captureLatestAssistantBody");
+      return { path: `${dir}/assistant-body.html` };
+    },
     inspectUiReport: async (dir) => `${dir}/inspect-ui.json`,
     restoreEffort: async () => {
       calls.push("restoreEffort");
@@ -416,6 +420,43 @@ describe("RunController", () => {
     expect(f.calls).toContain("sealTrace"); // sealed before the long response wait
     expect(f.calls).toContain("finalizeTrace:false"); // trace on success disabled
     expect(f.calls.indexOf("sealTrace")).toBeLessThan(f.calls.indexOf("observe"));
+  });
+
+  it("copies extraction-integrity warnings into result.json", async () => {
+    const f = fake({
+      extractLatest: async () => ({
+        markdown: "partial answer",
+        method: "dom",
+        quality: "degraded",
+        warnings: ["extraction_structure_degraded: code block 1 leading indentation changed"],
+        modelSlug: "gpt-5-6",
+      }),
+    });
+    const out = await run(f);
+    expect(out.result?.extractionQuality).toBe("degraded");
+    expect(out.result?.warnings).toContain(
+      "extraction_structure_degraded: code block 1 leading indentation changed",
+    );
+    expect(out.result?.artifacts).toContain("/art/req-00000001/assistant-body.html");
+    expect(f.calls).toContain("captureLatestAssistantBody");
+  });
+
+  it("keeps result.json when degraded assistant-body evidence cannot be captured", async () => {
+    const f = fake({
+      extractLatest: async () => ({
+        markdown: "partial answer",
+        method: "innerText",
+        quality: "degraded",
+        warnings: ["extraction_possibly_truncated: unclosed code fence at end"],
+        modelSlug: "gpt-5-6",
+      }),
+      captureLatestAssistantBody: async () => {
+        throw new Error("body detached");
+      },
+    });
+    const out = await run(f);
+    expect(out.result?.warnings).toContain("assistant_body_capture_failed: body detached");
+    expect(out.result?.artifacts).not.toContain("/art/req-00000001/assistant-body.html");
   });
 
   it("A-144: a direct Project URL keeps A-106 routing and reports its handshake", async () => {

@@ -86,6 +86,7 @@ function harness(): Harness {
       quality: "full",
       modelSlug: "gpt-5-6-thinking",
     }),
+    captureLatestAssistantBody: async (dir) => ({ path: `${dir}/assistant-body.html` }),
     inspectUiReport: async (d) => `${d}/inspect-ui.json`,
     restoreEffort: async () => ({ kind: "unchanged" }),
     captureImages: async () => ({ saved: [], warnings: [] }),

@@ -32,6 +32,7 @@ export type CollectFailureCode =
   | "COLLECT_LOCK_BUSY"
   | "COLLECT_BROWSER_UNAVAILABLE"
   | "COLLECT_CONVERSATION_UNAVAILABLE"
+  | "COLLECT_HISTORY_NOT_RENDERED"
   | "COLLECT_CONVERSATION_MISMATCH"
   | "COLLECT_REPLY_ABSENT"
   | "COLLECT_REPLY_AMBIGUOUS"
@@ -119,8 +120,16 @@ export async function collectLatestReply(
     if (opened.kind !== "ok")
       return {
         ok: false,
-        code: "COLLECT_CONVERSATION_UNAVAILABLE",
-        message: "cause" in opened ? opened.cause : opened.kind,
+        code:
+          opened.kind === "retry" && opened.cause === "history_not_rendered"
+            ? "COLLECT_HISTORY_NOT_RENDERED"
+            : "COLLECT_CONVERSATION_UNAVAILABLE",
+        message:
+          opened.kind === "retry" && opened.cause === "history_not_rendered"
+            ? `conversation history has not rendered yet; open ${target} to confirm the conversation, then retry collect`
+            : "cause" in opened
+              ? opened.cause
+              : opened.kind,
       };
     const actual = sanitiseConversationUrl(await ports.chatgpt.currentUrl());
     if (actual !== target)

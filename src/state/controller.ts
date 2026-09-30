@@ -182,6 +182,7 @@ export class RunController {
     markdown: string;
     method: BridgeResult["extractionMethod"];
     quality: BridgeResult["extractionQuality"];
+    warnings: string[];
   } | null = null;
   private readonly artifacts: string[] = [];
   private readonly images: string[] = [];
@@ -620,7 +621,14 @@ export class RunController {
       case "EXTRACT_LATEST": {
         const x = await chatgpt.extractLatest();
         if ("kind" in x) return { type: "EXTRACTION_EMPTY", cause: x.cause };
-        this.extraction = { markdown: x.markdown, method: x.method, quality: x.quality };
+        const extractionWarnings = x.warnings ?? [];
+        this.extraction = {
+          markdown: x.markdown,
+          method: x.method,
+          quality: x.quality,
+          warnings: extractionWarnings,
+        };
+        this.warnings.push(...extractionWarnings);
         this.observedModelSlug = x.modelSlug;
         // Post-hoc evidence only (A-067 / 21 §1): a mismatch is a warning, never a failure.
         if (x.modelSlug) {
@@ -681,6 +689,24 @@ export class RunController {
         } catch (err) {
           return { type: "WRITE_FAILED", file: "response", cause: (err as Error).message };
         }
+      }
+      case "CAPTURE_ASSISTANT_BODY": {
+        const needsEvidence = this.warnings.some(
+          (warning) =>
+            warning.startsWith("extraction_structure_degraded:") ||
+            warning.startsWith("extraction_possibly_truncated:"),
+        );
+        if (!this.browserUp || !needsEvidence) return null;
+        try {
+          const captured = await chatgpt.captureLatestAssistantBody(this.artifactsDir);
+          this.artifacts.push(captured.path);
+          if (captured.warning) this.warnings.push(captured.warning);
+        } catch (err) {
+          this.warnings.push(
+            `assistant_body_capture_failed: ${(err as Error).message.slice(0, 200)}`,
+          );
+        }
+        return null;
       }
       case "CAPTURE": {
         if (!this.browserUp) return null;
