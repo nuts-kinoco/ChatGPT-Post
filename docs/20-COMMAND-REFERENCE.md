@@ -381,3 +381,26 @@ in_progress/unknown, including when saved. Lock/browser exit 4 and auth exit 3 a
 Explicit --conversation-url recovery evidence is refused for dot. No browser downloads are used.
 
 Dot automatically appends a unique completion token (`完了: <requestId>`) unless the request sets `completionMarker`. `collect <requestId>` also works after completion without submit.marker; older requests without a recorded marker return `unknown`.
+
+### dot is a shared thread: only attributed replies are collected (A-200)
+
+The dot thread is shared with the PO's manual use. `run` and `collect <requestId>` (with and
+without `--save`) never take "every reply after the own row". A dot row after the own row is
+collected only when its text contains this requestId, or contains the completion marker
+(`completionMarker`, default `完了: <requestId>`) before the next self (PO or other request) row;
+a row naming a different requestId is never collected. Files are retrieved only from chips on
+collected rows. All other rows (replies to the PO's manual messages, untagged continuations,
+attachment-only rows) are excluded from response.md, files/, replyCount, files and the
+complete/in_progress decision, and are reported only as counts:
+`dot_unrelated_rows_excluded: N rows, M files`. The subset that sits after this request's first
+collected row and before the next self row (possibly this request's untagged continuation or
+attachment) is additionally counted as `dot_untagged_rows_after_own_reply: N rows, M files`;
+check those manually in the thread. No excluded text or file name is ever written.
+
+The automatic instructions appended to every dot prompt are now, in order:
+「この依頼への返信はすべて、先頭の行に「requestId: <requestId>」と書いてください（添付を付ける返信にも）。」
+(omitted when prompt.md already contains `先頭の行に「requestId: <requestId>」`) and the existing
+final-line completion-token instruction (omitted when the prompt already contains the marker).
+A generic custom completionMarker (for example 以上で完了) only counts before the next self row;
+prefer the default unique token. If only unrelated replies exist, replyCount is 0 and the state
+is never complete. Live behaviour of this filter is not yet verified.

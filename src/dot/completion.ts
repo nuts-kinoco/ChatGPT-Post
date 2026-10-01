@@ -37,16 +37,25 @@ export function dotMarkerSeen(text: string, marker: string): boolean {
     ? text.split(/\r?\n/).some((line) => line === marker)
     : text.includes(marker);
 }
+/** Every reply must carry the requestId so the shared thread can be filtered (A-200). */
+export function dotReplyTagInstruction(requestId: string): string {
+  return `この依頼への返信はすべて、先頭の行に「requestId: ${requestId}」と書いてください（添付を付ける返信にも）。`;
+}
 export function dotPrompt(
   requestId: string,
   prompt: string,
   marker = dotCompletionToken(requestId),
 ): string {
   const normalized = prompt.replace(/\r\n?/g, "\n");
-  const instruction = normalized.includes(marker)
-    ? ""
-    : `\n\nすべての作業が完了した時点でのみ、FINAL返信の最終行に「${marker}」をそのまま書いてください。完了前には書かないでください。`;
-  return `${dotPrefix(requestId)}\n\n${normalized}${instruction}`;
+  const instructions: string[] = [];
+  if (!normalized.includes(`先頭の行に「requestId: ${requestId}」`))
+    instructions.push(dotReplyTagInstruction(requestId));
+  if (!normalized.includes(marker))
+    instructions.push(
+      `すべての作業が完了した時点でのみ、FINAL返信の最終行に「${marker}」をそのまま書いてください。完了前には書かないでください。`,
+    );
+  const suffix = instructions.length ? `\n\n${instructions.join("\n")}` : "";
+  return `${dotPrefix(requestId)}\n\n${normalized}${suffix}`;
 }
 export function dotWarnings(request: BridgeRequest): string[] {
   return ["newChat", "preset", "model", "project", "conversationUrl"]
@@ -73,27 +82,115 @@ export interface DotProgress {
   noTypingSince: number | null;
   conflictSince: number | null;
 }
+export interface DotReplySelection {
+  /** Rows attributed to this request, in thread order; only these are read or downloaded. */
+  replies: DotRow[];
+  /** Non-self rows after the own row that were not attributed; counts only, never content. */
+  excludedRows: number;
+  excludedFiles: number;
+  /**
+   * Subset of the excluded rows: untagged rows inside the own block after the first attributed
+   * row (continuations or attachment-only rows that may belong to this request). Still excluded.
+   */
+  untaggedRows: number;
+  untaggedFiles: number;
+}
+const OTHER_REQUEST_ID =
+  /\b\d{8}T\d{6}Z-[A-Za-z0-9]{8}\b|requestId[:：]\s*([A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9])/g;
+function mentionsOtherRequest(text: string, requestId: string): boolean {
+  for (const match of text.matchAll(OTHER_REQUEST_ID)) {
+    const found = match[1] ?? match[0];
+    // Our own id may contain a timestamp-shaped part, or be followed by ASCII text.
+    if (!requestId.includes(found) && !found.startsWith(requestId)) return true;
+  }
+  return false;
+}
+/**
+ * The dot thread is shared with the PO, so "every row after the own row" leaks unrelated
+ * replies and attachments (A-200). A non-self row after the own row is attributed only when:
+ * - it contains this requestId (anywhere after the own row), or
+ * - it contains the completion marker and lies in the own block (before the next self row),
+ *   because a custom marker may be a generic phrase;
+ * and it never names another requestId. Files come only from attributed rows. Everything else,
+ * including untagged continuations, is excluded and reported as counts only.
+ */
+export function selectDotReplies(
+  rows: readonly DotRow[],
+  ownIndex: number,
+  requestId: string,
+  marker?: string,
+): DotReplySelection {
+  const after = rows.slice(ownIndex + 1);
+  const nextSelf = after.findIndex((row) => row.self);
+  const blockEnd = nextSelf === -1 ? after.length : nextSelf;
+  const selection: DotReplySelection = {
+    replies: [],
+    excludedRows: 0,
+    excludedFiles: 0,
+    untaggedRows: 0,
+    untaggedFiles: 0,
+  };
+  let attributedInBlock = false;
+  for (const [index, row] of after.entries()) {
+    if (row.self) continue;
+    const foreign = mentionsOtherRequest(row.text, requestId);
+    const inBlock = index < blockEnd;
+    const attributed =
+      !foreign &&
+      (row.text.includes(requestId) ||
+        (inBlock && marker !== undefined && dotMarkerSeen(row.text, marker)));
+    if (attributed) {
+      selection.replies.push(row);
+      if (inBlock) attributedInBlock = true;
+      continue;
+    }
+    selection.excludedRows++;
+    selection.excludedFiles += row.files.length;
+    if (inBlock && attributedInBlock && !foreign) {
+      selection.untaggedRows++;
+      selection.untaggedFiles += row.files.length;
+    }
+  }
+  return selection;
+}
+export function dotSelectionWarnings(selection: DotReplySelection): string[] {
+  const warnings: string[] = [];
+  if (selection.excludedRows)
+    warnings.push(
+      `dot_unrelated_rows_excluded: ${selection.excludedRows} rows, ${selection.excludedFiles} files`,
+    );
+  if (selection.untaggedRows)
+    warnings.push(
+      `dot_untagged_rows_after_own_reply: ${selection.untaggedRows} rows, ${selection.untaggedFiles} files`,
+    );
+  return warnings;
+}
 export interface DotDecision {
   progress: DotProgress;
   done: boolean;
   ownRow: DotRow | null;
   replies: DotRow[];
+  selection: DotReplySelection;
   conflict: boolean;
   conflictPersistent: boolean;
 }
 /** Uses monotonic timestamps; quiet time begins at the first snapshot, never at submission. */
 export function decideDotCompletion(
   snapshot: DotSnapshot,
-  prefix: string,
+  requestId: string,
   now: number,
   previous?: DotProgress,
   marker?: string,
   quietMs = DOT_QUIET_MS,
 ): DotDecision {
+  const prefix = dotPrefix(requestId);
   const matches = snapshot.rows.filter((row) => row.self && row.text.startsWith(prefix));
   const ownRow = matches.length === 1 ? (matches[0] ?? null) : null;
   const after = ownRow ? snapshot.rows.slice(snapshot.rows.indexOf(ownRow) + 1) : [];
-  const replies = after.filter((row) => !row.self);
+  const selection = ownRow
+    ? selectDotReplies(snapshot.rows, snapshot.rows.indexOf(ownRow), requestId, marker)
+    : { replies: [], excludedRows: 0, excludedFiles: 0, untaggedRows: 0, untaggedFiles: 0 };
+  const replies = selection.replies;
   const conflict = matches.length > 1 || after.some((row) => row.self);
   const fingerprint = JSON.stringify(snapshot.rows);
   const progress: DotProgress = {
@@ -117,7 +214,7 @@ export function decideDotCompletion(
   );
   const conflictPersistent =
     progress.conflictSince !== null && now - progress.conflictSince >= DOT_CONFLICT_MS;
-  return { progress, done, ownRow, replies, conflict, conflictPersistent };
+  return { progress, done, ownRow, replies, selection, conflict, conflictPersistent };
 }
 
 export function sanitizeDotFilename(name: string): string {

@@ -9,12 +9,14 @@ import {
   DOT_ACCEPTANCE_MS,
   DOT_POLL_MS,
   type DotProgress,
+  type DotReplySelection,
   type DotRow,
   decideDotCompletion,
   dotCompletionToken,
   dotMarkerSeen,
   dotPrefix,
   dotPrompt,
+  dotSelectionWarnings,
   dotWarnings,
 } from "./completion.js";
 import { DotFailure, type DotPage, isDotThread } from "./page.js";
@@ -39,6 +41,7 @@ export class DotController {
   private responseFile: string | null = null;
   private files: NonNullable<BridgeResult["files"]> = [];
   private replies: DotRow[] = [];
+  private selection: DotReplySelection | null = null;
   private terminalPromise: Promise<RunOutcome> | null = null;
   private quality: BridgeResult["extractionQuality"] = null;
   constructor(
@@ -218,7 +221,7 @@ export class DotController {
         const now = this.ports.clock.monotonic();
         const decision = decideDotCompletion(
           snapshot,
-          dotPrefix(this.request.requestId),
+          this.request.requestId,
           now,
           progress,
           this.completionMarker,
@@ -245,6 +248,7 @@ export class DotController {
             "confirmed own row disappeared; inspect thread manually",
           );
         this.replies = decision.replies;
+        this.selection = decision.selection;
         if (!decision.ownRow && now - submittedAt >= DOT_ACCEPTANCE_MS)
           throw new DotFailure(
             "SUBMIT_STATE_UNKNOWN",
@@ -349,6 +353,8 @@ export class DotController {
       writesResult: true,
     };
     this.state.name = this.state.terminal.name;
+    // Only counts of unattributed shared-thread rows are reported, never their content (A-200).
+    if (this.selection) this.warnings.push(...dotSelectionWarnings(this.selection));
     this.result = {
       schemaVersion: "1.3",
       target: "dot",

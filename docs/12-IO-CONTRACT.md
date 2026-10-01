@@ -233,7 +233,8 @@ Sent text is exactly:
 ```
 
 Only dot results use schemaVersion "1.3", with mandatory `target: "dot"`, `replyCount`
-(non-self rows collected after the uniquely identified self row; may be partial on failure), and
+(rows attributed to this request after the uniquely identified self row, see A-200 below; may be
+partial on failure), and
 `files: [{ name, path, bytes }]`. File paths are request-directory-relative `files/<sanitized-name>`;
 names preserve the chip filename; bytes are exact saved bytes. Maximum 10 files, 20 MiB per file,
 30 seconds per file, collision suffixes; failed downloads add `file_download_failed: <name>: <cause>`
@@ -243,8 +244,8 @@ with a blank-line/`---` separator only for multiple rows; chip captions are excl
 
 Completion requires the matching self row, at least one subsequent non-self row, and no typing
 for 3 seconds, plus either a marker in the last non-self body or 25 seconds without row/body changes.
-Polling is 450 ms. A new self row or duplicate requestId stops ownership attribution. Unprompted dot
-rows cannot be distinguished and are included. The request timeout runs from send; timeout preserves
+Polling is 450 ms. A new self row or duplicate requestId stops ownership attribution. Since A-200,
+unprompted or unrelated dot rows are excluded unless they carry this requestId or the marker. The request timeout runs from send; timeout preserves
 the /dots/<uuid> URL and submitted:"yes" when the own row was confirmed. No own row within 15 seconds
 produces SUBMIT_STATE_UNKNOWN/submitted:"unknown". Blocking approval/login/challenge UI stops with
 exit 3. Submit markers include target:"dot", are written before the only send click, and survive
@@ -259,3 +260,22 @@ threadUrl, warnings, and savedFiles (the existing dot file metadata). response.m
 stored beside it only with --save. Status-only collect writes no request artifacts. Original
 result.json/response.md are never overwritten. Marker timeout writes partial response.md/files while result.json responseFile remains null
 and status/error retain the original GENERATION_TIMEOUT failure semantics.
+
+Dot shared-thread attribution (A-200). For both run results and collect, only dot rows that
+contain the requestId (anywhere after the own row) or the completion marker (only before the next
+self row), and that name no other requestId, are attributed; files come only from attributed rows.
+replyCount, files, response.md, files/, markerSeen and state use attributed rows only. Two
+warnings carry counts only (never text, file names or URLs):
+
+- `dot_unrelated_rows_excluded: <N> rows, <M> files` — every non-self row after the own row that
+  was not attributed, and the chips on those rows.
+- `dot_untagged_rows_after_own_reply: <N> rows, <M> files` — the subset inside the own block (before
+  the next self row) after the first attributed row: possibly this request's untagged continuation
+  or attachment; still excluded, check manually.
+
+The appended prompt instructions are: the requestId-first-line instruction
+「この依頼への返信はすべて、先頭の行に「requestId: <id>」と書いてください（添付を付ける返信にも）。」
+(skipped if the prompt already contains `先頭の行に「requestId: <id>」`), then the existing
+completion-token instruction (skipped if the prompt already contains the marker), joined by a
+single newline after a blank line. The prefix, CRLF→LF normalization and the exact pre-send
+composer comparison are unchanged.

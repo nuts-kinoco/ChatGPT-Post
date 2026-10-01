@@ -14,10 +14,13 @@ import {
   dotMarkerSeen,
   dotPrefix,
   dotPrompt,
+  dotReplyTagInstruction,
+  dotSelectionWarnings,
   dotWarnings,
   hasTypingIndicator,
   isHistorySettled,
   sanitizeDotFilename,
+  selectDotReplies,
 } from "../../src/dot/completion.js";
 import { DotController } from "../../src/dot/controller.js";
 import { DotFailure, type DotPage } from "../../src/dot/page.js";
@@ -50,8 +53,12 @@ it("unique token, normalized prompt and one final instruction", () => {
   expect(prompt.startsWith(`${dotPrefix(id)}\n\nhello\nworld\n\n`)).toBe(true);
   expect(prompt.endsWith("完了前には書かないでください。")).toBe(true);
   expect(prompt.split(token)).toHaveLength(2);
-  expect(dotPrompt(id, token)).toBe(`${dotPrefix(id)}\n\n${token}`);
-  expect(dotPrompt(id, "hello DONE", "DONE")).toBe(`${dotPrefix(id)}\n\nhello DONE`);
+  const tag = dotReplyTagInstruction(id);
+  expect(prompt).toBe(
+    `${dotPrefix(id)}\n\nhello\nworld\n\n${tag}\nすべての作業が完了した時点でのみ、FINAL返信の最終行に「${token}」をそのまま書いてください。完了前には書かないでください。`,
+  );
+  expect(dotPrompt(id, token)).toBe(`${dotPrefix(id)}\n\n${token}\n\n${tag}`);
+  expect(dotPrompt(id, "hello DONE", "DONE")).toBe(`${dotPrefix(id)}\n\nhello DONE\n\n${tag}`);
   expect(dotPrompt(id, "hello", "CUSTOM")).toContain("「CUSTOM」");
 });
 it.each(["dot is typing…", "DOT IS TYPING...", "入力中"])("typing: %s", (text) =>
@@ -76,92 +83,69 @@ it.each(["../../bad\\name.md", "CON.md", "\x00\x1f\x7f", "..", "a:b?.txt", "NUL"
 describe("pure completion", () => {
   it("requires own row and a subsequent reply", () => {
     for (const rows of [[], [reply], [reply, own], [own]]) {
-      const start = decideDotCompletion({ rows, typing: false }, dotPrefix(id), 0);
-      expect(
-        decideDotCompletion({ rows, typing: false }, dotPrefix(id), 30_000, start.progress).done,
-      ).toBe(false);
+      const start = decideDotCompletion({ rows, typing: false }, id, 0);
+      expect(decideDotCompletion({ rows, typing: false }, id, 30_000, start.progress).done).toBe(
+        false,
+      );
     }
   });
   it("sentinel still requires three seconds without typing", () => {
     const rows = [own, reply];
-    const busy = decideDotCompletion(
-      { rows, typing: true },
-      dotPrefix(id),
-      0,
-      undefined,
-      "以上で完了",
-    );
+    const busy = decideDotCompletion({ rows, typing: true }, id, 0, undefined, "以上で完了");
     const stopped = decideDotCompletion(
       { rows, typing: false },
-      dotPrefix(id),
+      id,
       1000,
       busy.progress,
       "以上で完了",
     );
     expect(
-      decideDotCompletion(
-        { rows, typing: false },
-        dotPrefix(id),
-        3999,
-        stopped.progress,
-        "以上で完了",
-      ).done,
+      decideDotCompletion({ rows, typing: false }, id, 3999, stopped.progress, "以上で完了").done,
     ).toBe(false);
     expect(
-      decideDotCompletion(
-        { rows, typing: false },
-        dotPrefix(id),
-        5000,
-        stopped.progress,
-        "以上で完了",
-      ).done,
+      decideDotCompletion({ rows, typing: false }, id, 5000, stopped.progress, "以上で完了").done,
     ).toBe(true);
   });
   it("uses quiet fallback without sentinel; resets on row/text/file changes", () => {
-    const rows = [own, row("r", "one")];
-    const start = decideDotCompletion({ rows, typing: false }, dotPrefix(id), 0);
-    expect(
-      decideDotCompletion({ rows, typing: false }, dotPrefix(id), 24_999, start.progress).done,
-    ).toBe(false);
-    expect(
-      decideDotCompletion({ rows, typing: false }, dotPrefix(id), 25_000, start.progress).done,
-    ).toBe(true);
+    const rows = [own, row("r", `requestId: ${id} one`)];
+    const start = decideDotCompletion({ rows, typing: false }, id, 0);
+    expect(decideDotCompletion({ rows, typing: false }, id, 24_999, start.progress).done).toBe(
+      false,
+    );
+    expect(decideDotCompletion({ rows, typing: false }, id, 25_000, start.progress).done).toBe(
+      true,
+    );
     for (const changed of [
       [...rows, reply],
-      [own, row("r", "two")],
-      [own, { ...row("r", "one"), files: ["x.mdを開く"] }],
+      [own, row("r", `requestId: ${id} two`)],
+      [own, { ...row("r", `requestId: ${id} one`), files: ["x.mdを開く"] }],
     ]) {
       expect(
-        decideDotCompletion({ rows: changed, typing: false }, dotPrefix(id), 25_000, start.progress)
-          .done,
+        decideDotCompletion({ rows: changed, typing: false }, id, 25_000, start.progress).done,
       ).toBe(false);
     }
   });
-  it("checks the last reply and collects all replies in order", () => {
+  it("checks the last reply and stops attributing after the last tagged row", () => {
     const rows = [row("old", "old"), own, reply, row("later", "more")];
-    const first = decideDotCompletion({ rows, typing: false }, dotPrefix(id), 0);
+    const first = decideDotCompletion({ rows, typing: false }, id, 0);
     const last = decideDotCompletion(
       { rows, typing: false },
-      dotPrefix(id),
+      id,
       3000,
       first.progress,
       "以上で完了",
     );
     expect(last.done).toBe(false);
-    expect(last.replies.map((r) => r.id)).toEqual(["reply", "later"]);
+    expect(last.replies.map((r) => r.id)).toEqual(["reply"]);
+    expect(last.selection).toMatchObject({ excludedRows: 1, excludedFiles: 0 });
   });
   it("fails closed for duplicate requestId or subsequent human input", () => {
     for (const rows of [
       [own, reply, own],
       [own, reply, row("human", "PO", true)],
     ]) {
-      const start = decideDotCompletion({ rows, typing: false }, dotPrefix(id), 0);
-      const end = decideDotCompletion(
-        { rows, typing: false },
-        dotPrefix(id),
-        30_000,
-        start.progress,
-      );
+      const start = decideDotCompletion({ rows, typing: false }, id, 0);
+      const end = decideDotCompletion({ rows, typing: false }, id, 30_000, start.progress);
       expect(end.conflict).toBe(true);
       expect(end.done).toBe(false);
     }
@@ -198,21 +182,19 @@ describe("history settling", () => {
 it.each(["later self", "duplicate"])("conflict persistence: %s", (kind) => {
   const rows = [own, reply, kind === "duplicate" ? own : row("human", "PO", true)];
   const snapshot = { rows, typing: false };
-  const first = decideDotCompletion(snapshot, dotPrefix(id), 100);
-  const transient = decideDotCompletion(snapshot, dotPrefix(id), 2099, first.progress);
+  const first = decideDotCompletion(snapshot, id, 100);
+  const transient = decideDotCompletion(snapshot, id, 2099, first.progress);
   expect(transient.conflictPersistent).toBe(false);
-  expect(
-    decideDotCompletion(snapshot, dotPrefix(id), 2100, transient.progress).conflictPersistent,
-  ).toBe(true);
+  expect(decideDotCompletion(snapshot, id, 2100, transient.progress).conflictPersistent).toBe(true);
   const clear = decideDotCompletion(
     { rows: [own, reply], typing: false },
-    dotPrefix(id),
+    id,
     2099,
     transient.progress,
   );
   expect(clear.progress.conflictSince).toBeNull();
   expect(clear.conflictPersistent).toBe(false);
-  const restarted = decideDotCompletion(snapshot, dotPrefix(id), 2100, clear.progress);
+  const restarted = decideDotCompletion(snapshot, id, 2100, clear.progress);
   expect(restarted.progress.conflictSince).toBe(2100);
   expect(restarted.conflictPersistent).toBe(false);
 });
@@ -225,7 +207,7 @@ it("own-row temporary to server ID swap retains prefix and position ownership", 
   ] as const) {
     const decision = decideDotCompletion(
       { rows: [{ ...own, id: rowId }, reply], typing: false },
-      dotPrefix(id),
+      id,
       at,
       progress,
       reply.text,
@@ -424,7 +406,7 @@ function harness(
           !sent || mode === "unknown"
             ? []
             : mode === "timeout"
-              ? [own, row("interim", "working")]
+              ? [own, row("interim", `requestId: ${id}\nworking`)]
               : [own, reply],
         typing: false,
       };
@@ -543,24 +525,18 @@ it.each(["transientConflict", "persistentConflict", "duplicateConflict"] as cons
 
 it("marker is authoritative after 60 seconds quiet and settles trailing file rows", () => {
   const snapshot = { rows: [own, row("interim", "working")], typing: false };
-  const first = decideDotCompletion(snapshot, dotPrefix(id), 0, undefined, "DONE");
-  expect(decideDotCompletion(snapshot, dotPrefix(id), 60_000, first.progress, "DONE").done).toBe(
-    false,
-  );
+  const first = decideDotCompletion(snapshot, id, 0, undefined, "DONE");
+  expect(decideDotCompletion(snapshot, id, 60_000, first.progress, "DONE").done).toBe(false);
   const marked = { rows: [own, row("r", "DONE")], typing: false };
-  const seen = decideDotCompletion(marked, dotPrefix(id), 60_000, first.progress, "DONE");
+  const seen = decideDotCompletion(marked, id, 60_000, first.progress, "DONE");
   const trailing = {
     rows: [...marked.rows, { ...row("file", ""), files: ["Open x.md"] }],
     typing: false,
   };
-  const changed = decideDotCompletion(trailing, dotPrefix(id), 64_000, seen.progress, "DONE");
+  const changed = decideDotCompletion(trailing, id, 64_000, seen.progress, "DONE");
   expect(changed.done).toBe(false);
-  expect(decideDotCompletion(trailing, dotPrefix(id), 68_999, changed.progress, "DONE").done).toBe(
-    false,
-  );
-  expect(decideDotCompletion(trailing, dotPrefix(id), 69_000, changed.progress, "DONE").done).toBe(
-    true,
-  );
+  expect(decideDotCompletion(trailing, id, 68_999, changed.progress, "DONE").done).toBe(false);
+  expect(decideDotCompletion(trailing, id, 69_000, changed.progress, "DONE").done).toBe(true);
 });
 
 it("collect classifies marker, typing, missing and ambiguous own rows", () => {
@@ -613,4 +589,174 @@ it("default controller ignores generic phrases and waits for its exact token", a
   expect(reads).toBeGreaterThan(80);
   expect(out.result?.completionMarker).toBe(dotCompletionToken(id));
   expect(validateResult(out.result).valid).toBe(true);
+});
+
+describe("shared-thread attribution (A-200)", () => {
+  // Entirely synthetic wording; no real thread content.
+  const tagged = (rowId: string, text: string, files: string[] = []) => ({
+    ...row(rowId, `requestId: ${id}\n${text}`),
+    files,
+  });
+  const drow = (rowId: string, text: string, files: string[]) => ({ ...row(rowId, text), files });
+  const other = "20261001T130000Z-ffffffff";
+  const po = row("po", "架空の別件の相談です", true);
+  const select = (rows: DotRow[], marker?: string) =>
+    selectDotReplies(rows, rows.indexOf(own), id, marker);
+
+  it("collects tagged replies and their files, excludes unrelated rows by count only", () => {
+    const rows = [
+      row("before", "以前の架空の返信"),
+      own,
+      tagged("a", "受け付けました", ["a.mdを開く"]),
+      drow("noise", "無関係な架空の返信", ["private.mdを開く"]),
+      po,
+      drow("p1", "別件への架空の返信1", ["p1.mdを開く", "p2.mdを開く"]),
+      row("p2", "別件への架空の返信2"),
+      tagged("late", "遅れて届いた本件の返信"),
+    ];
+    const selection = select(rows, dotCompletionToken(id));
+    expect(selection.replies.map((r) => r.id)).toEqual(["a", "late"]);
+    expect(selection).toMatchObject({
+      excludedRows: 3,
+      excludedFiles: 3,
+      untaggedRows: 1,
+      untaggedFiles: 1,
+    });
+    const warnings = dotSelectionWarnings(selection);
+    expect(warnings).toEqual([
+      "dot_unrelated_rows_excluded: 3 rows, 3 files",
+      "dot_untagged_rows_after_own_reply: 1 rows, 1 files",
+    ]);
+    expect(warnings.join()).not.toMatch(/private|p1\.md|架空/);
+  });
+  it("never includes untagged continuations; counts them separately for manual follow-up", () => {
+    const rows = [
+      own,
+      row("pre", "前の依頼への返信かもしれない"),
+      tagged("a", "着手します"),
+      drow("mid", "途中経過", ["draft.mdを開く"]),
+      drow("final", `最終版です\n${dotCompletionToken(id)}`, ["final.mdを開く"]),
+      drow("trail", "", ["trail.mdを開く"]),
+    ];
+    const selection = select(rows, dotCompletionToken(id));
+    expect(selection.replies.map((r) => r.id)).toEqual(["a", "final"]);
+    expect(selection.replies.flatMap((r) => r.files)).toEqual(["final.mdを開く"]);
+    expect(selection).toMatchObject({
+      excludedRows: 3,
+      excludedFiles: 2,
+      untaggedRows: 2,
+      untaggedFiles: 2,
+    });
+    expect(dotSelectionWarnings(selection)).toEqual([
+      "dot_unrelated_rows_excluded: 3 rows, 2 files",
+      "dot_untagged_rows_after_own_reply: 2 rows, 2 files",
+    ]);
+  });
+  it("marker row followed only by attachment rows: attachments stay excluded", () => {
+    const rows = [
+      own,
+      tagged("a", `完成しました\n${dotCompletionToken(id)}`),
+      drow("f1", "", ["x.mdを開く"]),
+      drow("f2", "", ["y.mdを開く"]),
+    ];
+    const selection = select(rows, dotCompletionToken(id));
+    expect(selection.replies.map((r) => r.id)).toEqual(["a"]);
+    expect(selection.replies.flatMap((r) => r.files)).toEqual([]);
+    expect(selection).toMatchObject({
+      excludedRows: 2,
+      excludedFiles: 2,
+      untaggedRows: 2,
+      untaggedFiles: 2,
+    });
+  });
+  it("custom generic marker counts only before the next self row; other requestIds never count", () => {
+    const rows = [
+      own,
+      row("m", "以上で完了"),
+      po,
+      drow("pm", "以上で完了", ["p.mdを開く"]),
+      row("both", `requestId: ${id} と requestId: ${other} の比較`),
+      row("foreign", `requestId: ${other}\n別の依頼の返信`),
+    ];
+    const selection = select(rows, "以上で完了");
+    expect(selection.replies.map((r) => r.id)).toEqual(["m"]);
+    expect(selection).toMatchObject({ excludedRows: 3, excludedFiles: 1 });
+  });
+  it("non-standard requestIds containing a timestamp-shaped id still match themselves", () => {
+    const custom = "job-20261001T120000Z-a1b2c3d4-x";
+    const mine = row("m", `requestId: ${custom}\n本件`);
+    const self = row("own", dotPrefix(custom), true);
+    expect(selectDotReplies([self, mine], 0, custom).replies).toEqual([mine]);
+    const foreign = row("f", `requestId: ${custom}\n比較: 20261001T130000Z-ffffffff`);
+    expect(selectDotReplies([self, foreign], 0, custom).replies).toEqual([]);
+  });
+  it("unrelated-only replies give replyCount 0 and never complete", () => {
+    const rows = [own, drow("x", "無関係な架空の返信", ["x.mdを開く"]), po, row("y", "以上で完了")];
+    const snapshot = { rows, typing: false };
+    expect(classifyDotCollect(snapshot, id, dotCompletionToken(id), "thread")).toMatchObject({
+      ok: true,
+      replies: [],
+      selectionWarnings: ["dot_unrelated_rows_excluded: 2 rows, 1 files"],
+      status: { state: "in_progress", markerSeen: false, replyCount: 0, files: [] },
+    });
+    expect(classifyDotCollect(snapshot, id, "以上で完了", "thread")).toMatchObject({
+      status: { state: "in_progress", replyCount: 0 },
+    });
+    const solo = { rows: [own, row("x", "無関係な架空の返信")], typing: false };
+    const first = decideDotCompletion(solo, id, 0);
+    const later = decideDotCompletion(solo, id, 60_000, first.progress);
+    expect(later.replies).toEqual([]);
+    expect(later.done).toBe(false);
+  });
+  it("collect counts only attributed files and still fails closed on duplicate own rows", () => {
+    const rows = [
+      own,
+      tagged("a", `${dotCompletionToken(id)}`, ["mine.mdを開く"]),
+      drow("x", "別件", ["theirs.mdを開く"]),
+    ];
+    expect(
+      classifyDotCollect({ rows, typing: false }, id, dotCompletionToken(id), "t"),
+    ).toMatchObject({ status: { state: "complete", replyCount: 1, files: ["mine.md"] } });
+    expect(
+      classifyDotCollect({ rows: [...rows, own], typing: false }, id, undefined, "t"),
+    ).toMatchObject({ ok: false, code: "COLLECT_REPLY_AMBIGUOUS" });
+  });
+  it("dotPrompt adds the requestId-first instruction once", () => {
+    const tag = dotReplyTagInstruction(id);
+    expect(tag).toContain(`先頭の行に「requestId: ${id}」`);
+    expect(tag).toContain("添付を付ける返信にも");
+    expect(dotPrompt(id, "依頼").split(tag)).toHaveLength(2);
+    const already = `依頼\n返信はすべて先頭の行に「requestId: ${id}」を書くこと`;
+    expect(dotPrompt(id, already)).not.toContain(tag);
+    expect(dotPrompt(id, already)).toContain(dotCompletionToken(id));
+    expect(dotPrompt(id, "a\r\nb").startsWith(`${dotPrefix(id)}\n\na\nb\n\n${tag}\n`)).toBe(true);
+  });
+});
+
+it("run attributes only tagged replies and reports exclusion counts", async () => {
+  const h = harness();
+  delete h.request.completionMarker;
+  const files: DotRow[][] = [];
+  h.dot.files = async (rows) => {
+    files.push(rows);
+    return { files: [], warnings: [] };
+  };
+  h.dot.snapshot = async () => ({
+    rows: h.calls.includes("send")
+      ? [
+          own,
+          row("noise", "前の依頼への架空の返信"),
+          { ...row("mine", `requestId: ${id}\n${dotCompletionToken(id)}`), files: ["m.mdを開く"] },
+          { ...row("trail", ""), files: ["t.mdを開く"] },
+        ]
+      : [],
+    typing: false,
+  });
+  const out = await h.controller.run();
+  expect(out.exitCode).toBe(0);
+  expect(out.result?.replyCount).toBe(1);
+  expect(files[0]?.map((r) => r.id)).toEqual(["mine"]);
+  expect(out.result?.warnings).toContain("dot_unrelated_rows_excluded: 2 rows, 1 files");
+  expect(out.result?.warnings).toContain("dot_untagged_rows_after_own_reply: 1 rows, 1 files");
+  expect(out.result?.warnings.filter((w) => w.startsWith("dot_unrelated"))).toHaveLength(1);
 });

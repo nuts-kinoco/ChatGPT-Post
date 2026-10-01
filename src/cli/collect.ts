@@ -11,7 +11,12 @@ import type {
   ObservedModel,
   ObservedPreset,
 } from "../contracts/types.js";
-import { dotMarkerSeen, dotPrefix } from "../dot/completion.js";
+import {
+  dotMarkerSeen,
+  dotPrefix,
+  dotSelectionWarnings,
+  selectDotReplies,
+} from "../dot/completion.js";
 import { DotFailure, type DotPage } from "../dot/page.js";
 import { IMAGE_CAPTURE_BUDGET_MS, sanitiseConversationUrl } from "../state/controller.js";
 import type { Extraction, Ports } from "../state/ports.js";
@@ -344,13 +349,19 @@ export function classifyDotCollect(
         : ("COLLECT_REPLY_ABSENT" as const),
       message: `expected exactly one own row; open ${threadUrl} manually to confirm the thread; never resend`,
     };
-  const replies = snapshot.rows
-    .slice(snapshot.rows.indexOf(matches[0]) + 1)
-    .filter((row) => !row.self);
+  // Shared thread: only rows attributed to this requestId, never every later row (A-200).
+  const selection = selectDotReplies(
+    snapshot.rows,
+    snapshot.rows.indexOf(matches[0]),
+    requestId,
+    marker,
+  );
+  const replies = selection.replies;
   const markerSeen = marker !== undefined && replies.some((row) => dotMarkerSeen(row.text, marker));
   return {
     ok: true as const,
     replies,
+    selectionWarnings: dotSelectionWarnings(selection),
     status: {
       state: markerSeen
         ? ("complete" as const)
@@ -405,8 +416,10 @@ export async function collectDotReply(
       dot.currentUrl().split(/[?#]/)[0] ?? "",
     );
     if (!classified.ok) return classified;
-    const warnings: string[] =
-      marker !== undefined && !classified.status.markerSeen ? ["dot_marker_not_seen"] : [];
+    const warnings: string[] = [
+      ...(marker !== undefined && !classified.status.markerSeen ? ["dot_marker_not_seen"] : []),
+      ...classified.selectionWarnings,
+    ];
     if (saveDir) {
       await mkdir(join(saveDir, "files"), { recursive: true });
       const extracted = dot.extract(classified.replies);

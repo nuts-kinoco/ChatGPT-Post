@@ -228,3 +228,39 @@ session live verification is pending. No new live approval is asserted.
 ### A-199 dot unique completion token and durable collect (2026-10-01)
 
 Generic completion phrases can collide with earlier or manual replies; collect also depended on a surviving submit.marker. Append a request-specific final-line instruction, persist the effective marker in dot schema 1.3 results, and resolve collect through request.json with marker/result/request precedence. Older uninstructed requests remain unknown. Synthetic verification only; live verification pending. No live approval is asserted.
+
+### A-200 dot shared-thread reply attribution (2026-10-01)
+
+Cause: the dot thread is one persistent thread shared with the PO's manual use, but reply
+collection took every non-self row after the bridge's own row (`collect`, with or without
+`--save`), or every non-self row after it until a later self row failed the run closed (`run`).
+A real `collect <requestId> --save` therefore saved dot's replies to the PO's unrelated manual
+requests made in the meantime (four private replies and their attachment) into another project's
+request folder; that folder has been deleted.
+
+Fix: a single pure selector (`selectDotReplies` in src/dot/completion.ts) is used by
+`decideDotCompletion` (run) and `classifyDotCollect` (collect, status-only and `--save`). A dot row
+after the own row is attributed only if its text contains the requestId (anywhere after the own
+row) or the completion marker (only before the next self row, since a custom marker may be a
+generic phrase), and it names no other requestId. Files are taken only from attributed rows.
+replyCount, files, response.md, files/, markerSeen and complete/in_progress use attributed rows
+only, so unrelated-only threads give replyCount 0 and never complete. Excluded rows are reported as
+counts only: `dot_unrelated_rows_excluded: N rows, M files`, plus the subset that may be this
+request's untagged continuation or attachment-only row, `dot_untagged_rows_after_own_reply: N rows,
+M files`. Trade-off: untagged continuation rows are never included, even when surrounded by this
+request's tagged rows, because the spec ranks "never include unrelated private content" above
+"never miss a reply"; the miss risk is reduced instead by a new automatic prompt instruction that
+every reply (including ones with attachments) must start with `requestId: <id>` (not duplicated if
+the prompt already contains it), while the default completion token already contains the requestId.
+Unchanged: prefix, CRLF normalization, exact pre-send comparison, one send and no resend, read-only
+collect, marker-first completion, no browser downloads, signed URLs kept out of output, run's
+CONVERSATION_MISMATCH fail-closed on later self rows or duplicate own rows, and collect's
+COLLECT_REPLY_AMBIGUOUS. The CON-008 exception scope in src/dot/page.ts is unchanged (no new
+network interception or backend-api calls). No new approval is asserted.
+
+Verification: synthetic only (unit tests and a synthetic headless shared-thread fixture with
+fictional text). Not verified against the real dot thread: whether dot follows the requestId-first
+instruction for every reply and attachment message, how dot splits final versions and attachments
+into rows, and the real wording of excluded-row counts in practice. The managing session should
+confirm with a live request while the PO posts an unrelated manual message during it, and check that
+response.md/files contain only the request's rows and that only counts appear in warnings.

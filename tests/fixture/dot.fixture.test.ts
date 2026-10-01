@@ -52,20 +52,14 @@ it("synthetic only: one send, multi-row poller, captions excluded, exact-byte do
   const start = performance.now();
   while (!decision?.done && performance.now() - start < 6000) {
     const snapshot = await dot.snapshot();
-    decision = decideDotCompletion(
-      snapshot,
-      dotPrefix(id),
-      performance.now(),
-      decision?.progress,
-      "DONE",
-    );
+    decision = decideDotCompletion(snapshot, id, performance.now(), decision?.progress, "DONE");
     await page.waitForTimeout(100);
   }
   expect(decision?.done).toBe(true);
   expect(decision?.replies).toHaveLength(2);
   const replies = decision?.replies ?? [];
   expect(dot.extract(replies).markdown).toBe(
-    "First synthetic reply\n\n---\n\nSecond synthetic reply — DONE",
+    `requestId: ${id} First synthetic reply\n\n---\n\nrequestId: ${id} Second synthetic reply — DONE`,
   );
   expect(dot.extract(replies).markdown).not.toContain("FILE CHIP CAPTION");
   expect(replies.every((row) => !row.text.includes("FILE CHIP CAPTION"))).toBe(true);
@@ -340,12 +334,12 @@ it("synthetic collect finds owned replies, fails ambiguous prefixes, and saves s
     });
     for (const [self, text] of [
       [true, prefix],
-      [false, "Interim"],
+      [false, `requestId: ${prefix.match(/requestId: (\S+?)】/)?.[1]} Interim`],
       [false, "DONE"],
     ] as const) {
       const row = document.createElement("article");
       row.className = `message-row ${self ? "self" : ""}`;
-      row.dataset.messageId = self ? "own" : text;
+      row.dataset.messageId = self ? "own" : text.slice(-7);
       row.innerHTML = `<div class="message-body"><p>${text}</p></div>`;
       document.body.append(row);
     }
@@ -436,3 +430,150 @@ it("synthetic collect finds owned replies, fails ambiguous prefixes, and saves s
   ).toMatchObject({ code: "COLLECT_REPLY_AMBIGUOUS" });
   await page.close();
 });
+
+it("synthetic shared thread: collect --save keeps only this request's replies and files", async ({
+  skip,
+}) => {
+  if (!browser) {
+    skip();
+    return;
+  }
+  const page = await browser.newPage();
+  await page.route(/^https?:/, (route) => route.abort());
+  const opened: string[] = [];
+  // File-info responses name the file after the row id; bytes are synthetic per row.
+  await page.route(/\/backend-api\/messaging\/rooms\/.*\/files\/CalpicoFile_/, (route) => {
+    const rowId = route.request().url().split("CalpicoFile_")[1] ?? "";
+    opened.push(rowId);
+    return route.fulfill({
+      json: {
+        name: `${rowId}.md`,
+        download_url: `https://files.oaiusercontent.com/raw?secret=synthetic&row=${rowId}`,
+      },
+      headers: { "access-control-allow-origin": "*" },
+    });
+  });
+  const id = "20261001T140000Z-0a1b2c3d";
+  const other = "20261001T141500Z-9f8e7d6c";
+  // Entirely synthetic, fictional wording. The PO row and the rows after it model a manual
+  // conversation in the same shared thread during the request.
+  const thread: [string, boolean, string, boolean][] = [
+    ["old", false, "Earlier fictional reply", true],
+    ["own", true, `${dotPrefix(id)}\n\nSynthetic request`, false],
+    ["noise", false, "Fictional reply to an earlier manual message", true],
+    ["mine1", false, `requestId: ${id}\nSynthetic answer part one`, true],
+    ["cont", false, "Untagged fictional continuation", true],
+    ["mine2", false, `requestId: ${id}\nSynthetic final\n完了: ${id}`, true],
+    ["trail", false, "", true],
+    ["po", true, "Fictional manual request about something else", false],
+    ["priv1", false, "Fictional private reply one", true],
+    ["priv2", false, "以上で完了 fictional private reply two", true],
+    ["foreign", false, `requestId: ${other}\nOther bridge request reply`, true],
+  ];
+  await page.setContent(
+    `<main>${thread
+      .map(
+        ([rowId, self, text, file]) =>
+          `<article class="message-row${self ? " self" : ""}" data-message-id="${rowId}"><div class="message-body">${
+            file
+              ? `<div class="attachment-list"><button aria-label="Open ${rowId}.md" onclick="fetch('https://fixture.invalid/backend-api/messaging/rooms/synthetic/files/CalpicoFile_${rowId}').catch(()=>{})">${rowId} caption</button></div>`
+              : ""
+          }${text
+            .split("\n")
+            .map((line) => `<p>${line}</p>`)
+            .join("")}</div></article>`,
+      )
+      .join("")}</main>`,
+  );
+  const fetched: string[] = [];
+  const dot = new DotPage(page, 5_000, undefined, async (url) => {
+    const rowId = new URL(url).searchParams.get("row") ?? "";
+    fetched.push(rowId);
+    return byteResponse(Buffer.from(`synthetic bytes for ${rowId}\n`));
+  });
+  const ports = {
+    lock: { acquire: async () => ({ kind: "ok", token: "shared" }), release: async () => {} },
+    browser: {
+      checkProfilePath: async () => ({ ok: true }),
+      checkProfileFree: async () => ({ free: true }),
+      launch: async () => ({ ok: true }),
+      close: async () => {},
+    },
+  } as unknown as Pick<Ports, "browser" | "lock">;
+  const pageDeps = () => ({
+    navigate: async () => {},
+    currentUrl: () => "https://chatgpt.com/dots/12345678-1234-1234-1234-123456789abc",
+    snapshot: dot.snapshot.bind(dot),
+    extract: dot.extract.bind(dot),
+    files: dot.files.bind(dot),
+  });
+  const saveDir = join(dir, "shared-thread", "collected", "2026-10-01T05-00-00Z");
+  const marker = `完了: ${id}`;
+  const collected = await collectDotReply(id, marker, ports, pageDeps, saveDir);
+  expect(collected).toMatchObject({
+    ok: true,
+    state: "complete",
+    markerSeen: true,
+    replyCount: 2,
+    files: ["mine1.md", "mine2.md"],
+    warnings: [
+      "dot_unrelated_rows_excluded: 6 rows, 6 files",
+      "dot_untagged_rows_after_own_reply: 2 rows, 2 files",
+    ],
+  });
+  // Only chips on attributed rows were opened and fetched.
+  expect(opened).toEqual(["mine1", "mine2"]);
+  expect(fetched).toEqual(["mine1", "mine2"]);
+  const response = await readFile(join(saveDir, "response.md"), "utf8");
+  expect(response).toContain("Synthetic answer part one");
+  expect(response).toContain("Synthetic final");
+  expect(response).not.toMatch(/Fictional|Untagged|Other bridge|caption/);
+  const { readdir } = await import("node:fs/promises");
+  expect((await readdir(join(saveDir, "files"))).sort()).toEqual(["mine1.md", "mine2.md"]);
+  const savedJson = await readFile(join(saveDir, "collect-result.json"), "utf8");
+  expect(JSON.parse(savedJson).savedFiles).toHaveLength(2);
+  // Warnings carry counts only: no excluded text, file names or signed URLs.
+  expect(savedJson).not.toMatch(/priv|noise|cont\.md|trail|foreign|Fictional|secret=/);
+
+  // Status-only collect applies the same attribution.
+  expect(await collectDotReply(id, marker, ports, pageDeps)).toMatchObject({
+    ok: true,
+    replyCount: 2,
+    files: ["mine1.md", "mine2.md"],
+  });
+  // The run path uses the same selection through decideDotCompletion.
+  const snapshot = await dot.snapshot();
+  const decision = decideDotCompletion(snapshot, id, 0, undefined, marker);
+  expect(decision.replies.map((row) => row.id)).toEqual(["mine1", "mine2"]);
+  expect(decision.conflict).toBe(true); // the later PO row still fails run closed
+
+  // Only unrelated replies: nothing collected, never complete.
+  await page.evaluate(() => {
+    for (const rowId of ["mine1", "mine2"])
+      document.querySelector(`[data-message-id="${rowId}"]`)?.remove();
+  });
+  opened.length = 0;
+  const none = join(dir, "shared-thread", "collected", "none");
+  expect(await collectDotReply(id, marker, ports, pageDeps, none)).toMatchObject({
+    ok: true,
+    state: "in_progress",
+    markerSeen: false,
+    replyCount: 0,
+    files: [],
+    warnings: ["dot_marker_not_seen", "dot_unrelated_rows_excluded: 6 rows, 6 files"],
+  });
+  expect(opened).toEqual([]);
+  expect(await readFile(join(none, "response.md"), "utf8")).not.toMatch(/Fictional|Untagged/);
+  expect(await readdir(join(none, "files"))).toEqual([]);
+
+  // Two matching own rows still fail closed before anything is read or saved.
+  await page.evaluate(() => {
+    const own = document.querySelector('[data-message-id="own"]');
+    if (own) document.querySelector("main")?.append(own.cloneNode(true));
+  });
+  expect(await collectDotReply(id, marker, ports, pageDeps, join(dir, "dup"))).toMatchObject({
+    ok: false,
+    code: "COLLECT_REPLY_AMBIGUOUS",
+  });
+  await page.close();
+}, 30_000);
