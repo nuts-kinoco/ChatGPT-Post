@@ -223,7 +223,9 @@ describe("forbidden tokens / packages / secrets (AC-029)", () => {
       if (f.endsWith("forbidden-tokens.ts") || f.endsWith("redact.ts")) continue;
       const text = await readFile(f, "utf8");
       for (const { token, reason } of FORBIDDEN_CODE_TOKENS) {
-        // A-194/A-195: PO-authorized dot room-file response observation only.
+        // CON-008 limited exception (A-196): the PO approved this after the fact on 2026-10-01.
+        // Scope: only receiving the page's own file-info response in src/dot/page.ts and one GET
+        // of the signed URL inside it. Active calls to backend-api remain forbidden.
         const dotFileResponse =
           f === join(REPO_ROOT, "src", "dot", "page.ts") &&
           (token === "waitForResponse(" || token === "backend-api");

@@ -28,7 +28,7 @@
 | 情報 | どこにあるか | Bridge の扱い |
 |---|---|---|
 | ChatGPT セッション Cookie / トークン | `runtime/profile/` 内 | **読まない**。`context.cookies()`、`storageState()`、Cookie DB 読取をコードに持たない（AC-029 で grep） |
-| Authorization ヘッダー | ブラウザ内部 | 傍受しない。`page.route` / `waitForResponse` / `page.on('request')` を使わない（CON-008） |
+| Authorization ヘッダー | ブラウザ内部 | 傍受しない。`page.route` / `waitForResponse` / `page.on('request')` を使わない（CON-008）。限定例外は `02-REQUIREMENTS.md` CON-008 と A-196（`target: "dot"` のファイル情報応答の受信と署名付き URL の取得のみ） |
 | プロンプト・回答本文 | `requestDir/` | ログには先頭 200 文字 + 総文字数のみ（SEC-005）。`error.message` / `cause` に含めない |
 | アカウント名・他の会話タイトル | 画面上 | スクリーンショットに写り得る → viewport のみ撮影し、README で注意喚起（SEC-006） |
 | trace | `runtime/artifacts/` | §3 のサニタイズ後に保存 |
