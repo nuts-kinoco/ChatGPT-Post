@@ -29,7 +29,7 @@ export function dotPrefix(requestId: string): string {
   return `【chatgpt-bridge からの自動送信 / requestId: ${requestId}】これはブリッジ（自動操作）から送っています。PO 本人の入力ではありません。`;
 }
 export function dotPrompt(requestId: string, prompt: string): string {
-  return `${dotPrefix(requestId)}\n\n${prompt}`;
+  return `${dotPrefix(requestId)}\n\n${prompt.replace(/\r\n?/g, "\n")}`;
 }
 export function dotWarnings(request: BridgeRequest): string[] {
   return ["newChat", "preset", "model", "project", "conversationUrl"]

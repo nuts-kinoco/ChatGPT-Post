@@ -209,3 +209,7 @@ A-194/A-195 small fix 2: the 2026-10-01 live finding requires saveAs-only downlo
 ### A-194/A-195 dot file retrieval correction (2026-10-01)
 
 Any browser download handling, including saveAs, streaming, or a plain download event, intermittently crashes real Chrome (same class as A-092); the dot MVP must never trigger a browser download. Instead, observe the room-file API response caused by opening the chip, validate its HTTPS oaiusercontent.com download_url, and fetch bytes through context.request without manual credential forwarding or redirects, keeping signed URLs out of results and warnings. The API and exact-byte retrieval were live-verified read-only by the managing session; implementation end-to-end live verification is pending.
+
+### A-197 dot composer text round-trip correction (2026-10-01)
+
+The reported real prompt failed exact composer comparison because Windows CRLF differed from LF readback, and ProseMirror colour decorations introduced a trailing BR that was counted as content. Normalize CRLF and lone CR to LF in dotPrompt, and share the production composer reader with synthetic Chromium tests to exclude aria-hidden decorations and ProseMirror-trailingBreak while preserving real BRs, block boundaries, indentation, and exact equality before send. Live re-verification of the real prompt is pending.

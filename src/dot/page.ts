@@ -46,6 +46,28 @@ export function isDotThread(url: string): boolean {
     return false;
   }
 }
+/** Runs in the browser; preserve prompt whitespace while excluding editor decorations. */
+export function readDotComposerText(el: Element): string {
+  const read = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+    if (node instanceof Element) {
+      if (node.getAttribute("aria-hidden") === "true") return "";
+      if (node.tagName === "BR")
+        return node.classList.contains("ProseMirror-trailingBreak") ? "" : "\n";
+    }
+    let text = "";
+    const children = Array.from(node.childNodes);
+    for (const [index, child] of children.entries()) {
+      if (child instanceof Element && child.getAttribute("aria-hidden") === "true") continue;
+      if (index > 0 && child instanceof HTMLElement && /^(DIV|P|LI)$/.test(child.tagName))
+        text += "\n";
+      text += read(child);
+    }
+    return text;
+  };
+  return read(el).replace(/\r\n?/g, "\n");
+}
+
 export class DotPage {
   private threadUrl: string | null = null;
   private preparedPrompt: string | null = null;
@@ -122,24 +144,7 @@ export class DotPage {
   private async composerText(): Promise<string> {
     // Chromium innerText adds layout newlines to insertText block boundaries. Read logical
     // text/BR/block boundaries instead; do not collapse arbitrary prompt whitespace.
-    return this.page.locator(DOT_SELECTORS.composer).evaluate((el) => {
-      const read = (node: Node): string => {
-        if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
-        let text = "";
-        const children = Array.from(node.childNodes);
-        for (const [index, child] of children.entries()) {
-          if (child instanceof HTMLElement && child.tagName === "BR") {
-            if (children.length !== 1) text += "\n";
-          } else {
-            if (index > 0 && child instanceof HTMLElement && /^(DIV|P|LI)$/.test(child.tagName))
-              text += "\n";
-            text += read(child);
-          }
-        }
-        return text;
-      };
-      return read(el).replace(/\r\n/g, "\n");
-    });
+    return this.page.locator(DOT_SELECTORS.composer).evaluate(readDotComposerText);
   }
   async prepare(prompt: string): Promise<void> {
     await this.safety();

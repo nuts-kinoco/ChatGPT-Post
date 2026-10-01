@@ -43,6 +43,11 @@ it("prefix identifies automatic input and preserves the prompt exactly", () => {
     `【chatgpt-bridge からの自動送信 / requestId: ${id}】これはブリッジ（自動操作）から送っています。PO 本人の入力ではありません。\n\nhello\nworld`,
   );
 });
+it("normalizes CRLF and lone CR to LF while retaining the automatic prefix", () => {
+  const prompt = dotPrompt(id, "日本語\r\n\r\n  - `code`\rhttps://example.test/\n");
+  expect(prompt.startsWith(dotPrefix(id))).toBe(true);
+  expect(prompt).toBe(`${dotPrefix(id)}\n\n日本語\n\n  - \`code\`\nhttps://example.test/\n`);
+});
 it.each(["dot is typing…", "DOT IS TYPING...", "入力中"])("typing: %s", (text) =>
   expect(hasTypingIndicator(text)).toBe(true),
 );

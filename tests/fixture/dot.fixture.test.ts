@@ -10,7 +10,7 @@ import {
   dotPrefix,
   dotPrompt,
 } from "../../src/dot/completion.js";
-import { DotPage } from "../../src/dot/page.js";
+import { DotPage, readDotComposerText } from "../../src/dot/page.js";
 
 let browser: Browser | null = null;
 let dir: string;
@@ -261,4 +261,27 @@ it("synthetic API files enforce ten-file cap and closed-page stop", async ({ ski
   await page.close();
   const closed = await dot.files([row, row], dir);
   expect(closed.warnings).toEqual(["file_download_failed: ../report.md: page closed"]);
+});
+
+it("synthetic ProseMirror composer preserves LF text and excludes decorations", async ({
+  skip,
+}) => {
+  if (!browser) {
+    skip();
+    return;
+  }
+  const page = await browser.newPage();
+  await page.route(/^https?:/, (route) => route.abort());
+  try {
+    await page.setContent(
+      '<div contenteditable="true"><p>日本語 Markdown</p><p data-empty-paragraph="true"><br class="ProseMirror-trailingBreak"></p><p>色 <span class="inline-markdown">#798171</span><span aria-hidden="true" class="inline-block">hidden decoration<br><span>hidden text</span></span><br class="ProseMirror-trailingBreak"></p><p>  - 文字 `code`</p><p>https://example.test/path</p><p>soft<br>break</p><div>DIV boundary</div><li>first</li><li>second</li><p data-empty-paragraph="true"><br class="ProseMirror-trailingBreak"></p></div>',
+    );
+    expect(await page.locator("[contenteditable]").evaluate(readDotComposerText)).toBe(
+      "日本語 Markdown\n\n色 #798171\n  - 文字 `code`\nhttps://example.test/path\nsoft\nbreak\nDIV boundary\nfirst\nsecond\n",
+    );
+    await page.setContent('<div contenteditable="true"><br></div>');
+    expect(await page.locator("[contenteditable]").evaluate(readDotComposerText)).toBe("\n");
+  } finally {
+    await page.close();
+  }
 });
