@@ -74,6 +74,7 @@ export interface BrowserPort {
   checkProfilePath(): Promise<{ ok: true } | { ok: false; cause: string }>;
   checkProfileFree(): Promise<{ free: true } | { free: false; cause: string }>;
   launch(opts: {
+    trace?: boolean;
     copyCaptureShim: boolean;
     onCrash: (cause: string) => void;
   }): Promise<{ ok: true } | { ok: false; cause: string }>;

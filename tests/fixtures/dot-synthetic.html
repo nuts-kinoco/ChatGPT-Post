@@ -1,0 +1,15 @@
+﻿<!doctype html>
+<!-- Entirely synthetic dot fixture: no captured/private content, no remote resources. -->
+<html lang="en"><meta charset="utf-8"><title>Synthetic dot</title>
+<main><section id="thread"><article class="message-row" data-message-id="old"><div class="message-body"><p>Old synthetic reply</p></div></article></section>
+<div id="indicator"></div><div contenteditable="true" aria-label="Send a message"></div><button id="send" aria-label="Send" disabled>Send</button></main>
+<aside id="viewer" hidden><div data-testid="viewer-header">Synthetic viewer</div><button id="download" aria-label="Download">Download</button><button id="close" aria-label="Close viewer">Close</button></aside>
+<script>
+const editor=document.querySelector('[contenteditable]'),send=document.querySelector('#send'),thread=document.querySelector('#thread'),indicator=document.querySelector('#indicator'),viewer=document.querySelector('#viewer');
+const data='# Synthetic file\n- exact bytes\n';
+editor.addEventListener('input',()=>send.disabled=!editor.innerText.trim());
+function add(id,text,self=false,file=false){const el=document.createElement('article');el.className='message-row'+(self?' self':' grouped-previous');el.dataset.messageId=id;const body=document.createElement('div');body.className='message-body';const p=document.createElement('p');p.textContent=text;body.append(p);if(file){const chip=document.createElement('button');chip.setAttribute('aria-label','Open ../report.md');chip.textContent='FILE CHIP CAPTION';chip.onclick=()=>{viewer.hidden=false;fetch('https://fixture.invalid/backend-api/messaging/rooms/synthetic/files/CalpicoFile_'+id).catch(()=>{});};const list=document.createElement('div');list.className='attachment-list';list.innerHTML='<div class="message-surface"><div class="group/resource-card"><span>FILE CHIP CAPTION DONE</span></div></div>';list.querySelector('.message-surface > div').append(chip);body.prepend(list);}el.append(body);thread.append(el);}
+send.onclick=()=>{window.sendCount=(window.sendCount||0)+1;add('own',editor.innerText,true);editor.textContent='';send.disabled=true;indicator.textContent='dot is typing…';setTimeout(()=>add('first','First synthetic reply',false,true),100);setTimeout(()=>{indicator.textContent='';add('last','Second synthetic reply — DONE',false,true);},250);};
+document.querySelector('#download').onclick=()=>{window.downloadClicks=(window.downloadClicks||0)+1;throw new Error('browser download forbidden');};
+document.querySelector('#close').onclick=()=>viewer.hidden=true;
+</script></html>

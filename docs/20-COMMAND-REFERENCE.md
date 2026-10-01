@@ -340,3 +340,28 @@ For `submit --json`, exit 2 is invalid request, exit 4 is `ALREADY_RUNNING`, and
 ### Detached-run deadline and diagnostics
 
 `SIGINT`, `SIGTERM`, and Windows `SIGBREAK` are helpful only while a foreground `run` can receive them. A detached `submit` child is protected instead by its internal `timeoutMs + 30 s` watchdog, which writes its terminal result, releases the lock, and exits even when its parent was killed. The pre-submit Playwright trace is sealed immediately after dispatch; the response wait records no trace events. Trace finalization is capped at 10 seconds, 16 MiB compressed input, and 64 MiB expanded content. Oversize or timed-out diagnostic traces are deleted and never become artifacts.
+
+## dot through run (A-194)
+
+Use the same `chatgpt-bridge run --request <path> --json` command with:
+
+```json
+{ "schemaVersion": "1.2", "requestId": "20261001T120000Z-a1b2c3d4", "target": "dot",
+  "promptFile": "prompt.md", "completionMarker": "以上で完了",
+  "timeoutMs": 900000, "responseFormat": "markdown" }
+```
+
+This appends to the PO's persistent thread at /dots/home → /dots/<uuid>, under the same dedicated
+profile guard and an exclusive barrier lock even when chat pooling is enabled. Use one request at
+a time; the PO must avoid manual input during the run. Dot can perform real GitHub/Codex actions:
+when appropriate put 「Codex タスクは起動しない・読み取りのみ・外部操作はしない」 in prompt.md.
+Ask for the exact sentinel at the end of the final reply. Without it, completion waits for 25 seconds
+of quiet and 3 seconds without typing. Auto prefix identifies bridge input, not PO input.
+
+Dot ignores newChat/preset/model/project/conversationUrl with warnings. Sending attachments is
+unsupported (exit 2). Results are schema 1.3 with target, replyCount and files[]. File downloads
+are limited to 10 files, 20 MiB each, 30 seconds each; download failures are warnings. Reply bodies
+are joined in response.md with separators, excluding file chips. Existing chat results stay 1.2.
+Exit codes follow run conventions. Login/challenge/approval dialogs stop with exit 3. A send is
+never repeated: unknown submission and timeout require manual inspection of conversationUrl.
+`collect` currently supports chat only, not dot. Managing-session live validation is pending.

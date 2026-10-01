@@ -24,7 +24,7 @@
 | CON-005 | 可視（headed）ブラウザを基本とする。MVP で headless を優先しない | Must | AC-001, AC-029 |
 | CON-006 | 単一リクエストを直列処理する。並列化しない | Must | AC-024 |
 | CON-007 | 要求 preset が UI 上で選択・確認できない場合は送信せず失敗する（fail closed）。別 preset へ暗黙フォールバックしない。`current` 指定でも UI 表示から preset を観測できなければ同様に失敗する | Must | AC-015 |
-| CON-008 | ChatGPT の内部 / 非公開 API を再現・直接呼び出ししない。ネットワーク傍受（`page.route` / `waitForResponse` 等）による完了検出も行わない。DOM・アクセシビリティ・通常 UI 操作のみ | Must | AC-029 |
+| CON-008 | ChatGPT の内部 / 非公開 API を再現・直接呼び出ししない。ネットワーク傍受（`page.route` / `waitForResponse` 等）による完了検出も行わない。DOM・アクセシビリティ・通常 UI 操作のみ。**限定例外（A-196、2026-10-01 PO が事後承認）**: `target: "dot"` のファイル取得に限り、(1) ページ自身が発行したファイル情報の応答を受け取る（`src/dot/page.ts` の `waitForResponse(`）、(2) その応答に含まれる署名付き URL（`*.oaiusercontent.com`、https）へ 1 回の GET を行う、の 2 点だけを許す。`backend-api` への能動的な呼び出し・送信・書き換え、およびこれ以外の傍受・直接取得は引き続き禁止。理由: 自動操作下のブラウザのダウンロード操作は Chrome を高確率でクラッシュさせるため。 | Must | AC-029 |
 | CON-009 | OCR や画面座標ベースの文字回収を使わない | Must | AC-029 |
 | CON-010 | 秘密情報（Cookie、トークン、認証状態）をログ・Git・**必須成果物**（`response.md`, `result.json`, 標準出力）に残さない。診断用成果物（trace / screenshot）は SEC-010 の条件で扱う | Must | AC-029, AC-031 |
 | CON-011 | CAPTCHA、再ログイン、利用上限、チャレンジ画面は手動介入ステータス（`manual_intervention_required`）で停止する。自動突破・回避しない | Must | AC-013, AC-021 |

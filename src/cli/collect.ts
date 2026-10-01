@@ -5,8 +5,8 @@ import { CHATGPT_ORIGIN, CONVERSATION_PATH_RE } from "../chatgpt/page.js";
 import { atomicWriteFile, normaliseResponseBody } from "../contracts/atomic-write.js";
 import { checkResultInvariants } from "../contracts/invariants.js";
 import type {
-  BridgeRequest,
   BridgeResult,
+  ChatRequest,
   ObservedModel,
   ObservedPreset,
 } from "../contracts/types.js";
@@ -19,7 +19,7 @@ export interface CollectIdentity {
   submittedAt: string;
   baselineAssistantCount: number;
   /** Present for requestId recovery; absent for the deliberately restricted explicit form. */
-  request?: BridgeRequest;
+  request?: ChatRequest;
   original?: BridgeResult | null;
   /** Durable request-ID recovery only: the actual submitted prompt used for ownership proof. */
   submittedPrompt?: string;

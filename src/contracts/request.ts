@@ -79,6 +79,9 @@ export async function validateAndLoad(raw: unknown, requestDir: string): Promise
     errors.push("/requestId is a Windows reserved device name");
   }
   if (errors.length > 0) return { kind: "invalid", errors };
+  if (req.target === "dot" && (req.attachments?.length ?? 0) > 0) {
+    return { kind: "invalid", errors: ["attachments are not supported for target dot yet"] };
+  }
   const att = await checkAttachments(req.attachments, requestDir);
   if (!att.ok) return { kind: "invalid", errors: att.errors };
 

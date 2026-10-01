@@ -192,7 +192,7 @@
 - **Then** 以下が **存在しない** ことを grep と依存一覧（`package.json` / `package-lock.json`）で確認する:
   - 秘密情報: `storageState(`、`cookies()`、`recordHar`、`extraHTTPHeaders` で Authorization を設定する箇所、Cookie DB（`Cookies` ファイル）の読み取り
   - OpenAI API（CON-001）: `openai` 系 npm パッケージ、`api.openai.com` / `platform.openai.com` への参照
-  - 内部 API・ネットワーク傍受（CON-008）: **chatgpt.com 配下を含む** あらゆる URL への直接 `fetch` / `page.request` / `context.request` / `APIRequestContext`、および `page.route(`、`waitForResponse(`、`waitForRequest(`、`page.on('request'|'response'|'websocket')`
+  - 内部 API・ネットワーク傍受（CON-008）: **chatgpt.com 配下を含む** あらゆる URL への直接 `fetch` / `page.request` / `context.request` / `APIRequestContext`、および `page.route(`、`waitForResponse(`、`waitForRequest(`、`page.on('request'|'response'|'websocket')`。**ただし限定例外（A-196、2026-10-01 PO が事後承認）**: `src/dot/page.ts` に限り、`target: "dot"` のファイル取得のため、ページ自身が発行したファイル情報の応答の受信（`waitForResponse(`）と、その応答内の署名付き URL（`*.oaiusercontent.com`、https）への 1 回の GET（`context.request`）を許す。`backend-api` への能動的な呼び出し、およびこの範囲外の傍受・直接取得は禁止のまま。署名付き URL（秘匿値）はログ・結果に出さない。この例外はテストで `src/dot/page.ts` に限定している
   - OCR・座標回収（CON-009）: `tesseract` 等の OCR パッケージ、スクリーンショット画像からの文字認識
   - 検知回避（SEC-008）: stealth 系パッケージ、`userAgent` 上書き、fingerprint 偽装、proxy ローテーション
   - headless 既定（CON-005）: `headless: true` が既定値になっている箇所

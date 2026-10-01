@@ -36,6 +36,8 @@ export interface BrowserConfig {
 }
 
 export interface LaunchOptions {
+  /** Dot excludes the PO persistent history from diagnostic traces. Default remains true. */
+  trace?: boolean;
   copyCaptureShim: boolean;
   onCrash: (cause: string) => void;
 }
@@ -203,8 +205,10 @@ export class BrowserSession {
       this.attached = false;
       const page = context.pages()[0] ?? (await context.newPage());
       await this.attachHandlers(context, opts, page, true);
-      await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
-      this.tracing = true;
+      if (opts.trace !== false) {
+        await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
+        this.tracing = true;
+      }
       return { ok: true };
     } catch (err) {
       await this.disposeCopyCaptureShim();
@@ -256,7 +260,7 @@ export class BrowserSession {
       // Trace finalization's existing "tracing not active" outcome is best-effort
       // (machine.ts) — controller.ts turns it into a result.json warning, never a failure — so
       // simply never starting a trace here degrades safely instead of risking a cross-request leak.
-      if (!this.cfg.dedicatedPage) {
+      if (!this.cfg.dedicatedPage && opts.trace !== false) {
         try {
           await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
           this.tracing = true;

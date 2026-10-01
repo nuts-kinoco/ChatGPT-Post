@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { atomicWriteFile } from "../contracts/atomic-write.js";
 
 export interface SubmitMarker {
+  target?: "dot";
   requestId: string;
   /** Absolute request.json path, retained so direct `run` recovery does not require jobs.db. */
   requestPath?: string;

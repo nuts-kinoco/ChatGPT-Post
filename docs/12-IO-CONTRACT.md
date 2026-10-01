@@ -212,3 +212,42 @@ Windows での注意: 対象ファイルを別プロセスが開いていると 
 4. status == completed なら responseFile を読む
 5. それ以外は error.message と submitted に従う。再送するなら新しい requestId で
 ```
+
+## dot target extension (A-194)
+
+The existing chat result remains schemaVersion "1.2" with identical fields. Optional request
+`target` is "chat" (default) or "dot"; dot accepts request schemaVersion "1.2" or "1.3"
+(the existing version acceptance remains). Optional `completionMarker` is a non-empty string of
+at most 80 characters, used only for dot. For dot, preset/newChat are optional. The fields
+newChat, preset, model, project and conversationUrl are ignored, including their chat-specific
+constraints, with `dot_ignores_<field>` for each explicitly supplied field. Non-empty attachments
+produce INVALID_REQUEST: "attachments are not supported for target dot yet". The existing
+20,000-character prompt limit applies; secret patterns are rejected before browser launch.
+
+Sent text is exactly:
+
+```text
+【chatgpt-bridge からの自動送信 / requestId: <id>】これはブリッジ（自動操作）から送っています。PO 本人の入力ではありません。
+
+<original prompt>
+```
+
+Only dot results use schemaVersion "1.3", with mandatory `target: "dot"`, `replyCount`
+(non-self rows collected after the uniquely identified self row; may be partial on failure), and
+`files: [{ name, path, bytes }]`. File paths are request-directory-relative `files/<sanitized-name>`;
+names preserve the chip filename; bytes are exact saved bytes. Maximum 10 files, 20 MiB per file,
+30 seconds per file, collision suffixes; failed downloads add `file_download_failed: <name>: <cause>`
+warnings and do not fail the reply. Saved files are also listed in artifacts. Model/preset request
+and observation fields are null for dot. `response.md` contains all collected row bodies in order,
+with a blank-line/`---` separator only for multiple rows; chip captions are excluded.
+
+Completion requires the matching self row, at least one subsequent non-self row, and no typing
+for 3 seconds, plus either a marker in the last non-self body or 25 seconds without row/body changes.
+Polling is 450 ms. A new self row or duplicate requestId stops ownership attribution. Unprompted dot
+rows cannot be distinguished and are included. The request timeout runs from send; timeout preserves
+the /dots/<uuid> URL and submitted:"yes" when the own row was confirmed. No own row within 15 seconds
+produces SUBMIT_STATE_UNKNOWN/submitted:"unknown". Blocking approval/login/challenge UI stops with
+exit 3. Submit markers include target:"dot", are written before the only send click, and survive
+failure. Dot collect/recovery is outside this MVP: follow up manually, never resend.
+
+Dot disables diagnostic trace capture of the persistent PO thread. Chat tracing remains unchanged.
