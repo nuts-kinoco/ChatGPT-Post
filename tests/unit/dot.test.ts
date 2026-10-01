@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { classifyDotCollect } from "../../src/cli/collect.js";
 import { checkResultInvariants } from "../../src/contracts/invariants.js";
 import { validateAndLoad } from "../../src/contracts/request.js";
 import { validateRequest, validateResult } from "../../src/contracts/schema.js";
@@ -105,22 +106,20 @@ describe("pure completion", () => {
       decideDotCompletion(
         { rows, typing: false },
         dotPrefix(id),
-        4000,
+        5000,
         stopped.progress,
         "以上で完了",
       ).done,
     ).toBe(true);
   });
-  it("uses quiet fallback even when sentinel is absent; resets on row/text/file changes", () => {
+  it("uses quiet fallback without sentinel; resets on row/text/file changes", () => {
     const rows = [own, row("r", "one")];
     const start = decideDotCompletion({ rows, typing: false }, dotPrefix(id), 0);
     expect(
-      decideDotCompletion({ rows, typing: false }, dotPrefix(id), 24_999, start.progress, "missing")
-        .done,
+      decideDotCompletion({ rows, typing: false }, dotPrefix(id), 24_999, start.progress).done,
     ).toBe(false);
     expect(
-      decideDotCompletion({ rows, typing: false }, dotPrefix(id), 25_000, start.progress, "missing")
-        .done,
+      decideDotCompletion({ rows, typing: false }, dotPrefix(id), 25_000, start.progress).done,
     ).toBe(true);
     for (const changed of [
       [...rows, reply],
@@ -217,7 +216,7 @@ it("own-row temporary to server ID swap retains prefix and position ownership", 
   for (const [at, rowId] of [
     [0, "temporary"],
     [1500, "server"],
-    [3000, "server"],
+    [6500, "server"],
   ] as const) {
     const decision = decideDotCompletion(
       { rows: [{ ...own, id: rowId }, reply], typing: false },
@@ -228,7 +227,7 @@ it("own-row temporary to server ID swap retains prefix and position ownership", 
     );
     expect(decision.conflict).toBe(false);
     expect(decision.ownRow?.id).toBe(rowId);
-    expect(decision.done).toBe(at === 3000);
+    expect(decision.done).toBe(at === 6500);
     progress = decision.progress;
   }
 });
@@ -336,7 +335,10 @@ function harness(
         attachments: [],
         attachmentBytes: 0,
       }),
-      writeResponse: async () => join(dir, "response.md"),
+      writeResponse: async () => {
+        calls.push("response");
+        return join(dir, "response.md");
+      },
       writeResult: async (_: string, result: BridgeResult) => {
         expect(checkResultInvariants(result)).toEqual([]);
         results.push(result);
@@ -413,7 +415,12 @@ function harness(
       if (mode === "hung" && sent) return new Promise<never>(() => {});
       if (mode === "gone" && sent) return { rows: mono >= 450 ? [] : [own], typing: false };
       return {
-        rows: !sent || mode === "unknown" ? [] : mode === "timeout" ? [own] : [own, reply],
+        rows:
+          !sent || mode === "unknown"
+            ? []
+            : mode === "timeout"
+              ? [own, row("interim", "working")]
+              : [own, reply],
         typing: false,
       };
     },
@@ -452,7 +459,7 @@ it("builds schema 1.3 only for dot; validates unchanged chat schema 1.2", async 
   expect(h.calls.indexOf("marker")).toBeLessThan(h.calls.indexOf("send"));
   expect(h.calls.filter((c) => c === "send")).toHaveLength(1);
   expect(out.result?.warnings).toContain("file_download_failed: x: timeout");
-  expect(h.calls).toContain("deleteMarker");
+  expect(h.calls).not.toContain("deleteMarker");
   if (!out.result) throw new Error("missing result");
   const { target: _target, replyCount: _count, files: _files, ...chat } = out.result;
   const chatResult = { ...chat, schemaVersion: "1.2", observedPreset: "high" };
@@ -521,3 +528,59 @@ it.each(["transientConflict", "persistentConflict", "duplicateConflict"] as cons
     expect(h.calls.filter((c) => c === "send")).toHaveLength(1);
   },
 );
+
+it("marker is authoritative after 60 seconds quiet and settles trailing file rows", () => {
+  const snapshot = { rows: [own, row("interim", "working")], typing: false };
+  const first = decideDotCompletion(snapshot, dotPrefix(id), 0, undefined, "DONE");
+  expect(decideDotCompletion(snapshot, dotPrefix(id), 60_000, first.progress, "DONE").done).toBe(
+    false,
+  );
+  const marked = { rows: [own, row("r", "DONE")], typing: false };
+  const seen = decideDotCompletion(marked, dotPrefix(id), 60_000, first.progress, "DONE");
+  const trailing = {
+    rows: [...marked.rows, { ...row("file", ""), files: ["Open x.md"] }],
+    typing: false,
+  };
+  const changed = decideDotCompletion(trailing, dotPrefix(id), 64_000, seen.progress, "DONE");
+  expect(changed.done).toBe(false);
+  expect(decideDotCompletion(trailing, dotPrefix(id), 68_999, changed.progress, "DONE").done).toBe(
+    false,
+  );
+  expect(decideDotCompletion(trailing, dotPrefix(id), 69_000, changed.progress, "DONE").done).toBe(
+    true,
+  );
+});
+
+it("collect classifies marker, typing, missing and ambiguous own rows", () => {
+  const snapshot = { rows: [reply, own, row("r", "DONE")], typing: true };
+  expect(classifyDotCollect(snapshot, id, "DONE", "thread")).toMatchObject({
+    ok: true,
+    status: { state: "complete", markerSeen: true, typing: true, replyCount: 1 },
+  });
+  expect(classifyDotCollect(snapshot, id, "absent", "thread")).toMatchObject({
+    status: { state: "in_progress" },
+  });
+  expect(classifyDotCollect(snapshot, id, undefined, "thread")).toMatchObject({
+    status: { state: "unknown" },
+  });
+  expect(classifyDotCollect({ rows: [reply], typing: false }, id, "DONE", "thread")).toMatchObject({
+    code: "COLLECT_REPLY_ABSENT",
+  });
+  expect(
+    classifyDotCollect({ rows: [own, own], typing: false }, id, "DONE", "thread"),
+  ).toMatchObject({ code: "COLLECT_REPLY_AMBIGUOUS" });
+});
+
+it("marker timeout writes interim response while retaining terminal failure semantics", async () => {
+  const h = harness("timeout");
+  const out = await h.controller.run();
+  expect(out.result).toMatchObject({
+    status: "failed",
+    submitted: "yes",
+    replyCount: 1,
+    responseFile: null,
+    error: { code: "GENERATION_TIMEOUT" },
+  });
+  expect(out.result?.warnings).toContain("dot_marker_not_seen");
+  expect(h.calls).toContain("response");
+});

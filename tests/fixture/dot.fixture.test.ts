@@ -1,8 +1,9 @@
-﻿import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type Browser, chromium } from "playwright";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { collectDotReply } from "../../src/cli/collect.js";
 import { REPO_ROOT } from "../../src/contracts/schema.js";
 import {
   type DotDecision,
@@ -11,6 +12,7 @@ import {
   dotPrompt,
 } from "../../src/dot/completion.js";
 import { DotPage, readDotComposerText } from "../../src/dot/page.js";
+import type { Ports } from "../../src/state/ports.js";
 
 let browser: Browser | null = null;
 let dir: string;
@@ -88,6 +90,39 @@ it("synthetic only: one send, multi-row poller, captions excluded, exact-byte do
     expect(await readFile(join(dir, file.path), "utf8")).toBe("# Synthetic file\n- exact bytes\n");
     expect(file.bytes).toBe(Buffer.byteLength("# Synthetic file\n- exact bytes\n"));
   }
+  const collectPorts = {
+    lock: { acquire: async () => ({ kind: "ok", token: "collect-test" }), release: async () => {} },
+    browser: {
+      checkProfilePath: async () => ({ ok: true }),
+      checkProfileFree: async () => ({ free: true }),
+      launch: async () => ({ ok: true }),
+      close: async () => {},
+    },
+  } as unknown as Pick<Ports, "browser" | "lock">;
+  const collectedDir = join(dir, "collected", "2026-10-01T01-00-00Z");
+  const recovered = await collectDotReply(
+    id,
+    "DONE",
+    collectPorts,
+    () => ({
+      navigate: async () => {},
+      snapshot: fileDot.snapshot.bind(fileDot),
+      currentUrl: () => "synthetic-thread",
+      extract: fileDot.extract.bind(fileDot),
+      files: fileDot.files.bind(fileDot),
+    }),
+    collectedDir,
+  );
+  expect(recovered).toMatchObject({ ok: true, state: "complete", replyCount: 2 });
+  const saved = JSON.parse(await readFile(join(collectedDir, "collect-result.json"), "utf8"));
+  expect(saved.savedFiles).toHaveLength(2);
+  for (const file of saved.savedFiles)
+    expect(await readFile(join(collectedDir, file.path), "utf8")).toBe(bytes.toString());
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { downloadClicks?: number }).downloadClicks ?? 0,
+    ),
+  ).toBe(0);
   expect(await page.evaluate(() => (window as unknown as { sendCount: number }).sendCount)).toBe(1);
   await page.close();
 }, 15_000);
@@ -284,4 +319,95 @@ it("synthetic ProseMirror composer preserves LF text and excludes decorations", 
   } finally {
     await page.close();
   }
+});
+
+it("synthetic collect finds owned replies, fails ambiguous prefixes, and saves separately", async ({
+  skip,
+}) => {
+  if (!browser) {
+    skip();
+    return;
+  }
+  const page = await browser.newPage();
+  await page.route(/^https?:/, (route) => route.abort());
+  await page.goto(pathToFileURL(join(REPO_ROOT, "tests/fixtures/dot-synthetic.html")).href);
+  const id = "20261001T120000Z-a1b2c3d4";
+  const dot = new DotPage(page);
+  // Seed fixture history directly; collect itself has no submission dependencies.
+  await page.evaluate((prefix) => {
+    document.querySelectorAll("article.message-row").forEach((row) => {
+      row.remove();
+    });
+    for (const [self, text] of [
+      [true, prefix],
+      [false, "Interim"],
+      [false, "DONE"],
+    ] as const) {
+      const row = document.createElement("article");
+      row.className = `message-row ${self ? "self" : ""}`;
+      row.dataset.messageId = self ? "own" : text;
+      row.innerHTML = `<div class="message-body"><p>${text}</p></div>`;
+      document.body.append(row);
+    }
+  }, dotPrefix(id));
+  const snapshot = await dot.snapshot();
+  // Match the production self attribute used by the synthetic fixture.
+  expect(snapshot.rows.length).toBe(3);
+
+  const fixturePage = {
+    navigate: async () => {},
+    currentUrl: () => "https://chatgpt.com/dots/12345678-1234-1234-1234-123456789abc",
+    snapshot: async () => ({
+      ...(await dot.snapshot()),
+      rows: (await dot.snapshot()).rows,
+    }),
+    extract: dot.extract.bind(dot),
+    files: dot.files.bind(dot),
+  };
+  const ports = {
+    lock: { acquire: async () => ({ kind: "ok", token: "test" }), release: async () => {} },
+    browser: {
+      checkProfilePath: async () => ({ ok: true }),
+      checkProfileFree: async () => ({ free: true }),
+      launch: async () => ({ ok: true }),
+      close: async () => {},
+    },
+  } as unknown as Pick<Ports, "browser" | "lock">;
+  const output = join(dir, "collect-case");
+  await import("node:fs/promises").then((fs) => fs.mkdir(output));
+  await writeFile(join(output, "result.json"), "original");
+  await writeFile(join(output, "response.md"), "original response");
+  expect(await collectDotReply(id, "DONE", ports, () => fixturePage)).toMatchObject({
+    ok: true,
+    state: "complete",
+    replyCount: 2,
+  });
+  const saveDir = join(output, "collected", "2026-10-01T00-00-00Z");
+  expect(await collectDotReply(id, "DONE", ports, () => fixturePage, saveDir)).toMatchObject({
+    ok: true,
+    savedDir: saveDir,
+  });
+  expect(await readFile(join(saveDir, "response.md"), "utf8")).toContain("Interim");
+  expect(JSON.parse(await readFile(join(saveDir, "collect-result.json"), "utf8"))).toMatchObject({
+    schemaVersion: "1.3",
+    target: "dot",
+    state: "complete",
+  });
+  expect(await readFile(join(output, "result.json"), "utf8")).toBe("original");
+  expect(await readFile(join(output, "response.md"), "utf8")).toBe("original response");
+  const owned = await fixturePage.snapshot();
+  expect(
+    await collectDotReply(id, "DONE", ports, () => ({
+      ...fixturePage,
+      snapshot: async () => ({
+        ...owned,
+        rows: [
+          ...owned.rows,
+          owned.rows.find((row) => row.self) ??
+            (owned.rows[0] as import("../../src/dot/completion.js").DotRow),
+        ],
+      }),
+    })),
+  ).toMatchObject({ code: "COLLECT_REPLY_AMBIGUOUS" });
+  await page.close();
 });

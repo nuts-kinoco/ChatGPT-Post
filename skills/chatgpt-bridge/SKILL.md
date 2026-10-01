@@ -82,5 +82,12 @@ persistent thread: use one request at a time and avoid concurrent manual input. 
 automatic-send/requestId prefix. Ask for the exact completionMarker at the end of the final reply;
 otherwise completion uses 25 seconds of quiet plus 3 seconds without typing. Attachments are not
 supported. Dot results use schema 1.3, replyCount and files[]. On timeout/unknown submission, never
-resend: inspect conversationUrl manually. The chat-only collect recovery advice above does not apply to dot.
+resend: use collect as described below.
 Live verification of this implementation by the managing session is pending.
+
+
+For dot long tasks, always set completionMarker: dot can remain silent for minutes, so the
+25-second fallback without a marker is unreliable. A marker requires 3 seconds without typing
+and a 5-second thread settle. Never resend after timeout: `collect <requestId> [--json]` checks
+progress without sending; `--save` retrieves replies/files under `collected/<UTC>/`, preserving
+original outputs. Exit 6 means in_progress/unknown and is retryable; explicit URL recovery is refused.

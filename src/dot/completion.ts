@@ -1,6 +1,7 @@
 ﻿import type { BridgeRequest } from "../contracts/types.js";
 
 export const DOT_QUIET_MS = 25_000;
+export const DOT_MARKER_SETTLE_MS = 5_000;
 export const DOT_NO_TYPING_MS = 3_000;
 export const DOT_POLL_MS = 450;
 export const DOT_CONFLICT_MS = 2_000;
@@ -93,7 +94,10 @@ export function decideDotCompletion(
       !snapshot.typing &&
       progress.noTypingSince !== null &&
       now - progress.noTypingSince >= DOT_NO_TYPING_MS &&
-      ((marker !== undefined && last.text.includes(marker)) || now - progress.changedAt >= quietMs),
+      (marker !== undefined
+        ? replies.some((row) => row.text.includes(marker)) &&
+          now - progress.changedAt >= DOT_MARKER_SETTLE_MS
+        : now - progress.changedAt >= quietMs),
   );
   const conflictPersistent =
     progress.conflictSince !== null && now - progress.conflictSince >= DOT_CONFLICT_MS;

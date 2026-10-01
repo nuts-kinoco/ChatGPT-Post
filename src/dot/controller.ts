@@ -175,6 +175,7 @@ export class DotController {
       await dot.safety();
       await this.ports.lock.writeMarker(this.request.requestId, {
         target: "dot",
+        completionMarker: this.request.completionMarker,
         requestId: this.request.requestId,
         requestPath: this.opts.requestPath,
         writtenAt: this.ports.clock.now().toISOString(),
@@ -272,6 +273,30 @@ export class DotController {
       }
       return await this.finish(null, "");
     } catch (error) {
+      if (
+        error instanceof DotFailure &&
+        error.code === "GENERATION_TIMEOUT" &&
+        this.request?.completionMarker !== undefined
+      ) {
+        if (!this.replies.some((row) => row.text.includes(this.request?.completionMarker ?? "")))
+          this.warnings.push("dot_marker_not_seen");
+        try {
+          const dot = this.getPage();
+          const extracted = dot.extract(this.replies);
+          this.warnings.push(...extracted.warnings);
+          this.responseFile = await this.ports.contracts.writeResponse(
+            this.dir,
+            extracted.markdown,
+          );
+          const downloaded = await dot.files(this.replies, this.dir, (files) => {
+            this.files = [...files];
+          });
+          this.files = downloaded.files;
+          this.warnings.push(...downloaded.warnings);
+        } catch {
+          this.warnings.push("dot_partial_save_failed");
+        }
+      }
       return await this.finish(
         error instanceof DotFailure ? error.code : "INTERNAL_ERROR",
         (error as Error).message,
@@ -348,7 +373,7 @@ export class DotController {
             code,
             message:
               code === "SUBMIT_STATE_UNKNOWN" || code === "GENERATION_TIMEOUT"
-                ? "Do not resend; inspect the persistent dot thread manually. Dot collect is not supported."
+                ? "Do not resend; use collect <requestId> to check the persistent dot thread."
                 : code,
             cause: redactSecrets(cause).slice(0, 200),
             retryable: false,
@@ -358,8 +383,7 @@ export class DotController {
     };
     try {
       this.resultPath = await this.ports.contracts.writeResult(this.dir, this.result);
-      if (!code && this.requestId)
-        await this.ports.lock.deleteMarker(this.requestId).catch(() => undefined);
+      // Retain dot identity for read-only collect, including successful requests.
     } catch (error) {
       this.ports.stderr(`WRITE_FAILED: ${(error as Error).message}`);
       return { exitCode: 1, state: this.state, result: null, resultPath: null };

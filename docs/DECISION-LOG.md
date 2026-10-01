@@ -213,3 +213,14 @@ Any browser download handling, including saveAs, streaming, or a plain download 
 ### A-197 dot composer text round-trip correction (2026-10-01)
 
 The reported real prompt failed exact composer comparison because Windows CRLF differed from LF readback, and ProseMirror colour decorations introduced a trailing BR that was counted as content. Normalize CRLF and lone CR to LF in dotPrompt, and share the production composer reader with synthetic Chromium tests to exclude aria-hidden decorations and ProseMirror-trailingBreak while preserving real BRs, block boundaries, indentation, and exact equality before send. Live re-verification of the real prompt is pending.
+
+
+### A-198 dot marker authority and read-only collect (2026-10-01)
+
+The reported real request 20261001T061219Z-8ce331f5 completed prematurely after an interim reply:
+dot worked silently, but marker OR quiet accepted 25 seconds of silence. Make a configured marker
+authoritative across subsequent non-self rows, requiring no typing and a 5-second settle for files.
+Preserve timeout failure semantics and save partial replies/files. Add request-ID collect with an
+exclusive lock, settled DotPage navigation, unique prefix ownership, and optional separate saves
+through existing CON-008 file-info retrieval. Never resend. Synthetic verification only; managing
+session live verification is pending. No new live approval is asserted.

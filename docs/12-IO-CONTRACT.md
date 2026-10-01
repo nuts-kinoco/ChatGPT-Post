@@ -251,3 +251,11 @@ exit 3. Submit markers include target:"dot", are written before the only send cl
 failure. Dot collect/recovery is outside this MVP: follow up manually, never resend.
 
 Dot disables diagnostic trace capture of the persistent PO thread. Chat tracing remains unchanged.
+
+
+Dot collect schema 1.3: `collected/<UTC timestamp>/collect-result.json` contains target "dot",
+requestId, state (complete/in_progress/unknown), markerSeen, typing, replyCount, files (names),
+threadUrl, warnings, and savedFiles (the existing dot file metadata). response.md and files/ are
+stored beside it only with --save. Status-only collect writes no request artifacts. Original
+result.json/response.md are never overwritten. Marker timeout writes partial response.md/files while result.json responseFile remains null
+and status/error retain the original GENERATION_TIMEOUT failure semantics.

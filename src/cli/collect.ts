@@ -1,4 +1,5 @@
 /** Durable, no-send recovery for a reply that may have completed after a runner timed out. */
+
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { CHATGPT_ORIGIN, CONVERSATION_PATH_RE } from "../chatgpt/page.js";
@@ -10,6 +11,8 @@ import type {
   ObservedModel,
   ObservedPreset,
 } from "../contracts/types.js";
+import { dotPrefix } from "../dot/completion.js";
+import { DotFailure, type DotPage } from "../dot/page.js";
 import { IMAGE_CAPTURE_BUDGET_MS, sanitiseConversationUrl } from "../state/controller.js";
 import type { Extraction, Ports } from "../state/ports.js";
 
@@ -290,4 +293,117 @@ export async function writeRecoveredResult(
   await atomicWriteFile(responsePath, normaliseResponseBody(markdown));
   await atomicWriteFile(resultPath, `${JSON.stringify(result, null, 2)}\n`);
   return { resultPath, responsePath };
+}
+
+export function classifyDotCollect(
+  snapshot: import("../dot/completion.js").DotSnapshot,
+  requestId: string,
+  marker: string | undefined,
+  threadUrl: string,
+) {
+  const prefix = dotPrefix(requestId);
+  const matches = snapshot.rows.filter((row) => row.self && row.text.startsWith(prefix));
+  if (matches.length !== 1 || !matches[0])
+    return {
+      ok: false as const,
+      code: matches.length
+        ? ("COLLECT_REPLY_AMBIGUOUS" as const)
+        : ("COLLECT_REPLY_ABSENT" as const),
+      message: `expected exactly one own row; open ${threadUrl} manually to confirm the thread; never resend`,
+    };
+  const replies = snapshot.rows
+    .slice(snapshot.rows.indexOf(matches[0]) + 1)
+    .filter((row) => !row.self);
+  const markerSeen = marker !== undefined && replies.some((row) => row.text.includes(marker));
+  return {
+    ok: true as const,
+    replies,
+    status: {
+      state: markerSeen
+        ? ("complete" as const)
+        : marker !== undefined
+          ? ("in_progress" as const)
+          : ("unknown" as const),
+      markerSeen,
+      typing: snapshot.typing,
+      replyCount: replies.length,
+      files: replies.flatMap((row) =>
+        row.files.map((name) => name.replace(/\u3092\u958b\u304f$|^Open /i, "")),
+      ),
+      threadUrl,
+    },
+  };
+}
+
+/** Read-only dependencies intentionally exclude prepare/send. Saving never replaces run output. */
+export async function collectDotReply(
+  requestId: string,
+  marker: string | undefined,
+  ports: Pick<Ports, "browser" | "lock">,
+  getPage: () => Pick<DotPage, "navigate" | "snapshot" | "currentUrl" | "extract" | "files">,
+  saveDir?: string,
+) {
+  let locked = false;
+  let browserUp = false;
+  try {
+    const acquired = await ports.lock.acquire("collect", requestId);
+    if (acquired.kind !== "ok")
+      return { ok: false as const, code: "COLLECT_LOCK_BUSY", message: acquired.cause };
+    locked = true;
+    const path = await ports.browser.checkProfilePath();
+    if (!path.ok)
+      return { ok: false as const, code: "COLLECT_BROWSER_UNAVAILABLE", message: path.cause };
+    const free = await ports.browser.checkProfileFree();
+    if (!free.free)
+      return { ok: false as const, code: "COLLECT_BROWSER_UNAVAILABLE", message: free.cause };
+    const launched = await ports.browser.launch({
+      copyCaptureShim: false,
+      onCrash: () => undefined,
+    });
+    if (!launched.ok)
+      return { ok: false as const, code: "COLLECT_BROWSER_UNAVAILABLE", message: launched.cause };
+    browserUp = true;
+    const dot = getPage();
+    await dot.navigate();
+    const classified = classifyDotCollect(
+      await dot.snapshot(),
+      requestId,
+      marker,
+      dot.currentUrl().split(/[?#]/)[0] ?? "",
+    );
+    if (!classified.ok) return classified;
+    const warnings: string[] =
+      marker !== undefined && !classified.status.markerSeen ? ["dot_marker_not_seen"] : [];
+    if (saveDir) {
+      await mkdir(join(saveDir, "files"), { recursive: true });
+      const extracted = dot.extract(classified.replies);
+      warnings.push(...extracted.warnings);
+      const downloaded = await dot.files(classified.replies, saveDir);
+      warnings.push(...downloaded.warnings);
+      await atomicWriteFile(
+        join(saveDir, "response.md"),
+        normaliseResponseBody(extracted.markdown),
+      );
+      await atomicWriteFile(
+        join(saveDir, "collect-result.json"),
+        `${JSON.stringify({ schemaVersion: "1.3", target: "dot", requestId, ...classified.status, warnings, savedFiles: downloaded.files }, null, 2)}\n`,
+      );
+    }
+    return {
+      ok: true as const,
+      ...classified.status,
+      warnings,
+      ...(saveDir ? { savedDir: saveDir } : {}),
+    };
+  } catch (error) {
+    const code =
+      error instanceof DotFailure &&
+      ["AUTH_REQUIRED", "CAPTCHA_OR_CHALLENGE", "MANUAL_INTERVENTION_REQUIRED"].includes(error.code)
+        ? "COLLECT_AUTH_UNAVAILABLE"
+        : "COLLECT_EXTRACTION_FAILED";
+    return { ok: false as const, code, message: (error as Error).message };
+  } finally {
+    if (browserUp) await ports.browser.close({ keepPage: false }).catch(() => undefined);
+    if (locked) await ports.lock.release().catch(() => undefined);
+  }
 }

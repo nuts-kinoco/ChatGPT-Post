@@ -363,5 +363,19 @@ unsupported (exit 2). Results are schema 1.3 with target, replyCount and files[]
 are limited to 10 files, 20 MiB each, 30 seconds each; download failures are warnings. Reply bodies
 are joined in response.md with separators, excluding file chips. Existing chat results stay 1.2.
 Exit codes follow run conventions. Login/challenge/approval dialogs stop with exit 3. A send is
-never repeated: unknown submission and timeout require manual inspection of conversationUrl.
-`collect` currently supports chat only, not dot. Managing-session live validation is pending.
+never repeated: unknown submission and timeout require read-only collect or manual inspection.
+`collect` supports dot request IDs as described below. Managing-session live validation is pending.
+
+
+Dot long tasks: always set completionMarker; dot can remain silent for many minutes, so the
+25-second quiet fallback without a marker is unreliable for long tasks. A configured marker is
+authoritative: it must occur in a non-self reply after this request, with 3 seconds without typing
+and 5 seconds of unchanged thread history (including trailing file rows). Marker timeout remains
+GENERATION_TIMEOUT with submitted "yes"; interim response.md/files are saved with dot_marker_not_seen.
+Never resend. Use `collect <requestId> [--json]` to check progress without sending;
+add `--save` to retrieve replies/files under `collected/<UTC timestamp>/`. Original outputs stay intact.
+Dot collect reports state, markerSeen, typing, replyCount, files (names), and threadUrl.
+Marker seen means complete; absent marker means in_progress; requests without a marker are unknown
+(the run quiet heuristic is never applied by collect). Exit 0 means complete; exit 6 means retryable
+in_progress/unknown, including when saved. Lock/browser exit 4 and auth exit 3 are retained.
+Explicit --conversation-url recovery evidence is refused for dot. No browser downloads are used.

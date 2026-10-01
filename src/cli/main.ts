@@ -60,7 +60,7 @@ commands:
   wait <requestId> [--timeout-ms <n>] [--json]
                              （Phase 1）jobが終端状態になるかタイムアウトするまで待つ。タイムアウトしても
                              jobそのものは止まらない
-  collect <requestId> [--json]
+  collect <requestId> [--json] [--save]
   collect --conversation-url <url> --since <ISO> --prompt-file <path> --baseline-assistant-count <n> [--out <dir>] [--json]
                              送信せず、baseline と会話を照合して 1 件だけの回答を回収する
   result <requestId> [--out <path>] [--json]
@@ -518,6 +518,7 @@ async function cmdCollect(
     baselineAssistantCount?: string | undefined;
     promptFile?: string | undefined;
     out?: string | undefined;
+    save?: boolean;
     json: boolean;
   },
 ): Promise<number> {
@@ -541,6 +542,65 @@ async function cmdCollect(
     );
     return EXIT_CODES.invalidInput;
   }
+  // Resolve dot before jobs.db: status-only collect must not reconcile or write job state.
+  if (requestId) {
+    const marker = await readMarker(markerPath(cfg.stateDir, requestId));
+    if (marker?.target === "dot") {
+      const resolvedRequestPath = requestPathForCollect(
+        marker.requestPath,
+        cfg.runtimeDir,
+        requestId,
+      );
+      const requestDir = dirname(resolvedRequestPath);
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await readFile(resolvedRequestPath, "utf8"));
+      } catch (error) {
+        printCommandError(
+          v.json,
+          "INVALID_REQUEST",
+          `cannot read dot request: ${(error as Error).message}`,
+        );
+        return EXIT_CODES.invalidInput;
+      }
+      // Status recovery needs no prompt/attachment reads, only durable validated request fields.
+      const { validateRequest } = await import("../contracts/schema.js");
+      if (!validateRequest(raw).valid) {
+        printCommandError(v.json, "INVALID_REQUEST", "invalid dot request.json");
+        return EXIT_CODES.invalidInput;
+      }
+      const request = raw as import("../contracts/types.js").BridgeRequest;
+      if (request.target !== "dot" || request.requestId !== requestId) {
+        printCommandError(v.json, "INVALID_REQUEST", "dot request does not match submit marker");
+        return EXIT_CODES.invalidInput;
+      }
+      {
+        const { collectDotReply } = await import("./collect.js");
+        const ports = buildPorts(cfg, createLogger(cfg.logLevel), true, false);
+        const saveDir = v.save
+          ? join(requestDir, "collected", new Date().toISOString().replace(/[:.]/g, "-"))
+          : undefined;
+        const attempt = await collectDotReply(
+          requestId,
+          request.completionMarker ?? marker.completionMarker,
+          ports,
+          () => new DotPage(ports.session.currentPage),
+          saveDir,
+        );
+        if (!attempt.ok) {
+          printCommandError(v.json, attempt.code, attempt.message);
+          return attempt.code === "COLLECT_LOCK_BUSY" ||
+            attempt.code === "COLLECT_BROWSER_UNAVAILABLE"
+            ? 4
+            : attempt.code === "COLLECT_AUTH_UNAVAILABLE"
+              ? 3
+              : 1;
+        }
+        process.stdout.write(`${JSON.stringify(attempt)}\n`);
+        return attempt.state === "complete" ? 0 : EXIT_CODES.waitingTimeout;
+      }
+    }
+  }
   let identity: import("./collect.js").CollectIdentity;
   let job: JobRow | null = null;
   let requestDir: string | null = null;
@@ -549,24 +609,12 @@ async function cmdCollect(
     try {
       job = store.get(requestId);
       if (job) job = await reconcileJob(store, job, cfg);
-      if (job?.status === "completed") {
-        printCommandError(v.json, "INVALID_REQUEST", `job ${requestId} is already completed`);
-        return EXIT_CODES.invalidInput;
-      }
       const marker = await readMarker(markerPath(cfg.stateDir, requestId));
       if (!marker || !Number.isInteger(marker.baselineAssistantCount)) {
         printCommandError(
           v.json,
           "INVALID_REQUEST",
           `collect requires a readable submit.marker for ${requestId}`,
-        );
-        return EXIT_CODES.invalidInput;
-      }
-      if (marker.target === "dot") {
-        printCommandError(
-          v.json,
-          "INVALID_REQUEST",
-          "dot collect is not supported; inspect the persistent thread manually and never resend",
         );
         return EXIT_CODES.invalidInput;
       }
@@ -601,8 +649,12 @@ async function cmdCollect(
         printCommandError(
           v.json,
           "INVALID_REQUEST",
-          "dot collect is not supported; inspect the persistent thread manually and never resend",
+          "dot request requires a dot submit marker; never resend",
         );
+        return EXIT_CODES.invalidInput;
+      }
+      if (job?.status === "completed") {
+        printCommandError(v.json, "INVALID_REQUEST", `job ${requestId} is already completed`);
         return EXIT_CODES.invalidInput;
       }
       const conversationUrl = confirmedConversationUrl(
@@ -632,6 +684,14 @@ async function cmdCollect(
       store.close();
     }
   } else {
+    if (v.conversationUrl?.includes("/dots/")) {
+      printCommandError(
+        v.json,
+        "INVALID_REQUEST",
+        "dot collect requires requestId; explicit recovery evidence is refused",
+      );
+      return EXIT_CODES.invalidInput;
+    }
     const baseline = Number(v.baselineAssistantCount);
     if (
       !v.conversationUrl ||
@@ -993,6 +1053,7 @@ export async function main(argv: string[]): Promise<number> {
       "dump-dom": { type: "boolean", default: false },
       "walk-effort": { type: "boolean", default: false },
       stale: { type: "boolean", default: false },
+      save: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       queue: { type: "string" },
       once: { type: "boolean", default: false },
@@ -1083,6 +1144,7 @@ export async function main(argv: string[]): Promise<number> {
     }
     case "collect":
       return cmdCollect(cfg, positionals[1], {
+        save: values.save ?? false,
         conversationUrl: values["conversation-url"],
         since: values.since,
         promptFile: values["prompt-file"],
