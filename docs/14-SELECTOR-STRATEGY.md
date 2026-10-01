@@ -127,11 +127,23 @@ DOM 構造メモ（2026-09-15）:
 | preset | スライダー段階（`aria-valuenow`） | UI ラベル（ja / en） | 状態 |
 |---|---|---|---|
 | `instant` | 0 | Instant / Instant | 確定（2026-09-15） |
-| `medium` | 1 | 中程度 / Medium（en は推定） | 確定（2026-09-15、ja） |
-| `high` | 2 | 高 / High（en は推定） | 確定（2026-09-15、ja） |
-| `extra_high` | 3 | 極高 / Extra high（en は推定） | 確定（2026-09-15、ja） |
+| `medium` | 1 | 中程度 / Medium | ja: 2026-09-15、英語値: 2026-10-01 観測 |
+| `high` | 2 | 高 / High | ja: 2026-09-15、英語値: 2026-10-01 観測 |
+| `extra_high` | 3 | 極高 / Extra High / Extra high | ja: 2026-09-15、Extra High: 2026-10-01 観測。Extra high も保持 |
 | `pro` | 4 | Pro / Pro | 確定（2026-09-15）。「最新」では GPT-6 Pro にルーティング |
 | `current` | 操作しない。`modelPickerCurrentLabel` を `PRESET_LABELS` で逆引き | — | Phase 4 で実装 |
+
+2026-10-01 12:52 JST の既存 read-only inspection（`runtime/artifacts/inspect-ui/2026-10-01T03-52-50-833Z/inspect-ui.json`）では、html lang は `ja`、メニューのトリガは「思考量」だが、値は `Instant / Medium / High / Extra High / Pro`、閉じたトリガは `High` だった。ページ locale は観測メタデータであり、値の言語を制限しない。モデル・effort の逆引きとトリガの全体／suffix／接頭辞照合は、両言語の既知ラベルを大小文字を区別せず扱う。未知の値・接頭辞や曖昧な逆引きは引き続き fail closed。
+
+| model | 受理する先頭行（locale に依存しない） | 観測 |
+|---|---|---|
+| `latest` | 最新 / Latest | 最新: 2026-09-15、Latest（checked）: 2026-10-01 |
+| `gpt-5.6-sol` | GPT-5.6 Sol | 2026-09-15 / 2026-10-01 |
+| `gpt-5.5` | GPT-5.5 | 2026-09-15 / 2026-10-01。2 行目の「10月14日 に提供終了予定」/ `Leaving on October 14` は照合しない |
+
+トリガの `High`、`Extra High`、`5.5 High`、`6 Pro` も同じ逆引き規則を使う。モデル／effort の要素取得は構造属性を使い、「思考量」「モデルを選択」の文言に依存しない。A-193 の修正後の live 再検証は未実施・pending。
+
+`src` 全体の文字列照合監査（2026-10-01）で残る日本語固定候補は、`selectors.ts` の新規チャット `aria-label="新しいチャット"`、送信 `aria-label="送信"`、コピー `aria-label="メッセージをコピーする"`、添付削除 suffix「を削除」/ substring「削除」、旧 Project ホーム／作成の aria-label。英語化するとこれらの候補単体は不一致になる。新規チャット操作は URL 遷移であり、この候補を使わない。送信／コピーには testid や日英 role 候補、Project には構造属性候補があるが、添付削除は両候補とも日本語依存。今回のモデル／preset 経路以外は実画面の変更証拠がないため変更しない。sidebar の Project 名はユーザー指定名と照合し、日本語固定の UI 見出しを要求しない。
 
 - 5 段階と preset 5 種は 1:1（`inspect-ui --walk-effort` で確認、`EFFORT_SLIDER_INDEX`）。
 - 選択手順（A-074〜A-076）: モデル指定があれば開く → 展開 → ラジオをクリック → 再展開して `aria-checked` 確認 → 閉じる。次に開き直し（simple view）→ スライダーに `focus` → `Home` → `ArrowRight` × index（**450 ms 間隔**。短いと保存が 1 段階遅れる）→ `aria-valuenow` と described ラベルを確認 → 再展開してモデルを再確認 → 閉じる → 1.2 s 待ってトリガのラベルを `parseTriggerLabel` で逆引き（「極高」または「5.5 高」「6 Pro」形式）。どこかで一致しなければ `MODEL_NOT_VERIFIABLE`。

@@ -31,6 +31,8 @@ let browser: Browser | null = null;
 let page: Page;
 
 beforeAll(async () => {
+  // Explicit opt-out for offline tasks that prohibit any browser commands.
+  if (process.env.BRIDGE_SKIP_BROWSER_TESTS === "1") return;
   try {
     browser = await chromium.launch({ channel: "chrome", headless: true });
   } catch {

@@ -658,14 +658,14 @@ export const ELEMENTS: Record<ElementKey, ElementDef> = {
 
 /**
  * preset = 思考 effort スライダーの段階（5 段階、aria-valuenow 0..4）。ja ラベルは 2026-09-15 に全段階を
- * 実画面で確認（Instant / 中程度 / 高 / 極高 / Pro）。en ラベルは未検証の推定で、英語 UI では
- * inspect-ui で確認してから信頼すること。
+ * 実画面で確認（Instant / 中程度 / 高 / 極高 / Pro）。2026-10-01 の ja ページで英語の値も観測。
+ * ページ locale に関係なく両言語を大小文字を区別せず照合する。
  */
 export const PRESET_LABELS: Record<ObservedPreset, Record<Locale, string[]>> = {
   instant: { ja: ["Instant"], en: ["Instant"] },
   medium: { ja: ["中程度"], en: ["Medium"] },
   high: { ja: ["高"], en: ["High"] },
-  extra_high: { ja: ["極高"], en: ["Extra high"] },
+  extra_high: { ja: ["極高"], en: ["Extra High", "Extra high"] },
   pro: { ja: ["Pro"], en: ["Pro"] },
 };
 
@@ -690,10 +690,10 @@ export const EFFORT_KEY_INTERVAL_MS = 450;
 
 /**
  * Model radios (advanced view). Matched against the first line of the radio text (GPT-5.5 carries a
- * second line "10月14日 に提供終了予定"). en labels unknown -> fail closed on an English UI.
+ * second line "10月14日 に提供終了予定" or "Leaving on October 14"). Both locales are accepted.
  */
 export const MODEL_LABELS: Record<ObservedModel, Record<Locale, string[]>> = {
-  latest: { ja: ["最新"], en: [] },
+  latest: { ja: ["最新"], en: ["Latest"] },
   "gpt-5.6-sol": { ja: ["GPT-5.6 Sol"], en: ["GPT-5.6 Sol"] },
   "gpt-5.5": { ja: ["GPT-5.5"], en: ["GPT-5.5"] },
 };
@@ -975,18 +975,23 @@ export async function latest(
   return best ? best.loc.last() : null;
 }
 
+/** Locale is observation metadata, never a restriction on backend-served labels. */
+function allLabels(labels: Record<Locale, string[]>): string[] {
+  return [...labels.ja, ...labels.en];
+}
+
+function normalizeLabel(label: string): string {
+  return label.trim().toLowerCase();
+}
+
 export function reverseLookupModel(
   radioText: string,
-  locale: Locale,
+  _locale: Locale,
 ): { model: ObservedModel } | { error: "unmapped" | "ambiguous" } {
-  const first = (radioText.split(/\r?\n/)[0] ?? "").trim().toLowerCase();
+  const first = normalizeLabel(radioText.split(/\r?\n/)[0] ?? "");
   const hits: ObservedModel[] = [];
   for (const model of Object.keys(MODEL_LABELS) as ObservedModel[]) {
-    const labels = [
-      ...MODEL_LABELS[model][locale],
-      ...MODEL_LABELS[model][locale === "ja" ? "en" : "ja"],
-    ];
-    if (labels.some((l) => l.trim().toLowerCase() === first)) hits.push(model);
+    if (allLabels(MODEL_LABELS[model]).some((l) => normalizeLabel(l) === first)) hits.push(model);
   }
   if (hits.length === 1) return { model: hits[0] as ObservedModel };
   return { error: hits.length === 0 ? "unmapped" : "ambiguous" };
@@ -1009,6 +1014,11 @@ export const MODEL_HINTS: Record<string, { model: ObservedModel; preset?: Observ
   "6": { model: "latest", preset: "pro" },
 };
 
+function lookupModelHint(hint: string): (typeof MODEL_HINTS)[string] | undefined {
+  const norm = normalizeLabel(hint);
+  return Object.entries(MODEL_HINTS).find(([label]) => normalizeLabel(label) === norm)?.[1];
+}
+
 /** True when the trigger prefix agrees with what the menu showed (Codex P5-3). */
 export function hintMatches(
   hint: string | null,
@@ -1019,7 +1029,7 @@ export function hintMatches(
   // already proved the effort label; an absent prefix therefore agrees only with latest, for
   // every preset (as it did for bare latest non-Pro labels before the redesign).
   if (hint === null) return model === "latest";
-  const h = MODEL_HINTS[hint];
+  const h = lookupModelHint(hint);
   if (!h) return false;
   if (h.model !== model) return false;
   if (h.preset && h.preset !== preset) return false;
@@ -1038,17 +1048,16 @@ export function parseTriggerLabel(
   if (!("error" in whole)) return { preset: whole.preset, effortLabel: norm, modelHint: null };
   const candidates: Array<{ preset: ObservedPreset; l: string }> = [];
   for (const preset of Object.keys(PRESET_LABELS) as ObservedPreset[]) {
-    for (const loc of ["ja", "en"] as Locale[])
-      for (const l of PRESET_LABELS[preset][loc]) candidates.push({ preset, l });
+    for (const l of allLabels(PRESET_LABELS[preset])) candidates.push({ preset, l });
   }
   candidates.sort((x, y) => y.l.length - x.l.length);
-  const lower = norm.toLowerCase();
+  const lower = normalizeLabel(norm);
   for (const c of candidates) {
-    const suffix = ` ${c.l.toLowerCase()}`;
+    const suffix = ` ${normalizeLabel(c.l)}`;
     if (lower.endsWith(suffix)) {
       const hint = norm.slice(0, norm.length - suffix.length).trim();
       // unknown prefixes are not accepted (Codex P5-3): the caller cross-checks with hintMatches()
-      if (!hint || !MODEL_HINTS[hint]) return { error: "unmapped" };
+      if (!hint || !lookupModelHint(hint)) return { error: "unmapped" };
       return { preset: c.preset, effortLabel: c.l, modelHint: hint };
     }
   }
@@ -1057,16 +1066,12 @@ export function parseTriggerLabel(
 
 export function reverseLookupPreset(
   label: string,
-  locale: Locale,
+  _locale: Locale,
 ): { preset: ObservedPreset } | { error: "unmapped" | "ambiguous" } {
-  const norm = label.trim().toLowerCase();
+  const norm = normalizeLabel(label);
   const hits: ObservedPreset[] = [];
   for (const preset of Object.keys(PRESET_LABELS) as ObservedPreset[]) {
-    const labels = [
-      ...PRESET_LABELS[preset][locale],
-      ...PRESET_LABELS[preset][locale === "ja" ? "en" : "ja"],
-    ];
-    if (labels.some((l) => l.trim().toLowerCase() === norm)) hits.push(preset);
+    if (allLabels(PRESET_LABELS[preset]).some((l) => normalizeLabel(l) === norm)) hits.push(preset);
   }
   if (hits.length === 1) return { preset: hits[0] as ObservedPreset };
   return { error: hits.length === 0 ? "unmapped" : "ambiguous" };

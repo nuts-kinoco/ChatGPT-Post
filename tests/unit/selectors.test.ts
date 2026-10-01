@@ -7,6 +7,7 @@ import {
   ELEMENTS,
   type ElementKey,
   hintMatches,
+  MODEL_HINTS,
   PRESET_LABELS,
   parseTriggerLabel,
   probe,
@@ -35,6 +36,84 @@ const RUN_CRITICAL: ElementKey[] = [
 ];
 
 describe("selectors (14-SELECTOR-STRATEGY, AC-016)", () => {
+  for (const locale of ["ja", "en"] as const) {
+    it.each([
+      ["Latest", "latest"],
+      ["最新", "latest"],
+      ["GPT-5.6 Sol", "gpt-5.6-sol"],
+      ["GPT-5.5\nLeaving on October 14", "gpt-5.5"],
+      ["GPT-5.5\n10月14日 に提供終了予定", "gpt-5.5"],
+    ] as const)(`maps radio %s regardless of ${locale} page locale and casing`, (label, model) => {
+      for (const text of [label, label.toLowerCase(), label.toUpperCase()]) {
+        expect(reverseLookupModel(text, locale)).toEqual({ model });
+      }
+      expect(reverseLookupModel("Unknown\nLatest", locale)).toEqual({ error: "unmapped" });
+    });
+
+    it.each([
+      [0, "Instant", "instant"],
+      [1, "Medium", "medium"],
+      [2, "High", "high"],
+      [3, "Extra High", "extra_high"],
+      [3, "Extra high", "extra_high"],
+      [4, "Pro", "pro"],
+      [1, "中程度", "medium"],
+      [2, "高", "high"],
+      [3, "極高", "extra_high"],
+    ] as const)(`maps effort %s / %s on a ${locale} page`, (index, label, preset) => {
+      expect(EFFORT_SLIDER_INDEX[index]).toBe(preset);
+      for (const text of [label, label.toLowerCase(), label.toUpperCase()]) {
+        expect(reverseLookupPreset(text, locale)).toEqual({ preset });
+        expect(parseTriggerLabel(text, locale)).toMatchObject({ preset, modelHint: null });
+      }
+      expect(reverseLookupPreset("Ultra", locale)).toEqual({ error: "unmapped" });
+    });
+
+    it.each([
+      ["High", "high", null, "latest"],
+      ["5.5 High", "high", "5.5", "gpt-5.5"],
+      ["6 Pro", "pro", "6", "latest"],
+      ["Extra High", "extra_high", null, "latest"],
+      ["5.6 Extra High", "extra_high", "5.6", "gpt-5.6-sol"],
+      ["高", "high", null, "latest"],
+      ["5.5 高", "high", "5.5", "gpt-5.5"],
+      ["5.6 極高", "extra_high", "5.6", "gpt-5.6-sol"],
+    ] as const)(`parses trigger %s on a ${locale} page`, (label, preset, modelHint, model) => {
+      for (const text of [label, label.toLowerCase(), label.toUpperCase()]) {
+        expect(parseTriggerLabel(text, locale)).toMatchObject({ preset, modelHint });
+        expect(hintMatches(modelHint, model, preset)).toBe(true);
+      }
+      expect(parseTriggerLabel("Unknown High", locale)).toEqual({ error: "unmapped" });
+    });
+
+    it(`accepts a ja menu trigger with English values (${locale} metadata)`, () => {
+      // 思考量 is the open-menu caption, never an effort value. The model/slider controls
+      // are resolved structurally; only their values and the closed trigger label are mapped.
+      expect(parseTriggerLabel("思考量", locale)).toEqual({ error: "unmapped" });
+      expect(reverseLookupModel("Latest", locale)).toEqual({ model: "latest" });
+      expect(reverseLookupPreset("High", locale)).toEqual({ preset: "high" });
+      expect(parseTriggerLabel("High", locale)).toMatchObject({ preset: "high", modelHint: null });
+    });
+  }
+
+  it("normalizes MODEL_HINTS keys in both parsing and cross-checking", () => {
+    // Current prefixes are numeric. A temporary letter-bearing key proves both paths use
+    // case-insensitive lookup without accepting any new production prefix.
+    MODEL_HINTS.Sol = { model: "gpt-5.6-sol" };
+    try {
+      expect(parseTriggerLabel("sOL hIGH", "ja")).toMatchObject({
+        preset: "high",
+        modelHint: "sOL",
+      });
+      expect(hintMatches(" sOL ", "gpt-5.6-sol", "high")).toBe(true);
+    } finally {
+      delete MODEL_HINTS.Sol;
+    }
+    for (const hint of ["toString", "constructor", "__proto__", "Unknown"]) {
+      expect(parseTriggerLabel(`${hint} High`, "ja")).toEqual({ error: "unmapped" });
+      expect(hintMatches(hint, "latest", "high")).toBe(false);
+    }
+  });
   it("A-144 Project selectors are live-verified (2026-09-22), except the creation submit click itself", () => {
     // projectSidebarItem/projectOpenHomeButton (find+open an existing Project) and
     // newProjectButton/newProjectNameInput (open the creation dialog, fill the name) were all
