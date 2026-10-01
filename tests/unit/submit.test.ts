@@ -626,3 +626,42 @@ describe("reconcileJob / waitForJob (Phase 1, A-132)", () => {
     }
   });
 });
+it("async idempotency includes dot target and completion marker without another spawn", async () => {
+  const id = "20261001T120000Z-a1b2c3d4";
+  const path = await writeRequest(id);
+  let spawns = 0;
+  const spawn: SpawnRunner = async () => {
+    spawns++;
+    return 1;
+  };
+  expect((await submitJob(cfg, path, spawn)).ok).toBe(true);
+  await writeFile(
+    path,
+    JSON.stringify({
+      schemaVersion: "1.2",
+      requestId: id,
+      target: "dot",
+      promptFile: "prompt.md",
+      preset: "current",
+      newChat: true,
+      responseFormat: "markdown",
+    }),
+  );
+  expect((await submitJob(cfg, path, spawn)).ok).toBe(false);
+  expect(spawns).toBe(1);
+  const dotId = "20261001T120001Z-a1b2c3d4";
+  const dotPath = await writeRequest(dotId);
+  const dotRequest = {
+    schemaVersion: "1.2",
+    requestId: dotId,
+    target: "dot",
+    promptFile: "prompt.md",
+    responseFormat: "markdown",
+    completionMarker: "DONE",
+  };
+  await writeFile(dotPath, JSON.stringify(dotRequest));
+  expect((await submitJob(cfg, dotPath, spawn)).ok).toBe(true);
+  await writeFile(dotPath, JSON.stringify({ ...dotRequest, completionMarker: "FINISHED" }));
+  expect((await submitJob(cfg, dotPath, spawn)).ok).toBe(false);
+  expect(spawns).toBe(2);
+});

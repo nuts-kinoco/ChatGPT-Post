@@ -92,3 +92,27 @@ describe("BrowserSession experimental extension mode", () => {
     });
   });
 });
+it("trace:false excludes dot history while ordinary attach still traces", async () => {
+  for (const trace of [false, undefined]) {
+    const activePage = page();
+    const daemonContext = context(activePage);
+    const browser = {
+      close: vi.fn().mockResolvedValue(undefined),
+      contexts: () => [daemonContext],
+    };
+    connectOverCDP.mockResolvedValue(browser);
+    const browserSession = new BrowserSession({
+      channel: "chromium",
+      profileDir: "unused-in-unit-test",
+    });
+    await expect(
+      browserSession.attach("http://daemon.test", {
+        copyCaptureShim: false,
+        onCrash: () => undefined,
+        ...(trace === false ? { trace } : {}),
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(daemonContext.tracing.start).toHaveBeenCalledTimes(trace === false ? 0 : 1);
+    await browserSession.close();
+  }
+});

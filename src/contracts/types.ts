@@ -17,9 +17,11 @@ export type RequestedModel = (typeof REQUESTED_MODELS)[number];
 export const OBSERVED_MODELS = ["latest", "gpt-5.6-sol", "gpt-5.5"] as const;
 export type ObservedModel = (typeof OBSERVED_MODELS)[number];
 
-export interface BridgeRequest {
+export interface ChatRequest {
   schemaVersion: "1.0" | "1.1" | "1.2" | "1.3";
   requestId: string;
+  target?: "chat";
+  completionMarker?: string;
   promptFile: string;
   preset: RequestedPreset;
   /** 1.1: optional, default "current" (observe only; the UI resets the radio to 最新 on every page load). */
@@ -34,6 +36,20 @@ export interface BridgeRequest {
   timeoutMs?: number;
   responseFormat: "markdown";
 }
+
+/** Dot-specific chat fields are optional because they are ignored. */
+export type DotRequest = Omit<
+  ChatRequest,
+  "target" | "preset" | "newChat" | "model" | "project" | "conversationUrl"
+> & {
+  target: "dot";
+  preset?: unknown;
+  newChat?: unknown;
+  model?: unknown;
+  project?: unknown;
+  conversationUrl?: unknown;
+};
+export type BridgeRequest = ChatRequest | DotRequest;
 
 export const DEFAULT_TIMEOUT_MS = 900_000;
 
@@ -123,7 +139,10 @@ export interface ProjectHandshake {
 }
 
 export interface BridgeResult {
-  schemaVersion: "1.2";
+  schemaVersion: "1.2" | "1.3";
+  target?: "dot";
+  replyCount?: number;
+  files?: { name: string; path: string; bytes: number }[];
   bridgeVersion: string;
   requestId: string | null;
   status: ResultStatus;

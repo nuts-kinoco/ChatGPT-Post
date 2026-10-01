@@ -11,11 +11,14 @@ import { checkProfilePath } from "../browser/profile-guard.js";
 import { buildBundle } from "../bundle/bundle.js";
 import { observeAuthWithRetry } from "../chatgpt/auth-probe.js";
 import { ChatGptPage } from "../chatgpt/page.js";
-import { isValidRequestId } from "../contracts/request.js";
+import { isValidRequestId, readRequestFile } from "../contracts/request.js";
 import { EXIT_CODES } from "../contracts/types.js";
 import { formatDoctor, runDoctor } from "../diagnostics/doctor.js";
 import { createLogger } from "../diagnostics/logger.js";
 import { computeUsage, formatUsage, loadLimits, loadRecords } from "../diagnostics/usage.js";
+import { DOT_EXTRACTION_BUDGET_MS } from "../dot/completion.js";
+import { DotController } from "../dot/controller.js";
+import { DotPage } from "../dot/page.js";
 import {
   POST_SUBMIT_STABILIZATION_AND_EXTRACTION_BUDGET_MS,
   RunController,
@@ -38,6 +41,8 @@ import { runWorker } from "./worker.js";
 export { observeAuthWithRetry } from "../chatgpt/auth-probe.js";
 
 const USAGE = `chatgpt-bridge <command> [options]
+
+Request target: chat (default) or dot; dot uses the PO persistent thread, one request at a time.
 
 commands:
   login                      専用ブラウザを開き、人間がログインする
@@ -302,17 +307,28 @@ async function cmdRun(
   const logger = createLogger(cfg.logLevel);
   // A-136 (Phase 3 MVP): only `run` ever pools — `pooled: true` takes effect only when
   // cfg.maxConcurrency > 1 (buildPorts falls back to the unchanged single-lock path otherwise).
-  const ports = buildPorts(cfg, logger, verifiedOnly, true);
+  const input = await readRequestFile(resolve(requestPath));
+  const isDot =
+    input.kind === "read" && (input.raw as { target?: unknown } | null)?.target === "dot";
+  const ports = buildPorts(cfg, logger, verifiedOnly, !isDot);
+  // Dispatch and validation consume the same bytes; a changed request cannot switch targets.
+  ports.contracts.readRequest = async () => input;
   let watchdog: RunWatchdog | null = null;
-  const controller = new RunController(ports, {
+  const controllerOptions = {
     requestPath: resolve(requestPath),
     artifactsRoot: cfg.artifactsDir,
     bridgeVersion: cfg.bridgeVersion,
     traceOnSuccess: cfg.traceOnSuccess,
-    onPreSubmitBudgetKnown: (budgetMs) => watchdog?.armBeforeSubmit(budgetMs),
-    onSubmitDispatched: (timeoutMs) =>
-      watchdog?.armAfterSubmit(timeoutMs, POST_SUBMIT_STABILIZATION_AND_EXTRACTION_BUDGET_MS),
-  });
+    onPreSubmitBudgetKnown: (budgetMs: number) => watchdog?.armBeforeSubmit(budgetMs),
+    onSubmitDispatched: (timeoutMs: number) =>
+      watchdog?.armAfterSubmit(
+        timeoutMs,
+        isDot ? DOT_EXTRACTION_BUDGET_MS : POST_SUBMIT_STABILIZATION_AND_EXTRACTION_BUDGET_MS,
+      ),
+  };
+  const controller = isDot
+    ? new DotController(ports, controllerOptions, () => new DotPage(ports.session.currentPage))
+    : new RunController(ports, controllerOptions);
   watchdog = new RunWatchdog(controller);
   if (!json) process.stdout.write(`run: ${resolve(requestPath)}\n`);
   const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
@@ -546,6 +562,14 @@ async function cmdCollect(
         );
         return EXIT_CODES.invalidInput;
       }
+      if (marker.target === "dot") {
+        printCommandError(
+          v.json,
+          "INVALID_REQUEST",
+          "dot collect is not supported; inspect the persistent thread manually and never resend",
+        );
+        return EXIT_CODES.invalidInput;
+      }
       const resolvedRequestPath =
         job?.requestPath ?? requestPathForCollect(marker.requestPath, cfg.runtimeDir, requestId);
       requestDir = job?.requestDir ?? dirname(resolvedRequestPath);
@@ -570,6 +594,14 @@ async function cmdCollect(
           v.json,
           "INVALID_REQUEST",
           `request cannot support collect: ${loaded.kind === "valid" ? "requestId does not match marker" : loaded.errors.join("; ")}`,
+        );
+        return EXIT_CODES.invalidInput;
+      }
+      if (loaded.request.target === "dot") {
+        printCommandError(
+          v.json,
+          "INVALID_REQUEST",
+          "dot collect is not supported; inspect the persistent thread manually and never resend",
         );
         return EXIT_CODES.invalidInput;
       }

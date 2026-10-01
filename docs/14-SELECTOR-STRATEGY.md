@@ -193,3 +193,30 @@ selectors 以外のファイルを触る必要が出た場合は設計上の問�
 4. `copy` 経路の fixture テストは、テスト側が `page.evaluate` で「`copyTurnButton` クリック時に本文 Markdown を `navigator.clipboard.writeText` に渡す」テスト専用スクリプトを注入する（fixture 自体には JS を含めない）
 5. 禁止 API / 秘密情報の grep（16 §2）は `tests/fixtures/**` にも適用する
 6. fixture は静的 HTML なので Playwright 同梱 Chromium を headless で開いてよい（CON-005 は製品挙動の制約）
+
+## dot selectors (A-194)
+
+Selectors are isolated in src/dot/page.ts. Evidence is the full
+[2026-10-01 investigation](dot-investigation-2026-10-01.md), reading plus two PO-authorized sends.
+The following Japanese/structural facts are verified there, not live-tested by this implementation:
+
+| Surface | Selector / observation | Verification |
+|---|---|---|
+| Entry | /dots/home → /dots/<uuid>, same login/profile | Reading + 2 sends, 2026-10-01 |
+| Composer | [contenteditable='true']; 「メッセージ」 placeholder; keyboard.insertText | Reading + 2 sends, 2026-10-01 |
+| Send | role button name /送信/; disabled empty, enabled after text; composer clears after send | 2 sends, 2026-10-01 |
+| Rows | article.message-row; self; grouped-previous; data-message-id | Reading + 2 sends, 2026-10-01 |
+| Body | div.message-body; chat data-turn/author-role absent | Reading + 2 sends, 2026-10-01 |
+| Progress | 配信済み → 既読 HH:MM → dot is typing… in visible main text; no stop/aria-busy | 2 sends, 2026-10-01; exact typing element unverified |
+| File chip | button aria-label suffix を開く; remove chip from extracted text | Reading + small Markdown return, 2026-10-01 |
+| Viewer | data-testid=viewer-header; ダウンロード; ビューアーを閉じる | Small 3-line Markdown download, exact bytes, no crash, 2026-10-01 |
+
+English Send / Open <name> / Close viewer and typing/入力中 matching are
+case-insensitive fallbacks; English dot UI is unverified. Typing uses a small pure text detector,
+with message body text excluded from the main-area text. General login/challenge selectors are
+reused; any visible role=dialog/aria-modal stops without interacting inside it. Actual connector
+approval DOM and every other dot behavior remain unverified. Multi-row completion, unsolicited
+messages, large/HTML/ZIP/multiple downloads, and real permission/challenge scenarios still require
+managing-session verification. Synthetic fixtures establish implementation behavior only.
+
+Dot attachment bodies may start with `.attachment-list > .message-surface > .group/resource-card`; remove attachment lists and chip resource cards from the extraction clone and compute HTML and text from that cleaned clone while retaining chip labels as files. Any browser download handling can crash Chrome (2026-10-01, same class as A-092), so never click the download button or register a download event handler. Register the room-file GET response before clicking each row-scoped chip, validate its HTTPS oaiusercontent.com download_url, then fetch through context.request with maxRedirects: 0 and no manually forwarded credentials; never persist or log the signed URL. Check content-length before reading and body size afterwards (20 MB), reserve sanitized filenames with wx, and warn on per-file timeout without cancellation; page/context closure warns once and stops. The API path was live-verified read-only; implementation end-to-end live verification is pending.

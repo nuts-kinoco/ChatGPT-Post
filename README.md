@@ -88,3 +88,5 @@ Node.js 24 / TypeScript strict / Playwright 1.63（既定はインストール�
 ## ライセンス
 
 未定（Phase 7 で決定）。
+
+Optional `target: "dot"` MVP uses the PO persistent thread through `run`; dot results are schema 1.3. See [command reference](docs/20-COMMAND-REFERENCE.md#dot-through-run-a-194). Managing-session live verification is pending.

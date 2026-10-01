@@ -32,6 +32,10 @@ function describe(fn: ValidateFunction): string[] {
 export function validateRequest(data: unknown): ValidationOutcome {
   requestValidator ??= ajv.compile(loadSchema("request.schema.json"));
   const valid = requestValidator(data) as boolean;
+  const req = data as BridgeRequest | null;
+  if (req?.target === "dot" && Array.isArray(req.attachments) && req.attachments.length > 0) {
+    return { valid: false, errors: ["attachments are not supported for target dot yet"] };
+  }
   return { valid, errors: valid ? [] : describe(requestValidator) };
 }
 

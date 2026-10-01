@@ -65,3 +65,22 @@ and deliberately stays unsafe.
 - daemon 稼働中にブラウザで手動ログインし直す必要があるときは、先に `chatgpt-bridge daemon stop`（プロファイルは 1 つの Chrome しか持てない）→ 手動ログイン → `chatgpt-bridge daemon start` の順で
 - **このリポジトリフォルダ自体を複数ホスト（Win/Mac 等）で共有マウントしない**（`node_modules` のネイティブバイナリが OS/アーキテクチャ依存のため壊れる。実際に Mac 側の `npm install` が Windows 側のバイナリを上書きした事故が発生済み）。各ホストは git 経由（pull/push）でのみ同期する別クローンを使う。どうしても共有せざるを得ない場合は、`CHATGPT_BRIDGE_RUNTIME_DIR` を各ホスト固有のローカルパスに設定すること（`runtime/`＝profile・lock・daemon.json も分離される。未設定だと `doctor` の `runtime.location` が warn を出す）
 - Cloudflare の「私はロボットではありません」チェックが出ることがある（特に新しいプロファイルで頻発。ホストによって差が出て構わない）。**ブリッジは自動で突破しない** — 可視ブラウザに出ているので人間がその場でクリックして通過する。何度か通過するとプロファイルに信頼履歴が付き頻度が下がる
+
+## dot MVP
+
+`run --request <path> --json` accepts the PO's persistent dot thread:
+
+```json
+{ "schemaVersion": "1.2", "requestId": "20261001T120000Z-a1b2c3d4", "target": "dot",
+  "promptFile": "prompt.md", "completionMarker": "以上で完了",
+  "timeoutMs": 900000, "responseFormat": "markdown" }
+```
+
+Dot performs real actions, including GitHub access and Codex tasks. When appropriate, write
+「Codex タスクは起動しない・読み取りのみ・外部操作はしない」 in the prompt. This is the PO's
+persistent thread: use one request at a time and avoid concurrent manual input. The bridge adds an
+automatic-send/requestId prefix. Ask for the exact completionMarker at the end of the final reply;
+otherwise completion uses 25 seconds of quiet plus 3 seconds without typing. Attachments are not
+supported. Dot results use schema 1.3, replyCount and files[]. On timeout/unknown submission, never
+resend: inspect conversationUrl manually. The chat-only collect recovery advice above does not apply to dot.
+Live verification of this implementation by the managing session is pending.

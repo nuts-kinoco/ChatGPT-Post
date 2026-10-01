@@ -13,8 +13,8 @@ import {
 import { slugMatches } from "../chatgpt/selectors.js";
 import { uploadBudgetMs } from "../contracts/attachments.js";
 import type {
-  BridgeRequest,
   BridgeResult,
+  ChatRequest,
   ErrorCode,
   ObservedModel,
   ObservedPreset,
@@ -151,7 +151,7 @@ class PhaseTimeout extends Error {
  */
 export class RunController {
   private state = initialState();
-  private request: BridgeRequest | null = null;
+  private request: ChatRequest | null = null;
   private requestId: string | null = null;
   private requestDir = "";
   private prompt = "";
@@ -404,6 +404,8 @@ export class RunController {
       case "VALIDATE": {
         const v = await contracts.validate(this.rawRequest, this.requestDir);
         if (v.kind === "invalid") return { type: "INVALID", errors: v.errors };
+        if (v.request.target === "dot")
+          return { type: "INVALID", errors: ["dot requires the dot target controller"] };
         this.request = v.request;
         this.prompt = v.prompt;
         this.timeoutMs = v.timeoutMs;
@@ -1309,7 +1311,7 @@ export class RunController {
     if (this.requestId === null) throw new Error("requestId missing");
     return this.requestId;
   }
-  private requireRequest(): BridgeRequest {
+  private requireRequest(): ChatRequest {
     if (!this.request) throw new Error("request missing");
     return this.request;
   }

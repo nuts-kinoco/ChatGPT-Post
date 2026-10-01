@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readRequestFile, validateAndLoad } from "../contracts/request.js";
-import type { BridgeResult } from "../contracts/types.js";
+import type { BridgeRequest, BridgeResult } from "../contracts/types.js";
 import {
   JobAlreadyExistsError,
   type JobRow,
@@ -56,21 +56,16 @@ export function jobStorePath(cfg: BridgeConfig): string {
  * conflict was reported. Every field that changes what gets submitted now contributes to the hash.
  */
 async function computeInputHash(
-  req: {
-    preset: string;
-    model?: string;
-    newChat: boolean;
-    conversationUrl?: string;
-    project?: string;
-    responseFormat: string;
-    timeoutMs?: number;
-  },
+  req: BridgeRequest,
   prompt: string,
   attachments: string[],
 ): Promise<string> {
   const h = createHash("sha1");
   h.update(
     JSON.stringify({
+      ...(req.target === "dot"
+        ? { target: "dot", completionMarker: req.completionMarker ?? null }
+        : {}),
       preset: req.preset,
       model: req.model ?? null,
       newChat: req.newChat,
