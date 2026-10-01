@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type Browser, chromium } from "playwright";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { collectDotReply } from "../../src/cli/collect.js";
+import { collectDotReply, dotRequestForCollect } from "../../src/cli/collect.js";
 import { REPO_ROOT } from "../../src/contracts/schema.js";
 import {
   type DotDecision,
@@ -377,11 +377,36 @@ it("synthetic collect finds owned replies, fails ambiguous prefixes, and saves s
   await import("node:fs/promises").then((fs) => fs.mkdir(output));
   await writeFile(join(output, "result.json"), "original");
   await writeFile(join(output, "response.md"), "original response");
-  expect(await collectDotReply(id, "DONE", ports, () => fixturePage)).toMatchObject({
+  const runtime = join(output, "runtime");
+  const requestDir = join(runtime, "requests", id);
+  await import("node:fs/promises").then((fs) => fs.mkdir(requestDir, { recursive: true }));
+  await writeFile(
+    join(requestDir, "request.json"),
+    JSON.stringify({
+      schemaVersion: "1.2",
+      target: "dot",
+      requestId: id,
+      promptFile: "prompt.md",
+      responseFormat: "markdown",
+    }),
+  );
+  await writeFile(join(requestDir, "result.json"), JSON.stringify({ completionMarker: "DONE" }));
+  const resolved = await dotRequestForCollect(runtime, id);
+  expect(resolved?.completionMarker).toBe("DONE");
+  expect(
+    await collectDotReply(id, resolved?.completionMarker, ports, () => fixturePage),
+  ).toMatchObject({
     ok: true,
     state: "complete",
     replyCount: 2,
   });
+  await writeFile(join(requestDir, "result.json"), "{}");
+  const old = await dotRequestForCollect(runtime, id);
+  expect(await collectDotReply(id, old?.completionMarker, ports, () => fixturePage)).toMatchObject({
+    ok: true,
+    state: "unknown",
+  });
+  await expect(dotRequestForCollect(runtime, "../../escape")).rejects.toThrow("invalid requestId");
   const saveDir = join(output, "collected", "2026-10-01T00-00-00Z");
   expect(await collectDotReply(id, "DONE", ports, () => fixturePage, saveDir)).toMatchObject({
     ok: true,

@@ -141,6 +141,7 @@ export interface ProjectHandshake {
 export interface BridgeResult {
   schemaVersion: "1.2" | "1.3";
   target?: "dot";
+  completionMarker?: string;
   replyCount?: number;
   files?: { name: string; path: string; bytes: number }[];
   bridgeVersion: string;

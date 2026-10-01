@@ -379,3 +379,5 @@ Marker seen means complete; absent marker means in_progress; requests without a 
 (the run quiet heuristic is never applied by collect). Exit 0 means complete; exit 6 means retryable
 in_progress/unknown, including when saved. Lock/browser exit 4 and auth exit 3 are retained.
 Explicit --conversation-url recovery evidence is refused for dot. No browser downloads are used.
+
+Dot automatically appends a unique completion token (`完了: <requestId>`) unless the request sets `completionMarker`. `collect <requestId>` also works after completion without submit.marker; older requests without a recorded marker return `unknown`.

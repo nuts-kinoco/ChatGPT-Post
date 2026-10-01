@@ -10,6 +10,8 @@ import {
   type DotProgress,
   type DotRow,
   decideDotCompletion,
+  dotCompletionToken,
+  dotMarkerSeen,
   dotPrefix,
   dotPrompt,
   dotWarnings,
@@ -39,15 +41,18 @@ const row = (id: string, text: string, self = false): DotRow => ({
 const own = row("own", dotPrefix(id), true);
 const reply = row("reply", "以上で完了");
 
-it("prefix identifies automatic input and preserves the prompt exactly", () => {
-  expect(dotPrompt(id, "hello\nworld")).toBe(
-    `【chatgpt-bridge からの自動送信 / requestId: ${id}】これはブリッジ（自動操作）から送っています。PO 本人の入力ではありません。\n\nhello\nworld`,
-  );
-});
-it("normalizes CRLF and lone CR to LF while retaining the automatic prefix", () => {
-  const prompt = dotPrompt(id, "日本語\r\n\r\n  - `code`\rhttps://example.test/\n");
-  expect(prompt.startsWith(dotPrefix(id))).toBe(true);
-  expect(prompt).toBe(`${dotPrefix(id)}\n\n日本語\n\n  - \`code\`\nhttps://example.test/\n`);
+it("unique token, normalized prompt and one final instruction", () => {
+  const token = dotCompletionToken(id);
+  expect(dotMarkerSeen(`${token}extra`, token)).toBe(false);
+  expect(dotMarkerSeen(token, token)).toBe(true);
+  expect(token).toBe(`完了: ${id}`);
+  const prompt = dotPrompt(id, "hello\r\nworld");
+  expect(prompt.startsWith(`${dotPrefix(id)}\n\nhello\nworld\n\n`)).toBe(true);
+  expect(prompt.endsWith("完了前には書かないでください。")).toBe(true);
+  expect(prompt.split(token)).toHaveLength(2);
+  expect(dotPrompt(id, token)).toBe(`${dotPrefix(id)}\n\n${token}`);
+  expect(dotPrompt(id, "hello DONE", "DONE")).toBe(`${dotPrefix(id)}\n\nhello DONE`);
+  expect(dotPrompt(id, "hello", "CUSTOM")).toContain("「CUSTOM」");
 });
 it.each(["dot is typing…", "DOT IS TYPING...", "入力中"])("typing: %s", (text) =>
   expect(hasTypingIndicator(text)).toBe(true),
@@ -385,7 +390,7 @@ function harness(
         : "https://chatgpt.com/dots/00000000-0000-0000-0000-000000000000",
     navigate: async () => {},
     prepare: async (prompt: string) => {
-      expect(prompt).toBe(dotPrompt(id, "hello"));
+      expect(prompt).toBe(dotPrompt(id, "hello", request.completionMarker));
     },
     send: async () => {
       calls.push("send");
@@ -443,7 +448,7 @@ function harness(
     },
     () => dot,
   );
-  return { controller, calls, results };
+  return { controller, calls, results, request, dot };
 }
 it("builds schema 1.3 only for dot; validates unchanged chat schema 1.2", async () => {
   const h = harness();
@@ -452,6 +457,7 @@ it("builds schema 1.3 only for dot; validates unchanged chat schema 1.2", async 
   expect(out.result).toMatchObject({
     schemaVersion: "1.3",
     target: "dot",
+    completionMarker: reply.text,
     replyCount: 1,
     files: [],
     submitted: "yes",
@@ -461,7 +467,13 @@ it("builds schema 1.3 only for dot; validates unchanged chat schema 1.2", async 
   expect(out.result?.warnings).toContain("file_download_failed: x: timeout");
   expect(h.calls).not.toContain("deleteMarker");
   if (!out.result) throw new Error("missing result");
-  const { target: _target, replyCount: _count, files: _files, ...chat } = out.result;
+  const {
+    target: _target,
+    replyCount: _count,
+    files: _files,
+    completionMarker: _marker,
+    ...chat
+  } = out.result;
   const chatResult = { ...chat, schemaVersion: "1.2", observedPreset: "high" };
   expect(validateResult(chatResult).valid).toBe(true);
   expect(validateResult({ ...chatResult, schemaVersion: "1.3" }).valid).toBe(false);
@@ -583,4 +595,22 @@ it("marker timeout writes interim response while retaining terminal failure sema
   });
   expect(out.result?.warnings).toContain("dot_marker_not_seen");
   expect(h.calls).toContain("response");
+});
+
+it("default controller ignores generic phrases and waits for its exact token", async () => {
+  const h = harness();
+  delete h.request.completionMarker;
+  let reads = 0;
+  h.dot.snapshot = async () => ({
+    rows: h.calls.includes("send")
+      ? [own, row("r", ++reads < 80 ? reply.text : dotCompletionToken(id))]
+      : [],
+    typing: false,
+  });
+  h.request.timeoutMs = 60_000;
+  const out = await h.controller.run();
+  expect(out.exitCode).toBe(0);
+  expect(reads).toBeGreaterThan(80);
+  expect(out.result?.completionMarker).toBe(dotCompletionToken(id));
+  expect(validateResult(out.result).valid).toBe(true);
 });

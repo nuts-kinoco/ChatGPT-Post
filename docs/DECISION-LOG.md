@@ -224,3 +224,7 @@ Preserve timeout failure semantics and save partial replies/files. Add request-I
 exclusive lock, settled DotPage navigation, unique prefix ownership, and optional separate saves
 through existing CON-008 file-info retrieval. Never resend. Synthetic verification only; managing
 session live verification is pending. No new live approval is asserted.
+
+### A-199 dot unique completion token and durable collect (2026-10-01)
+
+Generic completion phrases can collide with earlier or manual replies; collect also depended on a surviving submit.marker. Append a request-specific final-line instruction, persist the effective marker in dot schema 1.3 results, and resolve collect through request.json with marker/result/request precedence. Older uninstructed requests remain unknown. Synthetic verification only; live verification pending. No live approval is asserted.

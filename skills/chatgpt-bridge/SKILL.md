@@ -91,3 +91,5 @@ For dot long tasks, always set completionMarker: dot can remain silent for minut
 and a 5-second thread settle. Never resend after timeout: `collect <requestId> [--json]` checks
 progress without sending; `--save` retrieves replies/files under `collected/<UTC>/`, preserving
 original outputs. Exit 6 means in_progress/unknown and is retryable; explicit URL recovery is refused.
+
+Dot automatically appends a unique completion token (`完了: <requestId>`) unless the request sets `completionMarker`. `collect <requestId>` also works after completion without submit.marker; older requests without a recorded marker return `unknown`.

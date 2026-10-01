@@ -545,35 +545,18 @@ async function cmdCollect(
   // Resolve dot before jobs.db: status-only collect must not reconcile or write job state.
   if (requestId) {
     const marker = await readMarker(markerPath(cfg.stateDir, requestId));
-    if (marker?.target === "dot") {
-      const resolvedRequestPath = requestPathForCollect(
-        marker.requestPath,
-        cfg.runtimeDir,
-        requestId,
-      );
-      const requestDir = dirname(resolvedRequestPath);
-      let raw: unknown;
-      try {
-        raw = JSON.parse(await readFile(resolvedRequestPath, "utf8"));
-      } catch (error) {
-        printCommandError(
-          v.json,
-          "INVALID_REQUEST",
-          `cannot read dot request: ${(error as Error).message}`,
-        );
-        return EXIT_CODES.invalidInput;
-      }
-      // Status recovery needs no prompt/attachment reads, only durable validated request fields.
-      const { validateRequest } = await import("../contracts/schema.js");
-      if (!validateRequest(raw).valid) {
-        printCommandError(v.json, "INVALID_REQUEST", "invalid dot request.json");
-        return EXIT_CODES.invalidInput;
-      }
-      const request = raw as import("../contracts/types.js").BridgeRequest;
-      if (request.target !== "dot" || request.requestId !== requestId) {
-        printCommandError(v.json, "INVALID_REQUEST", "dot request does not match submit marker");
-        return EXIT_CODES.invalidInput;
-      }
+    const { dotRequestForCollect } = await import("./collect.js");
+    let dotRequest: Awaited<ReturnType<typeof dotRequestForCollect>>;
+    try {
+      dotRequest = await dotRequestForCollect(cfg.runtimeDir, requestId, marker ?? undefined);
+      if (marker?.target === "dot" && !dotRequest)
+        throw new Error("cannot read matching dot request.json");
+    } catch (error) {
+      printCommandError(v.json, "INVALID_REQUEST", (error as Error).message);
+      return EXIT_CODES.invalidInput;
+    }
+    if (dotRequest) {
+      const requestDir = dirname(dotRequest.requestPath);
       {
         const { collectDotReply } = await import("./collect.js");
         const ports = buildPorts(cfg, createLogger(cfg.logLevel), true, false);
@@ -582,7 +565,7 @@ async function cmdCollect(
           : undefined;
         const attempt = await collectDotReply(
           requestId,
-          request.completionMarker ?? marker.completionMarker,
+          dotRequest.completionMarker,
           ports,
           () => new DotPage(ports.session.currentPage),
           saveDir,

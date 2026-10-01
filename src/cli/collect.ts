@@ -1,6 +1,6 @@
 /** Durable, no-send recovery for a reply that may have completed after a runner timed out. */
 
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CHATGPT_ORIGIN, CONVERSATION_PATH_RE } from "../chatgpt/page.js";
 import { atomicWriteFile, normaliseResponseBody } from "../contracts/atomic-write.js";
@@ -11,7 +11,7 @@ import type {
   ObservedModel,
   ObservedPreset,
 } from "../contracts/types.js";
-import { dotPrefix } from "../dot/completion.js";
+import { dotMarkerSeen, dotPrefix } from "../dot/completion.js";
 import { DotFailure, type DotPage } from "../dot/page.js";
 import { IMAGE_CAPTURE_BUDGET_MS, sanitiseConversationUrl } from "../state/controller.js";
 import type { Extraction, Ports } from "../state/ports.js";
@@ -68,6 +68,39 @@ export function confirmedConversationUrl(
 }
 
 /** A direct `run` has no jobs.db row; its write-ahead marker is the durable request locator. */
+export async function dotRequestForCollect(
+  runtimeDir: string,
+  requestId: string,
+  marker?: { requestPath?: string | undefined; completionMarker?: string | undefined },
+) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$/.test(requestId))
+    throw new Error("invalid requestId");
+  const requestPath = requestPathForCollect(marker?.requestPath, runtimeDir, requestId);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(requestPath, "utf8"));
+  } catch {
+    return null;
+  }
+  if ((raw as { target?: unknown } | null)?.target !== "dot") return null;
+  const { validateRequest } = await import("../contracts/schema.js");
+  if (!validateRequest(raw).valid || (raw as { requestId: string }).requestId !== requestId)
+    throw new Error("invalid or mismatched dot request.json");
+  let result: { completionMarker?: string } | null = null;
+  try {
+    result = JSON.parse(await readFile(join(requestPath, "..", "result.json"), "utf8"));
+  } catch {
+    /* Older requests may have no result. */
+  }
+  return {
+    requestPath,
+    completionMarker:
+      marker?.completionMarker ??
+      result?.completionMarker ??
+      (raw as { completionMarker?: string }).completionMarker,
+  };
+}
+
 export function requestPathForCollect(
   markerRequestPath: string | undefined,
   runtimeDir: string,
@@ -314,7 +347,7 @@ export function classifyDotCollect(
   const replies = snapshot.rows
     .slice(snapshot.rows.indexOf(matches[0]) + 1)
     .filter((row) => !row.self);
-  const markerSeen = marker !== undefined && replies.some((row) => row.text.includes(marker));
+  const markerSeen = marker !== undefined && replies.some((row) => dotMarkerSeen(row.text, marker));
   return {
     ok: true as const,
     replies,

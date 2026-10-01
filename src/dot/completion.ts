@@ -29,8 +29,24 @@ export const DOT_EXTRACTION_BUDGET_MS = DOT_MAX_FILES * (DOT_FILE_TIMEOUT_MS + 5
 export function dotPrefix(requestId: string): string {
   return `【chatgpt-bridge からの自動送信 / requestId: ${requestId}】これはブリッジ（自動操作）から送っています。PO 本人の入力ではありません。`;
 }
-export function dotPrompt(requestId: string, prompt: string): string {
-  return `${dotPrefix(requestId)}\n\n${prompt.replace(/\r\n?/g, "\n")}`;
+export function dotCompletionToken(requestId: string): string {
+  return `完了: ${requestId}`;
+}
+export function dotMarkerSeen(text: string, marker: string): boolean {
+  return /^完了: [A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$/.test(marker)
+    ? text.split(/\r?\n/).some((line) => line === marker)
+    : text.includes(marker);
+}
+export function dotPrompt(
+  requestId: string,
+  prompt: string,
+  marker = dotCompletionToken(requestId),
+): string {
+  const normalized = prompt.replace(/\r\n?/g, "\n");
+  const instruction = normalized.includes(marker)
+    ? ""
+    : `\n\nすべての作業が完了した時点でのみ、FINAL返信の最終行に「${marker}」をそのまま書いてください。完了前には書かないでください。`;
+  return `${dotPrefix(requestId)}\n\n${normalized}${instruction}`;
 }
 export function dotWarnings(request: BridgeRequest): string[] {
   return ["newChat", "preset", "model", "project", "conversationUrl"]
@@ -95,7 +111,7 @@ export function decideDotCompletion(
       progress.noTypingSince !== null &&
       now - progress.noTypingSince >= DOT_NO_TYPING_MS &&
       (marker !== undefined
-        ? replies.some((row) => row.text.includes(marker)) &&
+        ? replies.some((row) => dotMarkerSeen(row.text, marker)) &&
           now - progress.changedAt >= DOT_MARKER_SETTLE_MS
         : now - progress.changedAt >= quietMs),
   );

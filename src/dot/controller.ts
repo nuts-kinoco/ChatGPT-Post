@@ -11,6 +11,8 @@ import {
   type DotProgress,
   type DotRow,
   decideDotCompletion,
+  dotCompletionToken,
+  dotMarkerSeen,
   dotPrefix,
   dotPrompt,
   dotWarnings,
@@ -32,6 +34,7 @@ export class DotController {
   private crashCause: string | null = null;
   private startedAt: Date;
   private warnings: string[] = [];
+  private completionMarker: string | undefined;
   private url: string | null = null;
   private responseFile: string | null = null;
   private files: NonNullable<BridgeResult["files"]> = [];
@@ -121,7 +124,9 @@ export class DotController {
       if (this.request.target !== "dot")
         throw new DotFailure("INVALID_REQUEST", "dot target required");
       this.warnings = dotWarnings(this.request);
-      const prompt = dotPrompt(this.request.requestId, loaded.prompt);
+      this.completionMarker =
+        this.request.completionMarker ?? dotCompletionToken(this.request.requestId);
+      const prompt = dotPrompt(this.request.requestId, loaded.prompt, this.completionMarker);
       if (containsSecret(prompt))
         throw new DotFailure("INVALID_REQUEST", "prompt matches a secret pattern");
       this.opts.onPreSubmitBudgetKnown?.(120_000);
@@ -175,7 +180,7 @@ export class DotController {
       await dot.safety();
       await this.ports.lock.writeMarker(this.request.requestId, {
         target: "dot",
-        completionMarker: this.request.completionMarker,
+        completionMarker: this.completionMarker,
         requestId: this.request.requestId,
         requestPath: this.opts.requestPath,
         writtenAt: this.ports.clock.now().toISOString(),
@@ -216,7 +221,7 @@ export class DotController {
           dotPrefix(this.request.requestId),
           now,
           progress,
-          this.request.completionMarker,
+          this.completionMarker,
         );
         progress = decision.progress;
         if (decision.conflictPersistent)
@@ -276,9 +281,9 @@ export class DotController {
       if (
         error instanceof DotFailure &&
         error.code === "GENERATION_TIMEOUT" &&
-        this.request?.completionMarker !== undefined
+        this.completionMarker !== undefined
       ) {
-        if (!this.replies.some((row) => row.text.includes(this.request?.completionMarker ?? "")))
+        if (!this.replies.some((row) => dotMarkerSeen(row.text, this.completionMarker ?? "")))
           this.warnings.push("dot_marker_not_seen");
         try {
           const dot = this.getPage();
@@ -347,6 +352,7 @@ export class DotController {
     this.result = {
       schemaVersion: "1.3",
       target: "dot",
+      ...(this.completionMarker !== undefined ? { completionMarker: this.completionMarker } : {}),
       replyCount: this.replies.length,
       files: this.files,
       bridgeVersion: this.opts.bridgeVersion,

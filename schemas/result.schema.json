@@ -389,6 +389,10 @@
           }
         }
       }
+    },
+    "completionMarker": {
+      "type": "string",
+      "minLength": 1
     }
   },
   "allOf": [
@@ -443,6 +447,14 @@
               ],
               "properties": {
                 "files": {}
+              }
+            },
+            {
+              "required": [
+                "completionMarker"
+              ],
+              "properties": {
+                "completionMarker": {}
               }
             }
           ]
