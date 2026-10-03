@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright";
@@ -29,6 +29,15 @@ import type {
   RouteDriftTelemetry,
 } from "../state/ports.js";
 import type { Observation } from "./completion.js";
+import { scanVisible } from "./dom-observation.js";
+import {
+  buildModelCatalog,
+  legacyCatalogSelection,
+  MODEL_SELECTOR_PROFILE,
+  type ModelCatalogIssue,
+  type ModelRowObservation,
+  type VisibleModelCatalog,
+} from "./model-catalog.js";
 import { normalisePrompt, userTurnMatchesPrompt } from "./prompt-match.js";
 import {
   all,
@@ -50,7 +59,6 @@ import {
   parseTriggerLabel,
   probe,
   resolve,
-  reverseLookupModel,
   reverseLookupPreset,
 } from "./selectors.js";
 
@@ -154,6 +162,8 @@ function normaliseComposerInnerText(text: string): string {
 
 export class ChatGptPage implements ChatGptPort {
   private locale: Locale = "ja";
+  /** Observation context only; unrelated to immutable request/attempt identities. */
+  private readonly modelCatalogContextId = randomUUID();
   private lastError: string | null = null;
   private lastEnteredPrompt = "";
   private streamingCandidateLogged = false;
@@ -854,6 +864,8 @@ export class ChatGptPage implements ChatGptPort {
   private async openPicker(): Promise<Locator> {
     const menuProbe = await probe(this.page, "pickerMenu", this.sel);
     if (menuProbe.found && menuProbe.locator) return menuProbe.locator;
+    if (menuProbe.complete === false || menuProbe.reason === "ambiguous")
+      throw new DomUnexpected("pickerMenu", [`picker_menu_${menuProbe.reason}`]);
     // The Project trace in A-149 shows the composer still present while this verified trigger is
     // briefly replaced during hydration. Keep the existing verified-only selector and bounded
     // fail-closed behavior, but do not turn that one transient re-query into DOM_CHANGED.
@@ -889,8 +901,12 @@ export class ChatGptPage implements ChatGptPort {
   ): Promise<{ now: number; max: number; label: string; slider: Locator; row: Locator }> {
     const slider = await resolve(menu, "effortSlider", this.sel);
     const row = await resolve(menu, "effortSliderRow", this.sel);
-    const now = Number(await slider.getAttribute("aria-valuenow"));
-    const max = Number(await slider.getAttribute("aria-valuemax"));
+    const nowValue = await slider.getAttribute("aria-valuenow");
+    const maxValue = await slider.getAttribute("aria-valuemax");
+    const now = nowValue?.trim() ? Number(nowValue) : Number.NaN;
+    const max = maxValue?.trim() ? Number(maxValue) : Number.NaN;
+    if (!Number.isSafeInteger(now) || !Number.isSafeInteger(max) || now < 0 || max < now)
+      throw new DomUnexpected("effortSlider", ["effort_slider_state_unreadable"]);
     const ids = ((await row.getAttribute("aria-describedby")) ?? "").split(/\s+/).filter(Boolean);
     let label = "";
     if (ids[0]) {
@@ -940,26 +956,87 @@ export class ChatGptPage implements ChatGptPort {
     return { ok: true };
   }
 
-  private async readModelRadios(
-    menu: Locator,
-  ): Promise<Array<{ text: string; checked: boolean; locator: Locator }>> {
-    const def = ELEMENTS.modelRadio;
-    const out: Array<{ text: string; checked: boolean; locator: Locator }> = [];
-    for (const c of def.candidates) {
-      if (this.opts.verifiedOnly && !c.verifiedOn) continue;
-      const loc = build(menu, c);
-      const n = await loc.count().catch(() => 0);
-      for (let i = 0; i < Math.min(n, 20); i++) {
-        const item = loc.nth(i);
-        out.push({
-          text: (await item.innerText().catch(() => "")).trim(),
-          checked: (await item.getAttribute("aria-checked").catch(() => null)) === "true",
-          locator: item,
-        });
+  private async readModelRow(item: Locator): Promise<ModelRowObservation> {
+    const label = await item.innerText({ timeout: 1000 }).catch(() => null);
+    const checkedValue = await item
+      .getAttribute("aria-checked", { timeout: 1000 })
+      .catch(() => null);
+    const checked = checkedValue === "true" ? true : checkedValue === "false" ? false : null;
+    const disabledValue = await item
+      .getAttribute("aria-disabled", { timeout: 1000 })
+      .catch(() => "unknown");
+    const nativeEnabled = await item.isEnabled({ timeout: 1000 }).catch(() => null);
+    const enabled =
+      disabledValue === null || disabledValue === "false"
+        ? nativeEnabled
+        : disabledValue === "true"
+          ? false
+          : null;
+    const attribute = MODEL_SELECTOR_PROFILE.providerModelIdAttribute;
+    const providerModelId = attribute
+      ? await item.getAttribute(attribute, { timeout: 1000 }).catch(() => null)
+      : null;
+    return { label, checked, enabled, providerModelId };
+  }
+
+  /** Scoped, read-only and bounded. It never opens a picker, changes effort or sends a prompt. */
+  private async readModelCatalog(menu: Locator): Promise<{
+    catalog: VisibleModelCatalog;
+    locators: Locator[];
+  }> {
+    const collect = async () => {
+      const make = (
+        rows: ModelRowObservation[],
+        locators: Locator[],
+        complete: boolean,
+        issues: ModelCatalogIssue[] = [],
+      ) => ({
+        catalog: buildModelCatalog(rows, {
+          contextId: this.modelCatalogContextId,
+          observedAt: new Date().toISOString(),
+          complete,
+          issues,
+        }),
+        locators,
+      });
+      let eligible = false;
+      for (const candidate of ELEMENTS.modelRadio.candidates) {
+        if (this.opts.verifiedOnly && !candidate.verifiedOn) continue;
+        eligible = true;
+        let loc: Locator;
+        try {
+          loc = build(menu, candidate);
+        } catch {
+          return make([], [], false, ["candidate_unreadable"]);
+        }
+        const scan = await scanVisible(loc);
+        if (!scan.complete) return make([], [], false, [scan.reason]);
+        if (scan.kind === "absent") continue;
+        const rows: ModelRowObservation[] = [];
+        for (const item of scan.locators) rows.push(await this.readModelRow(item));
+        // Recheck visibility/count after attribute reads, without falling back on any doubt.
+        const after = await scanVisible(loc);
+        if (!after.complete || after.attached !== scan.attached || after.visible !== scan.visible)
+          return make(rows, [], false, ["collection_changed"]);
+        return make(rows, scan.locators, true);
       }
-      if (out.length > 0) break;
+      return make([], [], eligible, eligible ? [] : ["no_verified_candidate"]);
+    };
+    const first = await collect();
+    if (!first.catalog.complete) return first;
+    const second = await collect();
+    if (first.catalog.catalogFingerprint !== second.catalog.catalogFingerprint) {
+      return {
+        catalog: buildModelCatalog(second.catalog.options, {
+          contextId: this.modelCatalogContextId,
+          observedAt: second.catalog.observedAt,
+          complete: false,
+          issues: [...second.catalog.issues, "row_changed"],
+        }),
+        locators: [],
+      };
     }
-    return out;
+    return second;
   }
 
   /** Switches the menu to the advanced view where model radios are interactive. */
@@ -974,14 +1051,12 @@ export class ChatGptPage implements ChatGptPort {
   private async observeModel(
     menu: Locator,
   ): Promise<{ ok: true; model: ObservedModel; label: string } | { ok: false; cause: string }> {
-    const radios = await this.readModelRadios(menu);
-    const checked = radios.filter((r) => r.checked);
-    if (radios.length === 0) return { ok: false, cause: "no model radios found" };
-    if (checked.length !== 1) return { ok: false, cause: `${checked.length} model radios checked` };
-    const c = checked[0] as { text: string };
-    const r = reverseLookupModel(c.text, this.locale);
-    if ("error" in r) return { ok: false, cause: `${r.error} model label: "${c.text}"` };
-    return { ok: true, model: r.model, label: c.text.split(/\r?\n/)[0] ?? c.text };
+    const { catalog } = await this.readModelCatalog(menu);
+    const selected = legacyCatalogSelection(catalog, "current");
+    if (!selected.ok) return selected;
+    const model = selected.option.legacyModel;
+    if (model === null) return { ok: false, cause: "unmapped model label" };
+    return { ok: true, model, label: selected.option.label.split(/\r?\n/)[0] ?? "" };
   }
 
   /**
@@ -993,20 +1068,31 @@ export class ChatGptPage implements ChatGptPort {
     target: ObservedModel,
   ): Promise<{ ok: true; label: string } | { ok: false; cause: string; available: boolean }> {
     await this.expandModels(menu);
-    const radios = await this.readModelRadios(menu);
-    const hits = radios.filter((r) => {
-      const m = reverseLookupModel(r.text, this.locale);
-      return !("error" in m) && m.model === target;
-    });
-    if (hits.length === 0) {
-      return { ok: false, cause: `model ${target} not in picker`, available: false };
-    }
-    if (hits.length > 1) {
-      return { ok: false, cause: `model ${target} matched ${hits.length} radios`, available: true };
-    }
-    const hit = hits[0] as { checked: boolean; locator: Locator };
-    if (!hit.checked) {
-      await hit.locator.click({ timeout: 3000 });
+    const before = await this.readModelCatalog(menu);
+    const selected = legacyCatalogSelection(before.catalog, target);
+    if (!selected.ok) return selected;
+    // Even this local snapshot is not execution authority. Re-observe immediately before mutation.
+    const fresh = await this.readModelCatalog(menu);
+    if (fresh.catalog.catalogFingerprint !== before.catalog.catalogFingerprint)
+      return { ok: false, cause: "model catalog changed before selection", available: true };
+    const current = legacyCatalogSelection(fresh.catalog, target);
+    if (!current.ok) return current;
+    const index = fresh.catalog.options.findIndex(
+      (option) => option.observationKey === current.option.observationKey,
+    );
+    const locator = fresh.locators[index];
+    if (!locator) return { ok: false, cause: "model option locator unavailable", available: true };
+    const row = await this.readModelRow(locator);
+    if (
+      row.label !== current.option.label ||
+      row.checked !== current.option.checked ||
+      row.enabled !== true ||
+      row.providerModelId !== current.option.providerModelId ||
+      !(await locator.isVisible().catch(() => false))
+    )
+      return { ok: false, cause: "model option changed before selection", available: true };
+    if (!current.option.checked) {
+      await locator.click({ timeout: 3000 });
       await this.page.waitForTimeout(1200);
       await this.expandModels(menu);
     }
@@ -1049,10 +1135,33 @@ export class ChatGptPage implements ChatGptPort {
         }
         await this.page.waitForTimeout(500);
       }
-      // 2. effort (simple view), then re-observe the model radio in the same menu instance
-      const menu = await this.openPicker();
+      // 2. Validate the current model before any persisted effort mutation. Reopening a picker
+      // is a freshness boundary, so inspect the same complete catalog again before keyboard input.
+      let menu = await this.openPicker();
       try {
         if (requested !== "current") {
+          await this.expandModels(menu);
+          const initial = await this.readModelCatalog(menu);
+          const current = legacyCatalogSelection(initial.catalog, "current");
+          if (!current.ok) return { kind: "not_verifiable", cause: current.cause };
+          if (model !== "current" && current.option.legacyModel !== model)
+            return { kind: "not_verifiable", cause: "model changed before effort selection" };
+          await this.closePicker();
+          menu = await this.openPicker();
+          await this.expandModels(menu);
+          const reopened = await this.readModelCatalog(menu);
+          const fresh = legacyCatalogSelection(reopened.catalog, "current");
+          if (
+            !fresh.ok ||
+            reopened.catalog.catalogFingerprint !== initial.catalog.catalogFingerprint ||
+            fresh.option.legacyModel !== current.option.legacyModel
+          )
+            return {
+              kind: "not_verifiable",
+              cause: "model catalog changed before effort selection",
+            };
+          // resolve/readSlider must still prove the reviewed slider is visible. A profile that
+          // cannot expose both controls fails closed; no hidden-row inference or blind keyboard.
           const e = await this.selectEffort(menu, requested);
           if (!e.ok) return { kind: "not_verifiable", cause: e.cause };
         }
@@ -2010,12 +2119,13 @@ export class ChatGptPage implements ChatGptPort {
       return { error: (err as Error).message };
     }
     try {
-      const before = await this.readSlider(menu);
-      const report: Record<string, unknown> = {
-        triggerLabel: await this.readPresetLabel(),
-        effortSlider: { valueNow: before.now, valueMax: before.max, label: before.label },
-      };
-      if (walk) {
+      const report: Record<string, unknown> = { triggerLabel: await this.readPresetLabel() };
+      const before = await this.readSlider(menu).catch(() => null);
+      report.effortSlider = before
+        ? { valueNow: before.now, valueMax: before.max, label: before.label }
+        : null;
+      if (!before) report.effortReadError = "slider_unreadable";
+      if (walk && before) {
         const labels: Record<number, string> = {};
         for (let i = 0; i <= before.max; i++) {
           const preset = EFFORT_SLIDER_INDEX[i];
@@ -2033,9 +2143,23 @@ export class ChatGptPage implements ChatGptPort {
           : `FAILED: ${"cause" in restore ? restore.cause : ""}`;
         if (restore.ok) this.effortToRestore = null;
       }
-      await this.expandModels(menu).catch(() => undefined);
-      report.modelOptions = (await this.readModelRadios(menu)).map(
-        (r) => `${r.text.replace(/\s+/g, " ")}${r.checked ? " [checked]" : ""}`,
+      const expanded = await this.expandModels(menu).then(
+        () => true,
+        () => false,
+      );
+      const observed = await this.readModelCatalog(menu);
+      const catalog: VisibleModelCatalog = expanded
+        ? observed.catalog
+        : buildModelCatalog(observed.catalog.options, {
+            contextId: this.modelCatalogContextId,
+            observedAt: observed.catalog.observedAt,
+            complete: false,
+            issues: [...observed.catalog.issues, "picker_not_expanded"],
+          });
+      report.modelCatalog = catalog;
+      // Transitional compatibility only. Consumers should use completeness and state above.
+      report.modelOptions = catalog.options.map(
+        (option) => `${option.label.replace(/\s+/g, " ")}${option.checked ? " [checked]" : ""}`,
       );
       return report;
     } catch (err) {
@@ -2065,18 +2189,11 @@ export class ChatGptPage implements ChatGptPort {
       for (const c of def.candidates) {
         try {
           const loc = build(root ?? this.page, c);
-          const attached = await loc.count();
-          let visible = 0;
-          for (let i = 0; i < Math.min(attached, 20); i++)
-            if (
-              await loc
-                .nth(i)
-                .isVisible()
-                .catch(() => false)
-            )
-              visible++;
+          const observation = await scanVisible(loc);
+          const attached = observation.attached;
+          const visible = observation.visible;
           const sample =
-            attached > 0
+            attached !== null && attached > 0
               ? (
                   await loc
                     .first()
@@ -2089,6 +2206,10 @@ export class ChatGptPage implements ChatGptPort {
             verifiedOn: c.verifiedOn ?? null,
             attached,
             visible,
+            scanned: observation.scanned,
+            complete: observation.complete,
+            reason: observation.reason,
+            state: observation.kind,
             sample,
           });
         } catch (err) {
