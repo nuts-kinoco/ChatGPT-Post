@@ -19,7 +19,43 @@ import type {
   RegisteredNotificationDestination,
 } from "./notification-settings.js";
 
-export type CredentialState = "configured" | "missing" | "unavailable";
+export type CredentialState = "configured" | "missing" | "locked" | "unavailable";
+export type NotificationCredentialOutcome = "saved" | "cancelled" | "rejected" | "uncertain";
+/** Trusted in-process capability. Never serialize this session or its opaque candidate. */
+export interface NotificationCredentialSessionV2 {
+  readonly actorId: string;
+  readonly destinationId: string;
+  readonly actionId: string;
+  readonly expectedGeneration: string;
+  readonly expectedBindingRevision: number;
+  readonly expectedPreferenceRevision: number;
+  readonly deadlineAt: number;
+  readonly signal: AbortSignal;
+  isActive(): boolean;
+  complete(outcome: NotificationCredentialOutcome, candidate?: unknown): NotificationActionView;
+}
+export interface NotificationCredentialCommitIdentity {
+  actorId: string;
+  destinationId: string;
+  actionId: string;
+  expectedGeneration: string;
+  expectedBindingRevision: number;
+}
+interface ActiveCredential {
+  session: NotificationCredentialSessionV2;
+  abort: AbortController;
+  activated: boolean;
+  activationReserved: boolean;
+  settled: boolean;
+  committed: boolean;
+  completing: boolean;
+  admittedAt: number;
+  monotonicAt: number;
+  preferenceDigest: string;
+  activatedAt: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+const HUMAN_SESSION_MS = 10 * 60 * 1000;
 export interface PreparedNotificationBinding {
   generation: string;
   revision: number;
@@ -44,7 +80,18 @@ export interface SecureNotificationRegistry {
   isCurrent(actorId: string, destinationId: string, generation: string, revision: number): boolean;
   /** Read-only actor-authorized registration. It cannot create or retarget recipients. */
   list(actorId: string, signal: AbortSignal): Promise<readonly NotificationBinding[]>;
-  /** The native provider owns confirmation, secret entry and save. Never return a secret. */
+  readonly credentialProtocol?: string;
+  beginCredentialInteractionV2?(session: NotificationCredentialSessionV2): void | Promise<void>;
+  /** Synchronously invalidate prior leases immediately after durable admission. No native calls. */
+  admitCredentialInteraction?(session: NotificationCredentialSessionV2): void;
+  commitCredentialCandidate?(
+    candidate: unknown,
+    db: DatabaseSync,
+    session: NotificationCredentialCommitIdentity,
+  ): { generation: string; revision: number; activatedAt: string };
+  installCredentialCandidate?(candidate: unknown): void;
+  cancelCredentialInteraction?(actionId: string): void;
+  /** Legacy declaration for source compatibility only. New runtime NEVER invokes this method. */
   beginCredentialInteraction?(input: {
     actorId: string;
     destinationId: string;
@@ -168,7 +215,7 @@ function validateBinding(value: NotificationBinding): void {
     !Number.isSafeInteger(value.revision) ||
     value.revision < 1 ||
     !instant(value.activatedAt) ||
-    !["configured", "missing", "unavailable"].includes(value.credentialState) ||
+    !["configured", "missing", "locked", "unavailable"].includes(value.credentialState) ||
     typeof value.prepare !== "function"
   )
     error("notification_registration_invalid");
@@ -201,6 +248,7 @@ export class NotificationRuntime implements NotificationCataloguePort {
   readonly targetId: string;
   private readonly owner = randomUUID();
   private readonly active = new Map<string, AbortController>();
+  private credential: ActiveCredential | null = null;
   private readonly sources: { source: NotificationLifecycleSource; directActorId?: string }[] = [];
   private closing = false;
   private closed = false;
@@ -217,6 +265,7 @@ export class NotificationRuntime implements NotificationCataloguePort {
       authorizeSend(actorId: string, destinationId: string, kind: "human_check" | "test"): boolean;
       timeoutMs?: number;
       now?: () => Date;
+      monotonicNow?: () => number;
     },
   ) {
     if (!preferences.runtimeScopeId) error("notification_durable_store_required");
@@ -233,11 +282,24 @@ export class NotificationRuntime implements NotificationCataloguePort {
       CREATE TABLE IF NOT EXISTS notification_seen(actor TEXT NOT NULL,event_key TEXT NOT NULL,observed_at TEXT NOT NULL,outcome TEXT NOT NULL,PRIMARY KEY(actor,event_key));
       CREATE TABLE IF NOT EXISTS notification_actions(actor TEXT NOT NULL,action_id TEXT NOT NULL,kind TEXT NOT NULL,destination TEXT NOT NULL,fingerprint TEXT NOT NULL,state TEXT NOT NULL,owner TEXT,PRIMARY KEY(actor,action_id));
       CREATE TABLE IF NOT EXISTS notification_rates(id INTEGER PRIMARY KEY,actor TEXT NOT NULL,destination TEXT NOT NULL,attempt_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS notification_credential_sessions(sequence INTEGER PRIMARY KEY AUTOINCREMENT,actor TEXT NOT NULL,action_id TEXT NOT NULL,destination TEXT NOT NULL,generation TEXT NOT NULL,binding_revision INTEGER NOT NULL,preference_revision INTEGER NOT NULL,preference_digest TEXT NOT NULL,owner TEXT NOT NULL,admitted_at INTEGER NOT NULL,deadline_at INTEGER NOT NULL,state TEXT NOT NULL,new_generation TEXT,new_revision INTEGER,new_activated_at TEXT,UNIQUE(actor,action_id));
       CREATE TABLE IF NOT EXISTS notification_clock(id INTEGER PRIMARY KEY CHECK(id=1),last_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS notification_source_bindings(source_id TEXT PRIMARY KEY,direct_actor TEXT);
       CREATE TABLE IF NOT EXISTS notification_target_identity(id INTEGER PRIMARY KEY CHECK(id=1),generation TEXT NOT NULL);
     `),
     );
+    // Restart never resumes native interaction, including legacy actions without session proof.
+    preferences.withRuntimeTransaction((db) => {
+      db.exec(
+        "UPDATE notification_bindings SET state='unavailable',action_id=NULL WHERE state='credential_pending'",
+      );
+      db.exec(
+        "UPDATE notification_actions SET state='uncertain' WHERE kind='credential' AND state IN ('queued','sending')",
+      );
+      db.exec(
+        "UPDATE notification_credential_sessions SET state='uncertain' WHERE state='sending'",
+      );
+    });
     this.targetId = preferences.withRuntimeTransaction((db) => {
       db.prepare("INSERT OR IGNORE INTO notification_target_identity VALUES(1,?)").run(
         randomUUID(),
@@ -641,15 +703,8 @@ export class NotificationRuntime implements NotificationCataloguePort {
       if (previous.fingerprint !== fingerprint) error("notification_action_conflict");
       return {
         exists: true,
-        view: {
-          actionId: value.actionId,
-          kind,
-          destinationId: value.destinationId,
-          state:
-            previous.state === "sending" && previous.owner !== this.owner
-              ? "uncertain"
-              : (previous.state as NotificationActionView["state"]),
-        },
+        view:
+          this.readAction(db, actor, value.actionId) ?? error("notification_action_unavailable"),
       };
     }
     if (this.preferences.snapshot(actor).revision !== value.expectedRevision)
@@ -712,54 +767,397 @@ export class NotificationRuntime implements NotificationCataloguePort {
   status(actor: string, actionId: string): NotificationActionView | null {
     validateNotificationActor(actor);
     if (!UUID.test(actionId)) error("notification_action_invalid");
-    return this.transaction((db) => {
-      const row = db
-        .prepare(
-          "SELECT kind,destination,state,owner FROM notification_actions WHERE actor=? AND action_id=?",
-        )
+    return this.transaction((db) => this.readAction(db, actor, actionId));
+  }
+  private readAction(
+    db: DatabaseSync,
+    actor: string,
+    actionId: string,
+  ): NotificationActionView | null {
+    const row = db
+      .prepare(
+        "SELECT kind,destination,state,owner FROM notification_actions WHERE actor=? AND action_id=?",
+      )
+      .get(actor, actionId);
+    if (!row) return null;
+    if (
+      !["credential", "test"].includes(String(row.kind)) ||
+      !ID.test(String(row.destination)) ||
+      !(
+        row.kind === "credential"
+          ? ["queued", "sending", "saved", "cancelled", "rejected", "uncertain"]
+          : ["queued", "sending", "delivered", "not_sent", "uncertain", "cancelled"]
+      ).includes(String(row.state))
+    )
+      error("notification_action_unavailable");
+    let state = row.state as NotificationActionView["state"];
+    if (state === "sending" && row.owner !== this.owner) state = "uncertain";
+    if (row.kind === "credential" && state === "saved") {
+      const receipt = db
+        .prepare("SELECT * FROM notification_credential_sessions WHERE actor=? AND action_id=?")
         .get(actor, actionId);
-      return row
-        ? {
-            actionId,
-            kind: row.kind as "test" | "credential",
-            destinationId: String(row.destination),
-            state:
-              row.state === "sending" && row.owner !== this.owner
-                ? "uncertain"
-                : (row.state as NotificationActionView["state"]),
+      if (
+        receipt?.state !== "saved" ||
+        typeof receipt.owner !== "string" ||
+        !UUID.test(receipt.owner) ||
+        receipt.owner !== row.owner ||
+        typeof receipt.generation !== "string" ||
+        !OPAQUE.test(receipt.generation) ||
+        !Number.isSafeInteger(receipt.binding_revision) ||
+        Number(receipt.binding_revision) < 1 ||
+        !Number.isSafeInteger(receipt.preference_revision) ||
+        Number(receipt.preference_revision) < 0 ||
+        Number(receipt.preference_revision) >= 10000 ||
+        typeof receipt.preference_digest !== "string" ||
+        !HASH.test(receipt.preference_digest) ||
+        !Number.isSafeInteger(receipt.admitted_at) ||
+        Number(receipt.admitted_at) < 0 ||
+        !Number.isSafeInteger(receipt.deadline_at) ||
+        Number(receipt.deadline_at) - Number(receipt.admitted_at) !== HUMAN_SESSION_MS ||
+        receipt.destination !== row.destination ||
+        typeof receipt.new_generation !== "string" ||
+        !OPAQUE.test(receipt.new_generation) ||
+        receipt.new_generation === receipt.generation ||
+        !Number.isSafeInteger(receipt.new_revision) ||
+        Number(receipt.new_revision) <= Number(receipt.binding_revision) ||
+        !instant(receipt.new_activated_at)
+      )
+        state = "uncertain";
+    }
+    return {
+      actionId,
+      kind: row.kind as "test" | "credential",
+      destinationId: String(row.destination),
+      state,
+    };
+  }
+  private supportsCredentials(): boolean {
+    return (
+      this.options.registry.credentialProtocol === "bridge-notification-credentials-2" &&
+      typeof this.options.registry.beginCredentialInteractionV2 === "function"
+    );
+  }
+  private credentialActive(active: ActiveCredential): boolean {
+    const now = this.now().getTime();
+    const elapsed = (this.options.monotonicNow ?? (() => performance.now()))() - active.monotonicAt;
+    if (
+      !(
+        this.credential === active &&
+        !active.settled &&
+        !this.closing &&
+        !this.closed &&
+        !active.abort.signal.aborted &&
+        Number.isSafeInteger(now) &&
+        now >= active.admittedAt &&
+        now < active.session.deadlineAt &&
+        Number.isFinite(elapsed) &&
+        elapsed >= 0 &&
+        elapsed < HUMAN_SESSION_MS
+      )
+    )
+      return false;
+    try {
+      const preference = this.preferences.snapshot(active.session.actorId);
+      return (
+        preference.revision === active.session.expectedPreferenceRevision &&
+        hash(preference) === active.preferenceDigest &&
+        this.preferences.withRuntimeRead((db) => {
+          if (
+            Number(
+              db.prepare("SELECT last_at FROM notification_clock WHERE id=1").get()?.last_at ?? 0,
+            ) > now
+          )
+            return false;
+          const action = db
+            .prepare("SELECT owner,state FROM notification_actions WHERE actor=? AND action_id=?")
+            .get(active.session.actorId, active.session.actionId);
+          const proof = db
+            .prepare("SELECT * FROM notification_credential_sessions WHERE actor=? AND action_id=?")
+            .get(active.session.actorId, active.session.actionId);
+          const binding = this.binding(db, active.session.actorId, active.session.destinationId);
+          if (
+            action?.owner !== this.owner ||
+            proof?.owner !== this.owner ||
+            proof.destination !== active.session.destinationId ||
+            proof.generation !== active.session.expectedGeneration ||
+            proof.binding_revision !== active.session.expectedBindingRevision ||
+            proof.preference_revision !== active.session.expectedPreferenceRevision ||
+            proof.preference_digest !== active.preferenceDigest ||
+            proof.admitted_at !== active.admittedAt ||
+            proof.deadline_at !== active.session.deadlineAt
+          )
+            return false;
+          return active.committed
+            ? action.state === "saved" &&
+                proof.state === "saved" &&
+                binding?.state === "ready" &&
+                binding.generation === proof.new_generation &&
+                binding.revision === proof.new_revision
+            : action.state === "sending" &&
+                proof.state === "sending" &&
+                binding?.state === "credential_pending" &&
+                binding.action_id === active.session.actionId &&
+                binding.generation === active.session.expectedGeneration &&
+                binding.revision === active.session.expectedBindingRevision;
+        })
+      );
+    } catch {
+      return false;
+    }
+  }
+  private credentialView(
+    active: ActiveCredential,
+    state: NotificationActionView["state"],
+  ): NotificationActionView {
+    return {
+      actionId: active.session.actionId,
+      destinationId: active.session.destinationId,
+      kind: "credential",
+      state,
+    };
+  }
+  private releaseCredential(active: ActiveCredential): void {
+    active.settled = true;
+    clearTimeout(active.timer);
+    active.abort.abort();
+    if (this.credential === active) this.credential = null;
+    try {
+      this.options.registry.cancelCredentialInteraction?.(active.session.actionId);
+    } catch {
+      /* Already fenced. */
+    }
+  }
+  private completeCredential(
+    active: ActiveCredential,
+    outcome: NotificationCredentialOutcome,
+    candidate?: unknown,
+  ): NotificationActionView {
+    if (active.settled || this.closed) {
+      if (!this.closed)
+        return (
+          this.status(active.session.actorId, active.session.actionId) ??
+          this.credentialView(active, "uncertain")
+        );
+      return this.credentialView(active, "uncertain");
+    }
+    if (active.completing) return this.credentialView(active, "uncertain");
+    active.completing = true;
+    const session = active.session;
+    const live = this.credentialActive(active);
+    if (!["saved", "cancelled", "rejected", "uncertain"].includes(outcome)) outcome = "rejected";
+    if (!live) outcome = "cancelled";
+    let saved = false;
+    let result: NotificationActionView;
+    try {
+      // Cancellation only removes authority and may settle despite a regressed wall clock.
+      result = this.preferences.withRuntimeTransaction((db) => {
+        const action = db
+          .prepare("SELECT owner,state FROM notification_actions WHERE actor=? AND action_id=?")
+          .get(session.actorId, session.actionId);
+        const proof = db
+          .prepare("SELECT * FROM notification_credential_sessions WHERE actor=? AND action_id=?")
+          .get(session.actorId, session.actionId);
+        const registered = this.binding(db, session.actorId, session.destinationId);
+        if (
+          action?.owner !== this.owner ||
+          action.state !== "sending" ||
+          proof?.owner !== this.owner ||
+          proof.state !== "sending"
+        )
+          return this.credentialView(active, "uncertain");
+        const exact =
+          registered?.state === "credential_pending" &&
+          registered.action_id === session.actionId &&
+          registered.generation === session.expectedGeneration &&
+          registered.revision === session.expectedBindingRevision &&
+          proof.generation === session.expectedGeneration &&
+          proof.binding_revision === session.expectedBindingRevision &&
+          proof.destination === session.destinationId &&
+          proof.preference_revision === session.expectedPreferenceRevision &&
+          proof.preference_digest === active.preferenceDigest &&
+          proof.admitted_at === active.admittedAt &&
+          proof.deadline_at === session.deadlineAt;
+        let generation: string | null = null,
+          revision: number | null = null,
+          activatedAt: string | null = null;
+        if (outcome === "saved") {
+          const preferences = this.preferences.snapshot(session.actorId);
+          if (
+            !exact ||
+            !this.credentialActive(active) ||
+            preferences.revision !== session.expectedPreferenceRevision ||
+            hash(preferences) !== active.preferenceDigest ||
+            typeof this.options.registry.commitCredentialCandidate !== "function"
+          )
+            outcome = "rejected";
+          else {
+            const committed = this.options.registry.commitCredentialCandidate(
+              candidate,
+              db,
+              session,
+            );
+            if (
+              !committed ||
+              !OPAQUE.test(committed.generation) ||
+              committed.generation === session.expectedGeneration ||
+              !Number.isSafeInteger(committed.revision) ||
+              committed.revision <= session.expectedBindingRevision ||
+              !instant(committed.activatedAt) ||
+              committed.activatedAt < active.activatedAt ||
+              Date.parse(committed.activatedAt) > this.now().getTime()
+            )
+              error("notification_credential_commit_invalid");
+            generation = committed.generation;
+            revision = committed.revision;
+            activatedAt = committed.activatedAt;
+            db.prepare(
+              "UPDATE notification_bindings SET state='ready',generation=?,revision=?,activated_at=?,action_id=NULL WHERE actor=? AND destination=? AND action_id=?",
+            ).run(
+              generation,
+              revision,
+              activatedAt,
+              session.actorId,
+              session.destinationId,
+              session.actionId,
+            );
+            saved = true;
           }
-        : null;
-    });
+        }
+        if (!saved)
+          db.prepare(
+            "UPDATE notification_bindings SET state=?,action_id=NULL WHERE actor=? AND destination=? AND action_id=?",
+          ).run(
+            exact && outcome !== "uncertain" ? "ready" : "unavailable",
+            session.actorId,
+            session.destinationId,
+            session.actionId,
+          );
+        db.prepare(
+          "UPDATE notification_credential_sessions SET state=?,new_generation=?,new_revision=?,new_activated_at=? WHERE actor=? AND action_id=? AND owner=? AND state='sending'",
+        ).run(
+          outcome,
+          generation,
+          revision,
+          activatedAt,
+          session.actorId,
+          session.actionId,
+          this.owner,
+        );
+        db.prepare(
+          "UPDATE notification_actions SET state=? WHERE actor=? AND action_id=? AND owner=? AND state='sending'",
+        ).run(outcome, session.actorId, session.actionId, this.owner);
+        return this.credentialView(active, outcome);
+      });
+    } catch {
+      // A commit error is never guessed saved. Read the durable receipt without replaying persistence.
+      saved = false;
+      try {
+        result =
+          this.status(session.actorId, session.actionId) ??
+          this.credentialView(active, "uncertain");
+      } catch {
+        result = this.credentialView(active, "uncertain");
+      }
+      if (result.state === "sending") {
+        try {
+          this.preferences.withRuntimeTransaction((db) => {
+            db.prepare(
+              "UPDATE notification_actions SET state='uncertain' WHERE actor=? AND action_id=? AND owner=? AND state='sending'",
+            ).run(session.actorId, session.actionId, this.owner);
+            db.prepare(
+              "UPDATE notification_credential_sessions SET state='uncertain' WHERE actor=? AND action_id=? AND owner=? AND state='sending'",
+            ).run(session.actorId, session.actionId, this.owner);
+            db.prepare(
+              "UPDATE notification_bindings SET state='unavailable',action_id=NULL WHERE actor=? AND destination=? AND action_id=?",
+            ).run(session.actorId, session.destinationId, session.actionId);
+          });
+        } catch {
+          /* The session is still revoked in memory. */
+        }
+        result = this.credentialView(active, "uncertain");
+      }
+    }
+    active.committed = saved;
+    if (saved) {
+      try {
+        result =
+          this.preferences.withRuntimeRead((db) =>
+            this.readAction(db, session.actorId, session.actionId),
+          ) ?? this.credentialView(active, "uncertain");
+      } catch {
+        result = this.credentialView(active, "uncertain");
+      }
+    }
+    // No await between durable commit and this fenced installer. A provider epoch is an additional fence.
+    if (saved && result.state === "saved" && this.credentialActive(active)) {
+      try {
+        this.options.registry.installCredentialCandidate?.(candidate);
+      } catch {
+        /* Stored, but locked. */
+      }
+    }
+    this.releaseCredential(active);
+    return result;
   }
   async credentials(actor: string, input: unknown): Promise<NotificationActionView> {
     const value = actionInput(input);
     const existing = this.status(actor, value.actionId);
     if (existing) return this.transaction((db) => this.action(db, actor, value, "credential").view);
-    const interact = this.options.registry.beginCredentialInteraction;
-    if (!interact) error("notification_secure_provider_unavailable");
+    if (!this.supportsCredentials()) error("notification_secure_provider_unavailable");
+    if (this.credential) error("notification_credential_interaction_pending");
     const binding = (await this.bindings(actor)).find(
       (row) => row.destinationId === value.destinationId,
     );
     if (!binding) error("notification_destination_unavailable");
-    const acquired = this.transaction((db) => {
-      const registered = this.binding(db, actor, value.destinationId);
-      if (registered?.state === "credential_pending")
+    const admitted = this.transaction((db, now) => {
+      if (
+        db
+          .prepare("SELECT 1 FROM notification_actions WHERE actor=? AND action_id=?")
+          .get(actor, value.actionId)
+      ) {
+        this.action(db, actor, value, "credential");
+        return null;
+      }
+      if (
+        this.credential ||
+        db
+          .prepare("SELECT 1 FROM notification_credential_sessions WHERE state='sending' LIMIT 1")
+          .get()
+      )
         error("notification_credential_interaction_pending");
+      const registered = this.binding(db, actor, value.destinationId);
       if (
         !registered ||
+        registered.state === "credential_pending" ||
         registered.generation !== binding.generation ||
         registered.revision !== binding.revision ||
         registered.activated_at !== binding.activatedAt ||
-        this.options.registry.isCurrent(
-          actor,
-          value.destinationId,
-          binding.generation,
-          binding.revision,
-        ) !== true
+        (registered.state === "ready" &&
+          this.options.registry.isCurrent(
+            actor,
+            value.destinationId,
+            binding.generation,
+            binding.revision,
+          ) !== true)
       )
         error("notification_destination_unavailable");
       const action = this.action(db, actor, value, "credential");
-      if (action.exists) return false;
+      if (action.exists) return null;
+      const digest = hash(this.preferences.snapshot(actor));
+      db.prepare(
+        "INSERT INTO notification_credential_sessions(actor,action_id,destination,generation,binding_revision,preference_revision,preference_digest,owner,admitted_at,deadline_at,state) VALUES(?,?,?,?,?,?,?,?,?,?,'sending')",
+      ).run(
+        actor,
+        value.actionId,
+        value.destinationId,
+        binding.generation,
+        binding.revision,
+        value.expectedRevision,
+        digest,
+        this.owner,
+        now,
+        now + HUMAN_SESSION_MS,
+      );
       db.prepare(
         "UPDATE notification_bindings SET state='credential_pending',action_id=? WHERE actor=? AND destination=?",
       ).run(value.actionId, actor, value.destinationId);
@@ -770,90 +1168,143 @@ export class NotificationRuntime implements NotificationCataloguePort {
       db.prepare(
         "UPDATE notification_actions SET state='sending' WHERE actor=? AND action_id=?",
       ).run(actor, value.actionId);
-      return true;
+      return { now, digest };
     });
-    if (!acquired)
+    if (!admitted)
       return this.status(actor, value.actionId) ?? error("notification_action_unavailable");
     const abort = new AbortController();
-    const key = `credential:${actor}:${value.actionId}`;
-    this.active.set(key, abort);
-    let outcome: "saved" | "cancelled" | "rejected" | "uncertain" = "uncertain";
-    let fresh: NotificationBinding | undefined;
+    const session: NotificationCredentialSessionV2 = Object.freeze({
+      actorId: actor,
+      destinationId: value.destinationId,
+      actionId: value.actionId,
+      expectedGeneration: binding.generation,
+      expectedBindingRevision: binding.revision,
+      expectedPreferenceRevision: value.expectedRevision,
+      deadlineAt: admitted.now + HUMAN_SESSION_MS,
+      signal: abort.signal,
+      isActive: () => this.credentialActive(active),
+      complete: (outcome: NotificationCredentialOutcome, candidate?: unknown) =>
+        this.completeCredential(active, outcome, candidate),
+    });
+    const active: ActiveCredential = {
+      session,
+      abort,
+      activated: false,
+      activationReserved: false,
+      settled: false,
+      committed: false,
+      completing: false,
+      admittedAt: admitted.now,
+      monotonicAt: (this.options.monotonicNow ?? (() => performance.now()))(),
+      preferenceDigest: admitted.digest,
+      activatedAt: binding.activatedAt,
+      timer: setTimeout(() => this.completeCredential(active, "cancelled"), HUMAN_SESSION_MS),
+    };
+    active.timer.unref?.();
+    this.credential = active;
     try {
-      outcome = await this.bounded(
-        (signal) =>
-          interact.call(this.options.registry, {
-            actorId: actor,
-            destinationId: value.destinationId,
-            actionId: value.actionId,
-            signal,
-          }),
-        abort,
-      );
-      if (!["saved", "cancelled", "rejected", "uncertain"].includes(outcome)) outcome = "uncertain";
-      if (outcome !== "uncertain" && !this.closing)
-        fresh = (await this.bindings(actor, abort)).find(
-          (row) => row.destinationId === value.destinationId,
-        );
+      this.options.registry.admitCredentialInteraction?.(session);
     } catch {
-      outcome = "uncertain";
-    } finally {
-      this.active.delete(key);
+      return this.completeCredential(active, "uncertain");
     }
+    return this.credentialView(active, "sending");
+  }
+  /** One admission response owns this callback. Replayed POSTs cannot schedule a window. */
+  takeCredentialActivation(actor: string, actionId: string): (() => void) | null {
+    const active = this.credential;
+    if (
+      !active ||
+      active.session.actorId !== actor ||
+      active.session.actionId !== actionId ||
+      active.activationReserved
+    )
+      return null;
+    active.activationReserved = true;
+    return () => this.activateCredentialInteraction(actor, actionId);
+  }
+  /** Called by the trusted server only after the admission response finishes. Never from status. */
+  activateCredentialInteraction(actor: string, actionId: string): void {
+    const active = this.credential;
+    if (
+      !active ||
+      active.session.actorId !== actor ||
+      active.session.actionId !== actionId ||
+      active.activated
+    )
+      return;
+    active.activated = true;
+    setImmediate(() => {
+      if (!this.credentialActive(active)) {
+        this.completeCredential(active, "cancelled");
+        return;
+      }
+      try {
+        Promise.resolve(this.options.registry.beginCredentialInteractionV2?.(active.session)).catch(
+          () => {
+            this.completeCredential(active, "uncertain");
+          },
+        );
+      } catch {
+        this.completeCredential(active, "uncertain");
+      }
+    });
+  }
+  cancelCredentials(actor: string, input: unknown): NotificationActionView | null {
+    validateNotificationActor(actor);
+    if (
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      Object.keys(input).join() !== "actionId" ||
+      typeof (input as { actionId?: unknown }).actionId !== "string" ||
+      !UUID.test((input as { actionId: string }).actionId)
+    )
+      error("notification_action_invalid");
+    const actionId = (input as { actionId: string }).actionId;
+    const active = this.credential;
+    if (active?.session.actorId === actor && active.session.actionId === actionId)
+      return this.completeCredential(active, "cancelled");
+    const receipt = this.status(actor, actionId);
+    if (receipt && receipt.kind !== "credential") error("notification_action_invalid");
+    return receipt;
+  }
+  credentialActions(actor: string): NotificationActionView[] {
+    validateNotificationActor(actor);
+    return this.transaction((db) => {
+      const rows = db
+        .prepare(
+          "SELECT action_id FROM notification_credential_sessions WHERE actor=? ORDER BY CASE WHEN state='sending' THEN 0 ELSE 1 END,sequence DESC LIMIT 17",
+        )
+        .all(actor);
+      const views: NotificationActionView[] = [];
+      let terminals = 0;
+      for (const row of rows) {
+        const actionId = String(row.action_id);
+        const receipt = this.readAction(db, actor, actionId);
+        if (receipt && (receipt.state === "sending" || terminals++ < 16)) views.push(receipt);
+      }
+      return views;
+    });
+  }
+  /** Host has already revoked its epochs before invoking this no-native, synchronous fence. */
+  lockCredentials(): void {
+    if (this.credential) {
+      // Fence installers even if Lock is observed reentrantly just after durable commit.
+      this.credential.abort.abort();
+      this.completeCredential(this.credential, "cancelled");
+    }
+    for (const abort of this.active.values()) abort.abort();
     if (!this.closed)
-      this.transaction((db) => {
-        if (this.closing || abort.signal.aborted) outcome = "uncertain";
-        const owner = db
-          .prepare("SELECT owner,state FROM notification_actions WHERE actor=? AND action_id=?")
-          .get(actor, value.actionId);
-        if (owner?.owner !== this.owner || owner.state !== "sending") return;
-        db.prepare(
-          "UPDATE notification_actions SET state=? WHERE actor=? AND action_id=? AND owner=? AND state='sending'",
-        ).run(outcome, actor, value.actionId, this.owner);
-        const current = this.binding(db, actor, value.destinationId);
-        if (current?.action_id !== value.actionId) return;
-        if (
-          fresh &&
-          outcome !== "uncertain" &&
-          fresh.revision >= binding.revision &&
-          fresh.activatedAt >= binding.activatedAt &&
-          (fresh.revision !== binding.revision ||
-            (fresh.generation === binding.generation &&
-              fresh.activatedAt === binding.activatedAt)) &&
-          this.options.registry.isCurrent(
-            actor,
-            value.destinationId,
-            fresh.generation,
-            fresh.revision,
-          ) === true &&
-          (outcome !== "saved" ||
-            (fresh.generation !== binding.generation && fresh.revision > binding.revision))
-        ) {
-          db.prepare(
-            "UPDATE notification_bindings SET state='ready',generation=?,revision=?,activated_at=?,action_id=NULL WHERE actor=? AND destination=?",
-          ).run(fresh.generation, fresh.revision, fresh.activatedAt, actor, value.destinationId);
-        } else {
-          db.prepare(
-            "UPDATE notification_bindings SET state='unavailable',action_id=NULL WHERE actor=? AND destination=?",
-          ).run(actor, value.destinationId);
-          if (outcome === "saved")
-            db.prepare(
-              "UPDATE notification_actions SET state='uncertain' WHERE actor=? AND action_id=?",
-            ).run(actor, value.actionId);
-        }
+      this.preferences.withRuntimeTransaction((db) => {
+        db.exec("UPDATE notification_outbox SET state='cancelled' WHERE state='queued'");
+        this.syncCancelledActions(db);
       });
-    return this.closed
-      ? {
-          actionId: value.actionId,
-          kind: "credential",
-          destinationId: value.destinationId,
-          state: "uncertain",
-        }
-      : (this.status(actor, value.actionId) ?? error("notification_action_unavailable"));
   }
   /** Preference save calls this after its CAS. No network. Re-enable cannot revive old queue rows. */
   invalidate(actor: string): void {
     if (this.closed) error("notification_runtime_closed");
+    if (this.credential?.session.actorId === actor)
+      this.completeCredential(this.credential, "cancelled");
     this.preferences.withRuntimeTransaction((db) => {
       const preferences = this.preferences.snapshot(actor);
       db.prepare(
@@ -1092,7 +1543,69 @@ export class NotificationRuntime implements NotificationCataloguePort {
         });
         if (!claimed) continue;
         // Effect linearization: no await or user-supplied asynchronous callback between claim and invocation.
-        const sending = prepared.transport.send(text, abort.signal);
+        const mayStartEffect = () => {
+          if (this.closed || this.closing || abort.signal.aborted || performance.now() >= deadline)
+            return false;
+          try {
+            return this.transaction((db) => {
+              const current = db
+                .prepare("SELECT * FROM notification_outbox WHERE key=?")
+                .get(row.key) as unknown as QueueRow | undefined;
+              const preferences = this.preferences.snapshot(row.actor);
+              const registered = this.binding(db, row.actor, row.destination);
+              const content = JSON.parse(row.content) as Content;
+              const test = row.action_id
+                ? db
+                    .prepare(
+                      "SELECT kind,state,owner,destination FROM notification_actions WHERE actor=? AND action_id=?",
+                    )
+                    .get(row.actor, row.action_id)
+                : null;
+              return (
+                current?.state === "sending" &&
+                current.owner === this.owner &&
+                current.attempts === row.attempts + 1 &&
+                current.actor === row.actor &&
+                current.destination === row.destination &&
+                current.generation === row.generation &&
+                current.binding_revision === row.binding_revision &&
+                current.preference_revision === row.preference_revision &&
+                current.preference_digest === row.preference_digest &&
+                current.action_id === row.action_id &&
+                current.content === row.content &&
+                current.content_hash === row.content_hash &&
+                this.content(current) === text &&
+                preferences.revision === row.preference_revision &&
+                hash(preferences) === row.preference_digest &&
+                registered?.state === "ready" &&
+                registered.generation === row.generation &&
+                registered.revision === row.binding_revision &&
+                (content.kind === "test"
+                  ? test?.kind === "test" &&
+                    test.state === "sending" &&
+                    test.owner === this.owner &&
+                    test.destination === row.destination
+                  : preferences.authBlocked.enabled &&
+                    preferences.authBlocked.destinationIds.includes(row.destination)) &&
+                this.options.authorizeSend(row.actor, row.destination, content.kind) === true &&
+                this.options.registry.isCurrent(
+                  row.actor,
+                  row.destination,
+                  row.generation,
+                  row.binding_revision,
+                ) === true &&
+                (prepared.transport.deadlineAt === undefined ||
+                  prepared.transport.deadlineAt > Date.now()) &&
+                !this.closing &&
+                !abort.signal.aborted &&
+                performance.now() < deadline
+              );
+            });
+          } catch {
+            return false;
+          }
+        };
+        const sending = prepared.transport.send(text, abort.signal, mayStartEffect);
         let timer: ReturnType<typeof setTimeout> | undefined;
         let outcome: NotificationSendOutcome;
         try {
@@ -1129,7 +1642,7 @@ export class NotificationRuntime implements NotificationCataloguePort {
     const bindings = await this.bindings(actor);
     return this.transaction((db) => ({
       version: "bridge-notification-controls-1",
-      credentialInteractionAvailable: !!this.options.registry.beginCredentialInteraction,
+      credentialInteractionAvailable: this.supportsCredentials(),
       destinations: bindings.map((value) => {
         const registered = this.binding(db, actor, value.destinationId);
         const state =
@@ -1162,6 +1675,7 @@ export class NotificationRuntime implements NotificationCataloguePort {
   }
   async close(): Promise<void> {
     if (this.closeSettled) return;
+    this.lockCredentials();
     this.closing = true;
     if (this.timer) clearInterval(this.timer);
     for (const abort of this.active.values()) abort.abort();

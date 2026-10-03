@@ -20,7 +20,10 @@ export function mountNotificationPreferences({
     action = null,
     actionPending = false,
     actionReading = false,
-    actionVerified = false;
+    actionVerified = false,
+    viewEpoch = 0,
+    recovering = true,
+    pollTimer = null;
   const listeners = [];
   const listen = (name, event, fn) => {
     node(name).addEventListener(event, fn);
@@ -50,6 +53,7 @@ export function mountNotificationPreferences({
     !pending &&
     !actionPending &&
     !actionReading &&
+    !recovering &&
     !dirty &&
     !uncertain &&
     draftRevision === current.preferences.revision &&
@@ -72,7 +76,9 @@ export function mountNotificationPreferences({
       );
     node("credentials").disabled =
       !actionReady() || !credential() || !current.controls.credentialInteractionAvailable;
-    node("action-refresh").disabled = busy || !action;
+    node("action-refresh").disabled = busy || recovering || !action;
+    node("action-cancel").disabled =
+      pending || actionPending || recovering || action?.kind !== "credential" || actionTerminal();
     node("refresh").disabled = busy;
   };
   const fill = () => {
@@ -165,9 +171,11 @@ export function mountNotificationPreferences({
     node("credential-state").textContent =
       state === "configured"
         ? "認証情報：設定済み ••••••••"
-        : state === "missing"
-          ? "認証情報：未設定"
-          : "認証情報：利用不可";
+        : state === "locked"
+          ? "認証情報：ロック中（ローカル設定から解除）"
+          : state === "missing"
+            ? "認証情報：未設定"
+            : "認証情報：利用不可";
     const recent = (current?.controls?.recent ?? []).slice(0, 16).map((row) => {
       const item = document.createElement("p");
       item.textContent = `${row.destinationId} · ${row.kind === "test" ? "テスト" : "認証ブロック"} · ${stateText[row.state] ?? stateText.unknown} · 試行 ${row.attempts}/3`;
@@ -209,7 +217,7 @@ export function mountNotificationPreferences({
         (row) =>
           row &&
           /^[a-z][a-z0-9_-]{0,63}$/.test(row.destinationId) &&
-          ["configured", "missing", "unavailable"].includes(row.credentialState),
+          ["configured", "missing", "locked", "unavailable"].includes(row.credentialState),
       ) &&
       value.recent.every(
         (row) =>
@@ -369,6 +377,8 @@ export function mountNotificationPreferences({
       return;
     }
     const input = { actionId, destinationId: actionDestination, expectedRevision: draftRevision };
+    const actionEpoch = viewEpoch;
+    const expected = { actionId, destinationId: actionDestination, kind };
     action = { actionId, destinationId: actionDestination, kind, state: "sending" };
     actionVerified = false;
     actionPending = true;
@@ -377,15 +387,15 @@ export function mountNotificationPreferences({
     controls();
     try {
       const response = await api(`${endpoint}/${kind === "test" ? "test" : "credentials"}`, input);
-      if (destroyed) return;
-      acceptAction(response, action);
+      if (destroyed || actionEpoch !== viewEpoch || action?.actionId !== actionId) return;
+      acceptAction(response, expected);
       message(
         kind === "test"
           ? "明示した1回のテスト結果です。自動通知がOFFでも設定は変更しません"
           : "安全なローカル設定の結果です。認証情報の状態は再読込で確認してください",
       );
     } catch (error) {
-      if (!destroyed) {
+      if (!destroyed && actionEpoch === viewEpoch && action?.actionId === actionId) {
         if (
           error?.code === "stale_notification_preferences" &&
           error.status === 409 &&
@@ -409,18 +419,22 @@ export function mountNotificationPreferences({
         }
       }
     } finally {
-      actionPending = false;
-      if (!destroyed) controls();
+      if (!destroyed && actionEpoch === viewEpoch) {
+        actionPending = false;
+        controls();
+        schedulePoll();
+      }
     }
   };
   const refreshAction = async () => {
     if (destroyed || !action || pending || actionPending || actionReading) return;
     const expected = { ...action };
+    const actionEpoch = viewEpoch;
     actionReading = true;
     controls();
     try {
       const response = await api(`${endpoint}/actions/${expected.actionId}`);
-      if (destroyed) return;
+      if (destroyed || actionEpoch !== viewEpoch || action?.actionId !== expected.actionId) return;
       acceptAction(response, expected);
       message(
         actionTerminal()
@@ -428,15 +442,131 @@ export function mountNotificationPreferences({
           : "操作はまだ終了していません。状態の再確認だけを行ってください",
       );
     } catch {
-      if (!destroyed) {
+      if (!destroyed && actionEpoch === viewEpoch && action?.actionId === expected.actionId) {
         // An unavailable lookup cannot prove whether the earlier effect happened.
         actionVerified = false;
         message("操作状態を確認できません。自動再送は行いません", true);
       }
     } finally {
-      actionReading = false;
-      if (!destroyed) controls();
+      if (!destroyed && actionEpoch === viewEpoch && action?.actionId === expected.actionId) {
+        actionReading = false;
+        controls();
+        schedulePoll();
+      }
     }
+  };
+  const stopPoll = () => {
+    if (pollTimer !== null) clearTimeout(pollTimer);
+    pollTimer = null;
+  };
+  const schedulePoll = () => {
+    stopPoll();
+    if (
+      destroyed ||
+      node("panel").hidden ||
+      recovering ||
+      !action ||
+      action.kind !== "credential" ||
+      actionTerminal()
+    )
+      return;
+    pollTimer = setTimeout(() => {
+      pollTimer = null;
+      void refreshAction();
+    }, 1000);
+    pollTimer.unref?.();
+  };
+  const recoverActions = async () => {
+    const reading = viewEpoch;
+    recovering = true;
+    controls();
+    try {
+      if (!current?.sendingImplemented) {
+        recovering = false;
+        return;
+      }
+      const response = await api(`${endpoint}/credentials/actions`);
+      if (destroyed || reading !== viewEpoch) return;
+      if (!Array.isArray(response?.actions) || response.actions.length > 17)
+        throw new Error("notification_recovery_invalid");
+      const values = response.actions;
+      const ids = new Set();
+      let pendingCount = 0,
+        terminalCount = 0;
+      for (const value of values) {
+        if (
+          value?.kind !== "credential" ||
+          !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value.actionId) ||
+          !/^[a-z][a-z0-9_-]{0,63}$/.test(value.destinationId) ||
+          Object.keys(value).sort().join() !== "actionId,destinationId,kind,state" ||
+          !["sending", "saved", "cancelled", "rejected", "uncertain"].includes(value.state) ||
+          ids.has(value.actionId)
+        )
+          throw new Error("notification_recovery_invalid");
+        ids.add(value.actionId);
+        if (value.state === "sending") pendingCount++;
+        else terminalCount++;
+      }
+      if (pendingCount > 1 || terminalCount > 16) throw new Error("notification_recovery_invalid");
+      const selected =
+        values.find((value) => value.state === "sending") ??
+        values.find((value) => value.actionId === action?.actionId) ??
+        (!action ? values[0] : null);
+      if (selected) acceptAction({ action: selected }, selected);
+      else if (action?.kind === "credential") {
+        const expected = { ...action };
+        const receipt = await api(`${endpoint}/actions/${expected.actionId}`);
+        if (destroyed || reading !== viewEpoch || action?.actionId !== expected.actionId) return;
+        acceptAction(receipt, expected);
+      }
+      recovering = false;
+    } catch {
+      if (!destroyed && reading === viewEpoch)
+        message(
+          "操作の保存記録を確認できません。再読込で確認してください。新しい操作は開始しません",
+          true,
+        );
+    } finally {
+      if (!destroyed && reading === viewEpoch) {
+        controls();
+        schedulePoll();
+      }
+    }
+  };
+  const cancelAction = async () => {
+    if (destroyed || node("action-cancel").disabled || action?.kind !== "credential") return;
+    const expected = { ...action },
+      reading = ++viewEpoch;
+    epoch++;
+    actionReading = false;
+    actionPending = true;
+    stopPoll();
+    controls();
+    try {
+      const response = await api(`${endpoint}/credentials/cancel`, { actionId: expected.actionId });
+      if (destroyed || reading !== viewEpoch || action?.actionId !== expected.actionId) return;
+      acceptAction(response, expected);
+    } catch {
+      if (!destroyed && reading === viewEpoch && action?.actionId === expected.actionId) {
+        actionVerified = false;
+        message("取消結果を確認できません。保存記録を再確認してください", true);
+      }
+    } finally {
+      if (!destroyed && reading === viewEpoch && action?.actionId === expected.actionId) {
+        actionPending = false;
+        controls();
+        schedulePoll();
+      }
+    }
+  };
+  const hide = () => {
+    node("panel").hidden = true;
+    viewEpoch++;
+    epoch++;
+    actionPending = false;
+    actionReading = false;
+    recovering = true;
+    stopPoll();
   };
   listen("action-destination", "change", () => {
     if (destroyed || pending || actionPending || actionReading) return;
@@ -449,7 +579,11 @@ export function mountNotificationPreferences({
   listen("test", "click", () => startAction("test"));
   listen("credentials", "click", () => startAction("credential"));
   listen("action-refresh", "click", refreshAction);
-  listen("refresh", "click", () => void refresh());
+  listen("action-cancel", "click", cancelAction);
+  listen("refresh", "click", async () => {
+    await refresh();
+    await recoverActions();
+  });
   listen("reset-draft", "click", () => {
     if (pending || actionPending || actionReading || (uncertain && !reconciled)) return;
     uncertain = false;
@@ -458,20 +592,28 @@ export function mountNotificationPreferences({
     message("保存済み設定へ戻しました");
   });
   listen("close", "click", () => {
-    node("panel").hidden = true;
+    hide();
     onClose();
   });
+  const dialog = document.getElementById("notification-dialog");
+  if (dialog) {
+    dialog.addEventListener("close", hide);
+    listeners.push([dialog, "close", hide]);
+  }
   return {
     open: async () => {
+      const opening = ++viewEpoch;
       node("panel").hidden = false;
+      recovering = true;
       await refresh();
+      if (!destroyed && opening === viewEpoch && !node("panel").hidden) await recoverActions();
     },
-    close: () => {
-      node("panel").hidden = true;
-    },
+    close: hide,
     refresh,
     destroy: () => {
       destroyed = true;
+      viewEpoch++;
+      stopPoll();
       epoch++;
       for (const [element, event, fn] of listeners) element.removeEventListener(event, fn);
       node("destinations").replaceChildren();

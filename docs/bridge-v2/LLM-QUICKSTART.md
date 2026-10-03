@@ -55,7 +55,7 @@ No production Claude/Codex execution adapter, approval authority, external deliv
 Use Node.js 22.13 or newer and an authorized local or cloud checkout. These commands do not start a production executor or send a prompt:
 
 ```sh
-npm ci
+npm ci --ignore-scripts --no-audit --no-fund
 npm run build
 node dist/cli/main.js task capabilities
 node dist/cli/main.js task help
@@ -124,10 +124,12 @@ All CLI errors include `retryable:false`, `reexecute:false`, and an actionable `
 
 > Use repository nuts-kinoco/ChatGPT-Post at the published revision supplied by its owner. Read docs/bridge-v2/LLM-QUICKSTART.md first, run task capabilities, and inspect task schema task/result. Validate only unless a trusted production integration and exact authority are actually configured. Preserve request UUID/raw bytes, request the exact registered agent/model, do not invent effort support or delivery targets, and never reexecute an unknown outcome. Report synthetic evidence as synthetic.
 
-## Product UI entrypoint (PR2)
+## Product UI entrypoint
 
 `npm run build` then `npm run ui` starts the authenticated loopback product UI.
-The existing Electron GUI opens the same UI as a 280×380 dock with progressive details.
-Use [UI-USAGE.md](UI-USAGE.md) for exact launch/profile/button steps and [UI-TESTING.md](UI-TESTING.md)
-for the fixed-commit test procedure. `npm run ui:demo` is an explicitly synthetic isolated profile,
-not a production executor. Legacy browser commands and the offline `task` CLI remain separate.
+The Electron shell uses Compact A: 440×46 collapsed and 440×604 total expanded size.
+Use [UI-OPERATIONS-USAGE.md](UI-OPERATIONS-USAGE.md), [UI-OPERATIONS-TESTING.md](UI-OPERATIONS-TESTING.md),
+and [UI-PRESENTATION.md](UI-PRESENTATION.md) for current launch/lifecycle/rendering checks.
+UI-USAGE.md and UI-TESTING.md are historical PR2 references. `npm run ui:demo` is an explicitly
+synthetic isolated profile, not a production executor. Legacy browser commands and the offline
+`task` CLI remain separate.

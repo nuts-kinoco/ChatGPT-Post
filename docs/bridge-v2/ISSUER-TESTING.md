@@ -5,7 +5,7 @@
 ## 全ローカルチェック
 
 ```sh
-npm ci
+npm ci --ignore-scripts --no-audit --no-fund
 npm run typecheck
 npm run lint
 npm run build
@@ -13,7 +13,7 @@ npm test
 node scripts/test-issuer-cli.mjs
 npm run test:sdk-cli-lifecycle
 cd gui
-npm ci
+npm ci --ignore-scripts --no-audit --no-fund
 npm run typecheck
 npm run lint
 npm run build
@@ -44,7 +44,7 @@ node node_modules/vitest/vitest.mjs run \
 - 正確な requester / task / terminal hash に限定した result、materializer なしの ACK 拒否、保存後・署名前後の session 失効で ACK を出さない
 - compiled bus.js が有限入口を呼び、成功・入力失敗とも同じ deployment を閉じる。起動・終了の例外も有限コードへ伏せ、owned counter の終了失敗でも deployment の cleanup を試みる。fake ports のみで、provider / signer / network は起動しない
 - B1 は terminal-first の保存、hash 検証済み cached response のみを読む。advisory sidecar の失敗や消失は terminal を書き換えず、起動の繰返し・challenge 再生成を起こさない
-- fenced / quoted / HTML / nested ACK、重複・不正・別 identity は advisory 確認にならない。診断理由は有限コードのみ
+- 正しい frame 内の、保存済み v1 ACK と完全一致する単一 root JSON paragraph、または前後が空行で分離された root json fence だけを advisory 確認として受理する。quoted/indented/nested/HTML/他言語 fence、周囲本文と分離されない fence、重複・不正・別 identity は確認にならない。診断理由は有限コードのみ
 
 `issuer-delivery.test.ts` の materializer は合成 fixture です。実際の fsync / archive2 / requester bundle の検証は既存 archive / materializer suite が担当します。compiled tests の子プロセスは Node の inert fixture だけです。実モデルや停止済み native R3 は使いません。
 

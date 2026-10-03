@@ -33,7 +33,9 @@ import {
   type NotificationPreferencesStore,
   openNotificationPreferencesStore,
 } from "./notification-preferences.js";
+import { isVerifiedNotificationStore } from "./notification-private-state.js";
 import type { NotificationRuntime } from "./notification-runtime.js";
+
 import { type NotificationCataloguePort, UiNotificationSettings } from "./notification-settings.js";
 import { UiOperationsService } from "./operations.js";
 import { openPresentationStore, type PresentationStore } from "./presentation.js";
@@ -42,6 +44,19 @@ import { type BridgeProCounterRuntime, openBridgeProCounter } from "./pro-counte
 import { UiProCounterSettings } from "./pro-counter-settings.js";
 import { UiProjectSettings } from "./project-settings.js";
 import { openUiService, type TaskUiService, type UiServiceOptions } from "./service.js";
+
+export type NotificationMode = "native" | "external" | "disabled";
+export interface NotificationProviderHost {
+  runtime: NotificationRuntime;
+  close(): Promise<void> | void;
+  lock(): void;
+}
+export type NotificationProviderFactory = (input: {
+  preferences: NotificationPreferencesStore;
+  actorId: string;
+  profile: "production" | "demo";
+  configuration?: unknown;
+}) => NotificationProviderHost | Promise<NotificationProviderHost>;
 
 export const MAX_UI_BODY_BYTES = 2 * 1024 * 1024;
 export interface UiServerOptions extends UiServiceOptions {
@@ -58,6 +73,9 @@ export interface UiServerOptions extends UiServiceOptions {
   proCounter?: ProObservationStore;
   proCounterRuntime?: BridgeProCounterRuntime;
   browser?: BrowserDeliveryService;
+  notificationMode?: NotificationMode;
+  notificationConfiguration?: unknown;
+  notificationProviderFactory?: NotificationProviderFactory;
   notificationRuntime?: NotificationRuntime;
   notificationPreferences?: NotificationPreferencesStore;
   notificationCatalogue?: NotificationCataloguePort;
@@ -71,6 +89,7 @@ export interface UiServerHandle {
   operations: UiOperationsService;
   presentation: PresentationStore;
   close(): Promise<void>;
+  lockNotificationCredentials?(): void;
 }
 const ASSETS: Record<string, { name: string; type: string }> = {
   "/": { name: "index.html", type: "text/html; charset=utf-8" },
@@ -227,6 +246,8 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         proCounter?: ProObservationStore;
         proCounterRuntime?: BridgeProCounterRuntime;
         browser?: BrowserDeliveryService;
+        notificationMode?: NotificationMode;
+        notificationConfiguration?: unknown;
         notificationRuntime?: NotificationRuntime;
         notificationPreferences?: NotificationPreferencesStore;
         notificationCatalogue?: NotificationCataloguePort;
@@ -266,10 +287,62 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
   let counterRuntime: BridgeProCounterRuntime | undefined;
   let ownCounterRuntime = false;
   let counterTimer: ReturnType<typeof setInterval> | undefined;
-  const notificationRuntime = options.notificationRuntime ?? deployment?.notificationRuntime;
+  let notificationRuntime = options.notificationRuntime ?? deployment?.notificationRuntime;
+  let notificationHost: NotificationProviderHost | undefined;
+  let notificationHostClosed = false;
+  const hasExternalNotifications = !!(
+    notificationRuntime ||
+    options.notificationCatalogue ||
+    deployment?.notificationCatalogue ||
+    options.notificationPreferences ||
+    deployment?.notificationPreferences
+  );
+  const requestedNotificationMode = options.notificationMode ?? deployment?.notificationMode;
+  const notificationConfiguration =
+    options.notificationConfiguration ?? deployment?.notificationConfiguration;
+  const notificationMode: NotificationMode =
+    requestedNotificationMode ??
+    (hasExternalNotifications
+      ? "external"
+      : options.deploymentModule
+        ? "disabled"
+        : options.notificationProviderFactory && service.profile !== "demo"
+          ? "native"
+          : "disabled");
+  if (
+    (requestedNotificationMode !== undefined &&
+      !["native", "external", "disabled"].includes(requestedNotificationMode)) ||
+    (options.notificationMode &&
+      deployment?.notificationMode &&
+      options.notificationMode !== deployment.notificationMode) ||
+    (notificationMode === "native" &&
+      (service.profile === "demo" ||
+        hasExternalNotifications ||
+        !options.notificationProviderFactory)) ||
+    (notificationMode === "external" && !hasExternalNotifications) ||
+    (notificationConfiguration !== undefined && notificationMode !== "native") ||
+    (notificationMode === "disabled" && hasExternalNotifications)
+  ) {
+    if (deployment?.close) await deployment.close();
+    else service.close();
+    throw new UiError(
+      "notification_mode_conflict",
+      "Notification host configuration conflicts",
+      500,
+    );
+  }
+  const closeNotificationRuntime = async () => {
+    if (notificationHost) {
+      if (!notificationHostClosed) {
+        notificationHost.lock();
+        await notificationHost.close();
+        notificationHostClosed = true;
+      }
+    } else await notificationRuntime?.close();
+  };
   const closeRuntime = async () => {
     if (counterTimer) clearInterval(counterTimer);
-    await notificationRuntime?.close();
+    await closeNotificationRuntime();
     if (ownCounterRuntime) await counterRuntime?.close();
     if (deployment?.close) await deployment.close();
     else service.close();
@@ -388,7 +461,62 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
             ? "notification_storage_untrusted"
             : "notification_storage_unavailable";
     }
-  const catalogue = options.notificationCatalogue ?? deployment?.notificationCatalogue;
+  let catalogue = options.notificationCatalogue ?? deployment?.notificationCatalogue;
+  if (notificationMode === "native" && notificationStore) {
+    try {
+      if (!isVerifiedNotificationStore(notificationStore))
+        throw new UiError(
+          "notification_storage_untrusted",
+          "Notification storage is not verified",
+          409,
+        );
+      const actorId = service.authenticatedRequesterId;
+      if (!actorId)
+        throw new UiError(
+          "notification_actor_unavailable",
+          "Notification actor is unavailable",
+          409,
+        );
+      notificationHost = await options.notificationProviderFactory?.({
+        preferences: notificationStore,
+        actorId,
+        profile: service.profile,
+        ...(notificationConfiguration === undefined
+          ? {}
+          : { configuration: notificationConfiguration }),
+      });
+      if (
+        !notificationHost ||
+        notificationHost.runtime.preferences !== notificationStore ||
+        typeof notificationHost.lock !== "function" ||
+        typeof notificationHost.close !== "function"
+      )
+        throw new UiError(
+          "notification_provider_invalid",
+          "Notification provider is unavailable",
+          409,
+        );
+      notificationRuntime = notificationHost.runtime;
+      catalogue = notificationRuntime;
+    } catch (error) {
+      try {
+        await closeNotificationRuntime();
+      } finally {
+        notificationHost = undefined;
+        notificationRuntime = undefined;
+        catalogue = undefined;
+        if (ownNotificationStore) notificationStore.close();
+        notificationStore = undefined;
+        ownNotificationStore = false;
+      }
+      storageUnavailableReason =
+        error instanceof UiError && error.code === "notification_storage_verifier_unavailable"
+          ? "notification_storage_verifier_unavailable"
+          : error instanceof UiError && error.code === "notification_storage_untrusted"
+            ? "notification_storage_untrusted"
+            : "notification_storage_unavailable";
+    }
+  }
   let notifications: UiNotificationSettings;
   try {
     notifications = new UiNotificationSettings({
@@ -491,6 +619,11 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
               proCounter: proCounterSettings.view(),
             });
           }
+          if (rawUrl === "/api/settings/notifications/credentials/actions")
+            return sendJson(response, {
+              ...service.metadata(),
+              actions: notifications.credentialActions(),
+            });
           const notificationAction =
             /^\/api\/settings\/notifications\/actions\/([a-f0-9-]{36})$/.exec(rawUrl);
           if (notificationAction?.[1])
@@ -608,11 +741,25 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
               ...service.metadata(),
               action: await notifications.test(input),
             });
-          if (rawUrl === "/api/settings/notifications/credentials")
+          if (rawUrl === "/api/settings/notifications/credentials/cancel")
             return sendJson(response, {
               ...service.metadata(),
-              action: await notifications.credentials(input),
+              action: notifications.cancelCredentials(input),
             });
+          if (rawUrl === "/api/settings/notifications/credentials") {
+            const action = await notifications.credentials(input);
+            // No native interaction before Node has completed the admission response.
+            const activate =
+              action.state === "sending"
+                ? notifications.takeCredentialActivation(action.actionId)
+                : null;
+            if (activate) response.once("finish", activate);
+            return sendJson(
+              response,
+              { ...service.metadata(), action },
+              action.state === "sending" ? 202 : 200,
+            );
+          }
           if (rawUrl === "/api/settings/notifications")
             return sendJson(response, {
               ...service.metadata(),
@@ -839,6 +986,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     service,
     operations,
     presentation,
+    ...(notificationHost ? { lockNotificationCredentials: () => notificationHost?.lock() } : {}),
     close: async () => {
       if (closed) return;
       if (closing) return closing;
@@ -849,7 +997,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       operations.beginShutdown();
       closing = (async () => {
         const drainedHttp = stopHttp();
-        await notificationRuntime?.close();
+        await closeNotificationRuntime();
         // Keep stores open if either owned worker or outstanding API handlers cannot drain.
         // The same pending HTTP close is awaited again on an explicit shutdown retry.
         await metadataHost?.close();

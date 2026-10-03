@@ -109,7 +109,7 @@ function safeControls(value: NotificationControlsView | undefined): Notification
     destinations: value.destinations.map((row) => {
       if (
         !ID.test(row.destinationId) ||
-        !["configured", "missing", "unavailable"].includes(row.credentialState)
+        !["configured", "missing", "locked", "unavailable"].includes(row.credentialState)
       )
         throw new Error("notification_controls_invalid");
       return {
@@ -257,6 +257,18 @@ export class UiNotificationSettings {
   async credentials(input: unknown): Promise<NotificationActionView> {
     const actor = this.actor();
     return this.runtime().credentials(actor, input);
+  }
+  takeCredentialActivation(actionId: string): (() => void) | null {
+    return this.runtime().takeCredentialActivation(this.actor(), actionId);
+  }
+  activateCredentialInteraction(actionId: string): void {
+    this.runtime().activateCredentialInteraction(this.actor(), actionId);
+  }
+  cancelCredentials(input: unknown): NotificationActionView | null {
+    return this.runtime().cancelCredentials(this.actor(), input);
+  }
+  credentialActions(): NotificationActionView[] {
+    return this.runtime().credentialActions(this.actor());
   }
   actionStatus(actionId: string): NotificationActionView | null {
     const actor = this.actor();

@@ -9,6 +9,7 @@ import { UsageLifecycleJournal } from "../../src/state/usage-lifecycle.js";
 import { NotificationPreferencesStore } from "../../src/ui/notification-preferences.js";
 import {
   type NotificationBinding,
+  type NotificationCredentialSessionV2,
   type NotificationLifecycleEvent,
   NotificationRuntime,
   type SecureNotificationRegistry,
@@ -317,17 +318,26 @@ describe("optional trusted notification runtime (fake transports only)", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
   it("keeps credential save separate, masked, action-deduped and bound to native confirmation", async () => {
-    const capture = vi.fn(async () => {
-      binding = { ...binding, generation: "binding-v2", revision: 2 };
-      return "saved" as const;
+    const candidate = {};
+    const capture = vi.fn((session: NotificationCredentialSessionV2) => {
+      session.complete("saved", candidate);
     });
-    registry.beginCredentialInteraction = capture;
+    registry.credentialProtocol = "bridge-notification-credentials-2";
+    registry.beginCredentialInteractionV2 = capture;
+    registry.commitCredentialCandidate = (value) => {
+      expect(value).toBe(candidate);
+      binding = { ...binding, generation: "binding-v2", revision: 2 };
+      return binding;
+    };
     const { runtime, store } = open();
     const input = testInput();
     expect(await runtime.credentials("alice", input)).toMatchObject({
       kind: "credential",
-      state: "saved",
+      state: "sending",
     });
+    expect(capture).not.toHaveBeenCalled();
+    runtime.activateCredentialInteraction("alice", input.actionId);
+    await vi.waitFor(() => expect(runtime.status("alice", input.actionId)?.state).toBe("saved"));
     expect(capture).toHaveBeenCalledTimes(1);
     expect(send).not.toHaveBeenCalled();
     expect(store.snapshot("alice").authBlocked.enabled).toBe(false);
@@ -344,10 +354,17 @@ describe("optional trusted notification runtime (fake transports only)", () => {
     });
   });
   it("never reopens uncertain native save or silently reactivates old credentials", async () => {
-    registry.beginCredentialInteraction = async () => "uncertain";
+    registry.credentialProtocol = "bridge-notification-credentials-2";
+    registry.beginCredentialInteractionV2 = (session) => {
+      session.complete("uncertain");
+    };
     const { runtime } = open();
     const input = testInput();
-    expect(await runtime.credentials("alice", input)).toMatchObject({ state: "uncertain" });
+    expect(await runtime.credentials("alice", input)).toMatchObject({ state: "sending" });
+    runtime.activateCredentialInteraction("alice", input.actionId);
+    await vi.waitFor(() =>
+      expect(runtime.status("alice", input.actionId)?.state).toBe("uncertain"),
+    );
     expect((await runtime.list("alice"))[0]?.transportAvailable).toBe(false);
     await runtime.close();
     const next = open();

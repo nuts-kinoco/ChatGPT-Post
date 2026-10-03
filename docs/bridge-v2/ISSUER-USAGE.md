@@ -20,10 +20,12 @@
 
 ## CLI の固定入口
 
+`/trusted/*.mjs` や例の ID / model は入力用 placeholder です。汎用 issuer の ready-made production module は同梱していません。前節のホスト設定がなければ先に未設定を報告し、テスト署名鍵や広い運用者 CLI へ代用しないでください。
+
 ビルド後、ホストが選んだ絶対パスの deployment を使います。
 
 ```sh
-npm ci
+npm ci --ignore-scripts --no-audit --no-fund
 npm run build
 node dist/cli/bus.js capabilities
 node dist/cli/bus.js --deployment /trusted/bridge-deployment.mjs issuer-catalogue
@@ -79,7 +81,7 @@ issue-input は返された文字列だけです。
 
 `issuer-issue` は署名完了後に現在の session / scope / capability / policy / registry / prompt format を再検証し、全 child と同じ preparation を一つの atomic Git commit に載せます。別 destination を指す有効な署名があっても、既存 UUID の preparation を差し替えられません。旧来の preparation なし request への後付けも禁止です。
 
-result-input は同じ signedPreparationBase64 と `requestId`。ack-input はさらに、検証して受け取った terminal event の `payloadSha256` を含めます。ACK は result / receipt / required artifacts の検証と requester 側 durable 保存後にだけ署名・発行します。保存途中、署名待ち中に scope が失効した場合は ACK を出さず、元の request を保存して回復します。
+result-input は同じ signedPreparationBase64 と `requestId`。ack-input はさらに、検証して受け取った terminal event の `payloadSha256` を含めます。`issuer-result` の終了 0 でも `state:"pending"` なら未完了です。ACK に使う hash は terminal event の `payloadSha256` で、task / preparation / Git commit の hash ではありません。ACK は result / receipt / required artifacts の検証と requester 側 durable 保存後にだけ署名・発行します。保存途中、署名待ち中に scope が失効した場合は ACK を出さず、元の request を保存して回復します。
 
 発行応答を失った場合、別 UUID を作らず、同じ preparation と UUID で `issuer-result` を確認してください。未確定を再実行する機能はありません。元の署名済み receipt と公開時の binding は履歴として保持されます。capability の観測期限が切れても、現在有効な同じ requester の scoped session から履歴の result / ACK を回復できます。新しい session は同じモデル会話を意味しません。
 
