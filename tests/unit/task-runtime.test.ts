@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { serializeTaskResult, sha256Bytes, validateTaskResult } from "../../src/contracts/task.js";
+import type { MaterializationReceiptV1 } from "../../src/contracts/materialization.js";
+import {
+  serializeTaskResult,
+  sha256Bytes,
+  taskResultArtifactRefs,
+  validateTaskResult,
+} from "../../src/contracts/task.js";
 import type { ApprovalEnvelope, TaskSpec } from "../../src/contracts/task-types.js";
 import {
   checkWorkflowGrant,
@@ -176,6 +182,24 @@ describe("Bridge v2 task runtime (fake executor only)", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  it("bounds lexical task discovery without skipping IDs or mutating session counters", () => {
+    const tasks = [task(), task(), task()];
+    for (const item of tasks) controller.receive(raw(item), taskBytes);
+    const ids = tasks.map((item) => item.request_id).sort();
+    const first = store.listPage("", 2);
+    expect(first.requestIds).toEqual(ids.slice(0, 2));
+    expect(store.listPage(first.next ?? "", 2)).toEqual({ requestIds: ids.slice(2), next: null });
+    expect(() => store.listPage("", 257)).toThrow("page_invalid");
+    expect(() => store.listPage("../", 1)).toThrow("page_invalid");
+    expect(store.sessionSnapshot(policy.sessionId)).toMatchObject({
+      starts: 0,
+      paused: false,
+      stopped: false,
+      reservedSeconds: 0,
+    });
+    expect(store.activeLocks(policy.sessionId)).toEqual([]);
+    expect(store.dependencies(ids[0] ?? "")).toBeNull();
+  });
   it("runs and collects verifiable synthetic success, with no model or process invocation", async () => {
     const t = task();
     const g = approve(t);
@@ -528,6 +552,52 @@ describe("Bridge v2 task runtime (fake executor only)", () => {
     } finally {
       second.close();
     }
+  });
+  it("real prestart delivery requires requester proof and historical payload ACK cannot satisfy delivery", async () => {
+    const real = new TaskController(store, new UnavailableTaskExecutor(), policy, now);
+    const t = task();
+    real.receive(raw(t), taskBytes);
+    await real.cancel(t.request_id);
+    const record = required(store.get(t.request_id)),
+      terminal = required(store.handshake(t.request_id, "terminal_result"));
+    const ack = { ...terminal, stage: "result_ack" as const, actorId: "caller" };
+    expect(() => store.acknowledgeDelivery(ack)).toThrow("delivery_materialization_required");
+    expect(store.deliveryVerified(t.request_id)).toBe(false);
+    const proof: MaterializationReceiptV1 = {
+      schema: "materialization-receipt-1",
+      requesterActorId: "caller",
+      recipientActorId: policy.bridgeId,
+      requestId: t.request_id,
+      taskSpecHash: terminal.taskSpecHash,
+      execution: { kind: "local_execution", runId: null },
+      terminalEventId: terminal.eventId,
+      payloadSha256: terminal.payloadSha256,
+      deliveryManifestSha256: "d".repeat(64),
+      requiredArtifactsVerified: true,
+      payloadVerification: "local_result_and_receipt",
+      synthetic: false,
+      verifiedArtifacts: [
+        ...new Map(
+          taskResultArtifactRefs(record.result).map((ref) => [ref.artifact_id, ref]),
+        ).values(),
+      ].map((ref) => ({
+        artifactId: ref.artifact_id,
+        contentSha256: ref.sha256,
+        sizeBytes: ref.size_bytes,
+        required: true,
+      })),
+    };
+    expect(() => store.acknowledgeDelivery(ack, { ...proof, verifiedArtifacts: [] })).toThrow(
+      "artifact_missing",
+    );
+    expect(() => store.acknowledgeDelivery(ack, { ...proof, synthetic: true })).toThrow(
+      "scope_mismatch",
+    );
+    store.acknowledgeDelivery(ack, proof);
+    expect(store.deliveryVerified(t.request_id)).toBe(true);
+    store.acknowledgeDelivery(ack, proof);
+    expect(store.pendingDeliveries()).toEqual([]);
+    expect(store.materialization(t.request_id)).toEqual(proof);
   });
   it("non-synthetic prestart cancellation produces valid local proof with an advancing clock", async () => {
     const unavailable = new UnavailableTaskExecutor();

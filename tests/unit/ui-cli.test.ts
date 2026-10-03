@@ -62,6 +62,24 @@ describe("product UI CLI", () => {
     ).toBe(2);
     expect(started).toBe(false);
   });
+  it("passes only an explicit trusted deployment path to production startup", async () => {
+    let options: unknown;
+    expect(
+      await runUiCli(["--deployment", "/trusted/deployment.mjs"], {
+        env: {},
+        stdout: () => {},
+        start: async (value) => {
+          options = value;
+          return { url: "local", close: async () => {} };
+        },
+        waitForStop: async () => {},
+      }),
+    ).toBe(0);
+    expect(options).toMatchObject({
+      profile: "production",
+      deploymentModule: "/trusted/deployment.mjs",
+    });
+  });
   it("help does not start a server", async () => {
     let text = "";
     expect(

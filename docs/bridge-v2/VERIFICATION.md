@@ -1,4 +1,6 @@
-# Verification record — 2026-10-03
+# Verification record — 2026-10-03 (historical PR1)
+
+For the current combined checkpoint see [ADAPTER-VERIFICATION.md](ADAPTER-VERIFICATION.md) and the separate [TESTING.md](TESTING.md) handoff. The PR1 baseline failure and skips below are historical; they are not the combined result.
 
 ## Source and scope
 

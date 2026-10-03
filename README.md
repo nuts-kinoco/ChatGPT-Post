@@ -113,3 +113,9 @@ Node.js 24 / TypeScript strict / Playwright 1.63（既定はインストール�
 未定（Phase 7 で決定）。
 
 Optional `target: "dot"` MVP uses the PO persistent thread through `run`; dot results are schema 1.3. See [command reference](docs/20-COMMAND-REFERENCE.md#dot-through-run-a-194). Managing-session live verification is pending.
+
+## Bridge v2 adapter checkpoint
+
+- [使い方手順書](docs/bridge-v2/USAGE.md) / [テスト手順書と Codex・Claude 引継ぎ](docs/bridge-v2/TESTING.md)
+- [実装済みアダプターと明確な制限](docs/bridge-v2/ADAPTERS.md) / [native 実装不足](docs/bridge-v2/PLATFORM-GAPS.md)
+- `node dist/cli/bus.js capabilities` は外部接続せず追加経路の状態を表示します。CLI の enforcing OS supervisor は未完成です。

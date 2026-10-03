@@ -88,6 +88,11 @@ export class TaskController {
     taskBytes: Uint8Array,
     transportRequestId: string | null = null,
     requesterId = "caller",
+    context: {
+      projectRegistration?:
+        | import("../contracts/project-registry.js").ProjectRegistrationReference
+        | null;
+    } = {},
   ): TaskRecord {
     const parsed = loadTaskSpec(raw);
     if (!parsed.valid) throw new Error(`invalid_task: ${parsed.errors.join("; ")}`);
@@ -132,6 +137,7 @@ export class TaskController {
       },
     };
     const received = this.store.receive({
+      projectRegistration: context.projectRegistration ?? null,
       rawSpec: Buffer.from(raw).toString("utf8"),
       taskBytesBase64: Buffer.from(taskBytes).toString("base64"),
       result,
@@ -483,10 +489,13 @@ export class TaskController {
     );
   }
 
-  async acknowledgeResult(ack: TaskHandshake): Promise<void> {
+  async acknowledgeResult(
+    ack: TaskHandshake,
+    proof?: import("../contracts/materialization.js").MaterializationReceiptV1,
+  ): Promise<void> {
     this.required(ack.requestId);
-    const prior = this.store.handshake(ack.requestId, "result_ack");
-    this.store.acknowledgeDelivery(ack);
+    const prior = this.store.deliveryVerified(ack.requestId);
+    this.store.acknowledgeDelivery(ack, proof);
     if (!prior) await this.captureQuota(ack.requestId, "post_result_ack");
   }
   private async captureQuota(requestId: string, phase: TaskQuotaSnapshot["phase"]): Promise<void> {

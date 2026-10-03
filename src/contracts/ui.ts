@@ -56,7 +56,13 @@ export interface UiTaskDetail {
   events: ResultSpec[];
   approvals: { envelope: ApprovalEnvelope; consumed: boolean }[];
   handshakes: Record<TaskHandshake["stage"], TaskHandshake | null>;
-  delivery: { acknowledged: boolean; payloadSha256: string | null };
+  delivery: {
+    acknowledged: boolean;
+    payloadSha256: string | null;
+    materialization?: "verified" | "pending" | "synthetic_demo";
+    materializationSha256?: string | null;
+    payloadAckObserved?: boolean;
+  };
   preflight: ReturnType<typeof taskPreflight>;
   capabilities: UiCapabilities;
 }

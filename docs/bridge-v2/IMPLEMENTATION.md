@@ -1,4 +1,6 @@
-# Bridge v2 implementation checkpoint
+# Bridge v2 implementation checkpoint (historical PR1 core)
+
+Current adapters/startup and remaining code are documented in [ADAPTERS.md](ADAPTERS.md). This file records the PR1-only checkpoint; its statements that adapters do not exist are historical, not the current combined availability.
 
 This is an offline core implementation in the existing `nuts-kinoco/ChatGPT-Post` project. It is not a working GitHub-to-LLM bus or a production sandbox. `UnavailableTaskExecutor` is the only production implementation. The fake lives under `tests/helpers` and is not available as a CLI execution option.
 
