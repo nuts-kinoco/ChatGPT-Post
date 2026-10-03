@@ -992,6 +992,7 @@ describe("GitHub real REST adapter with fake fetch", () => {
           ? { sha: commit, tree: { sha: tree } }
           : url.includes("/git/trees/")
             ? {
+                sha: tree,
                 truncated: false,
                 tree: [{ type: "blob", mode: "100644", path: "fixture.txt", sha: blob }],
               }
@@ -1027,7 +1028,7 @@ describe("GitHub real REST adapter with fake fetch", () => {
     const tree = "b".repeat(40);
     const desired = Buffer.from("exact\n");
     const hash = gitBlobSha(desired);
-    let stored = false;
+
     const methods: string[] = [];
     const api: typeof fetch = async (input, init) => {
       const url = String(input);
@@ -1038,7 +1039,7 @@ describe("GitHub real REST adapter with fake fetch", () => {
       if (method === "PATCH") {
         expect(data.force).toBe(false);
         head = data.sha;
-        stored = true;
+
         response = { object: { sha: head } };
       } else if (method === "POST" && url.endsWith("/blobs")) {
         expect(data.encoding).toBe("base64");
@@ -1048,11 +1049,20 @@ describe("GitHub real REST adapter with fake fetch", () => {
         expect(data.parents).toEqual([head]);
         response = { sha: "d".repeat(40) };
       } else if (url.includes("/git/ref/")) response = { object: { sha: head } };
-      else if (url.includes("/git/commits/")) response = { sha: head, tree: { sha: tree } };
-      else
+      else if (url.includes("/git/commits/")) {
+        const id = url.split("/commits/")[1];
         response = {
+          sha: id,
+          tree: { sha: id === "d".repeat(40) ? "c".repeat(40) : tree },
+          parents: id === "d".repeat(40) ? [{ sha: "a".repeat(40) }] : [],
+        };
+      } else
+        response = {
+          sha: url.includes("c".repeat(40)) ? "c".repeat(40) : tree,
           truncated: false,
-          tree: stored ? [{ path: "request.json", mode: "100644", type: "blob", sha: hash }] : [],
+          tree: url.includes("c".repeat(40))
+            ? [{ path: "request.json", mode: "100644", type: "blob", sha: hash }]
+            : [],
         };
       return new Response(JSON.stringify(response));
     };

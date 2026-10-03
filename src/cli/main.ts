@@ -45,6 +45,7 @@ const USAGE = `chatgpt-bridge <command> [options]
 Request target: chat (default) or dot; dot uses the PO persistent thread, one request at a time.
 
 commands:
+  sdk-text <subcommand>      Explicit official-SDK synthetic trial; sdk-text help
   ui [--profile production|demo] [--port <n>]  Bridge v2 local product UI
   archive <subcommand>       Local artifact archive and sanitized diagnostics; archive help
   task <subcommand>          Bridge v2 validation, schemas and read-only ledger snapshots; task help
@@ -1029,6 +1030,11 @@ async function cmdStealthSignals(cfg: BridgeConfig): Promise<number> {
 }
 
 export async function main(argv: string[]): Promise<number> {
+  if (argv[0] === "sdk-text") {
+    const { sdkTextMain } = await import("./sdk-text.js");
+    return sdkTextMain(argv.slice(1));
+  }
+
   if (argv[0] === "archive") {
     const { runArchiveCli } = await import("./archive.js");
     return runArchiveCli(argv.slice(1));
@@ -1207,10 +1213,14 @@ function invokedDirectlyCheck(): boolean {
 const invokedDirectly = invokedDirectlyCheck();
 if (invokedDirectly || process.env.CHATGPT_BRIDGE_MAIN === "1") {
   main(process.argv.slice(2)).then(
-    (code) => process.exit(code),
+    (code) => {
+      if (process.argv[2] === "sdk-text") process.exitCode = code;
+      else process.exit(code);
+    },
     (err) => {
       process.stderr.write(`INTERNAL_ERROR: ${(err as Error).stack ?? String(err)}\n`);
-      process.exit(1);
+      if (process.argv[2] === "sdk-text") process.exitCode = 1;
+      else process.exit(1);
     },
   );
 }

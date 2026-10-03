@@ -1,49 +1,75 @@
-# Requirement coverage and remaining gates
+# Requirement coverage at the SDK trial checkpoint
 
-This is an intermediate checkpoint. A final delivery milestone requires actual normal Chat and
-actual CLI roundtrip evidence, not just merged source or fake tests. No row below authorizes a
-live account, model, Windows computer, credential, permission, subscription, merge or deployment.
+Code reference: draft PR14, `ccc8c08efc0691840cc4286c07044200f2b060c8`, cumulative on PR13.
+This matrix supersedes earlier stage descriptions in this file. It does not change the approved
+[consolidated design](CONSOLIDATED-DESIGN.md), protocol bytes, permissions or acceptance conditions.
+A final milestone still requires actual ordinary-Chat and actual CLI roundtrip evidence at a fixed
+reviewed head. A merged source tree or a fake test pass cannot supply that evidence.
 
-| Requirement | Current code / evidence | Remaining gate |
-| --- | --- | --- |
-| Extend existing ChatGPT-Post, preserve normal Chat | Existing legacy route remains; BrowserDeliveryService composes RunController | Live same-conversation/model roundtrip remains unverified |
-| Task JSON + MD exact-byte contract | Frozen TaskSpec, strict parser and file hashes | Configure real registered policy/base/model before live issue |
-| Product → request folders in the same GitHub repo | Immutable project UUID/repo/slug registry with historical revision/hash, signed global UUID index and exact registered destination binding | Configure approved repo/branch/project mapping; root/display edits are prospective; no existing external files moved |
-| Receipt / approval / start / result / ACK | Core ledger + signed manifest and requester materialization proof; atomic proof/ACK; historical payload-only ACK insufficient | Concrete requester artifact/source materializer integration and real GitHub trial pending; missing bytes remain delivery_pending |
-| Concurrent Claude issuer → CLI and normal Chat | Atomic signed fanout parent + independent child IDs/routes; partial fan-in counts and per-child ACK | Actual simultaneous live routes remain unverified; each child still needs its own approval/capability |
-| Reverse order / duplicate / one blocked / timeout / unknown / save failure | Fake-network/process fanout and individual-route regressions | Native and live provider variants remain unverified |
-| BEGIN/END complete-response correlation | Shared frame parser binds UUID/raw task hash/attempt; echo/quote/code/truncation/duplicate tests and DOM extraction check | Actual model adherence unverified; framing never authorizes or proves success |
-| Claude/Codex fixed CLI launch, process lifecycle | Real launch plans, SQLite broker, authenticated Unix IPC, pinned supervisor driver | Enforcing supervisor missing code; Windows pipe/ACL/containment missing; no live CLI trial |
-| Windows native safety follow-on | Separate bounded native candidate, portable argv and mediator tests | Native SDK build, exact isolation, service binding, provider separation, full receipt integration and adversarial Windows test |
-| Local manual / automatic / bypass constraints | Exact detached grants, immutable policy/session, core counters/locks/expiry/mandatory confirmation | No production policy or persistent authority activated |
-| Model/effort/capability clarity | Exact registered model, explicit capability errors; frozen TaskSpec has no effort field | Do not invent effort support; inspect a separately reviewed adapter extension before adding it |
-| Codex quota before dispatch / after ACK | Public app-server narrow read; unknown-deny/default; bounded fallback; generation/time fences; immutable result tests | Actual authenticated management RPC/schema/version not tested; not a monetary guarantee |
-| Ordinary Chat Pro observed-use counter | Existing local browser observations/budget exist; further counter is separate | Follow-on: deduped confirmed Pro submissions, uncertain outcomes, configurable threshold/window/timezone, Bridge-only coverage; no hardcoded account cap |
-| Real dock/detail UI | PR2 product Electron/default UI and loopback core integration, root/GUI tests | Cloud rendering and Windows/DPI/monitor behavior unverified |
-| Configured product startup | UI --deployment and desktop deployment env load the same trusted host module | Windows ACL verifier absent; actual providers/native engine must exist |
-| New/resumed model-session bootstrap | Versioned planner/receipt helper and optional repo skill documented separately | No arbitrary manual-CLI hooks; each new model session must receive instructions, installed files alone do not prove context |
-| Durable artifact archive and diagnostics | Task/artifact refs and immutable results exist | Separate PR5: actual artifact bytes/manifest completeness, explicit message/artifact ID lookup, sanitized export, configurable per-product local roots, old roots remain valid |
-| Collapsed resident tiny bar / setup wizard / operations overview | Separate updated nonexecuting UI proposal | Follow-on implementation/review, no claim the current dock already implements new proposal |
-| Antigravity bidirectional same-bus integration | Same wire contracts are extensible | Separate follow-on: official supported flags/status/cancel/output/model/effort, bootstrap/fake tests; installed CLI does not establish auth or adapter support |
-| Codex task surface vs Bridge Codex CLI | Documented as different execution routes | Do not substitute a dot Codex task for a configured Bridge CLI job |
-| Auth/human-check notification via email or Discord | Follow-on only; no destination or secret configured | Optional disabled-by-default sink, event dedupe/rate limiting, retained-job delivery-failure logs; explicit recipient/channel and authority required before live outreach |
-| LLM-executable usage and test handoff | USAGE.md, TESTING.md, LLM quickstart, fixed offline verification script and structured report | Codex implements/fixes; Claude independently audits; user intervenes only where identity/permission requires it |
+## Implemented, testable, and still missing
 
-## No lost work on recovery
+| ID / owner | Requirement | Implemented and verified offline | Remaining code or real-use gate |
+| --- | --- | --- | --- |
+| R01 / core | Exact TaskSpec JSON+MD, detached authority, workflow DAG, counters | Strict byte/hash validation, immutable grants/session bounds, mandatory confirmations; core regressions | Real registered policy/model/base and separately approved authority configuration |
+| R02 / runtime | Locks, quotas, fairness, resident lanes | Same-repo exclusion, batch cursors, independent non-overlapping lanes, explicit resident opt-in, bounded drain/start fencing | Native lock/process integration and real concurrent routes; unknown never releases authority for reexecution |
+| R03 / registry/transport | Product→request storage in one bus repo | Canonical UUID/repoId/slug, historical revision/hash, signed global UUID index, prospective root/display settings | Approved mapping/destination; no automatic external-file migration or reinterpretation of old pins |
+| R04 / provider integration | Authenticated bidirectional issuer tools/capability discovery | Signed transport and registered composer/catalogue/template ports exist | General authenticated agent-tool dispatch and signed cross-provider capability discovery still need integration code; an installed CLI is insufficient |
+| R05 / transport | Concurrent CLI+Chat and durable partial fan-in | Atomic parent/child bindings, independent results/ACK, reverse-order/blocked/duplicate/save-failure regressions | Actual simultaneous provider execution; each route retains its own policy/capability gate |
+| R06 / browser/archive | Full BEGIN/END framing and exact message/artifact selection | Exact request/hash/attempt frame; older source IDs, source proofs, strict output-contract and scoped completeness | Actual model adherence and site compatibility; missing required inventory/bytes remains delivery_pending |
+| R07 / native platform | General CLI OS enforcement and Windows service/binding | Broker/launch-plan contracts and portable fake-process checks | Enforcing native supervisor, Windows IPC/ACL/containment and authoritative termination/evidence integration remain missing or uncertified code. The custom native candidate is not merge-ready security evidence |
+| R08 / provider | Claude/Codex/AGY plans and exact model identity | Fixed launch argv/stdin, bounded provider parsers, no silent model/effort/API fallback; AGY version/help metadata host wiring | General live execution needs R07. Provider stdout/exit0 alone is not task completion. Effort is not a field in frozen TaskSpec |
+| R09 / bootstrap | New/resumed/version/context reminders | Versioned helper/store and one-turn launch reminder injection | Automatic advisory-ACK extraction/authenticated host wiring and real context-loss/resume detection remain integration work; no arbitrary manual CLI hook |
+| R10 / archive | Durable artifact manifest, output roots, safe diagnostics | Route-neutral archive-2, pinned historical roots, exact source resolvers, scoped CAS, concrete requester materialization and signed proof-before-ACK; real filesystem fake-network regressions | Approved content destinations/read grants and real artifact retrieval. Local sender archive alone never proves requester delivery |
+| R11 / UI/API | Local/hosted/fanout monitor and explicit actions | Operations read models, registered secondary composer, shared LLM catalogue/template, concrete materialize+ACK port and trusted startup wiring | Real configured accounts/destinations; unconfigured actions stay unavailable. LLM-first automation still needs R04 where not wired |
+| R12 / presentation | Compact A bar, explicit expansion, theme and window controls | Product UI/native-shell changes, draft/state preservation, no auto-expansion, graceful shutdown; root/GUI tests | Actual rendering, Windows/DPI/multi-monitor/native-window checks |
+| R13 / quota | Pre-dispatch/post-ACK Codex observations | Public app-server narrow port, provider attribution, freshness/generation fences, unknown/manual-as-unverified and bounded explicit fallback | Actual authenticated RPC/schema/account/billing-route verification. No money guarantee and no reuse as Chat/Claude/AGY quota |
+| R14 / operations follow-on | Bridge-only ordinary Chat Pro counter | Design and evidence semantics approved | Dedicated durable count/window/threshold UI integration remains planned: stable confirmed submission identity, uncertain outcomes, configured cap/reset/timezone, no hardcoded account quota |
+| R15 / notifications follow-on | Optional per-user Email/Discord human-check alerts | Design approved, default-off/no destination/no credentials | Sink, dedupe/rate/disable queued-retry semantics, secure local credential port and masked UI still need code and tests. Save and explicit Test Send remain separate; live recipient/authority required |
+| R16 / browser | Reuse browser/profile, auth recovery without bypass | Existing dedicated browser/daemon preserved; reviewed selector ambiguity fixes and read-only visible-model catalogue; registered prompt policy/renderer receipts on PR13 | Actual DOM/login/challenge behavior; unknown model fails closed without downgrade. Keeping a browser open is not proof of avoiding Cloudflare |
+| R17 / integration docs | LLM instructions, commands, role-specific test handoff | USAGE/TESTING, UI/ARCHIVE/SDK guides, capabilities/help, scripts and structured result reports | Actual Codex/Claude tasks only when individually authorized; task launcher is distinct from Bridge Codex CLI |
+| R18 / integration acceptance | Final two-route milestone | Offline negative/recovery evidence and independent reviews | Actual Git→claim/approval→ordinary Chat→result/artifacts→save→ACK **and** actual CLI counterpart. Neither is established by this checkpoint |
+| R19 / SDK trial owner | Small own-cloud Haiku text handshake | PR14 separate SDK schemas, official SDK composition, signed bus, private bounded evidence, immutable requester bundle/ACK, one-shot entrypoint; lifecycle/startup races fixed | Same-context cloud auth, billing/extra-usage confirmation, terms and temporary-key/trial approval, private connector destination, then one real call. Linux trusted-host/SDK controls, no native confinement/OS-exit proof |
+| R20 / prompt/browser | Maintainable shared prompt and cache-aware formatting | PR12/13 deterministic shared brief, registered renderer/build/profile, final dispatch guard and historical collector validation | Live cache savings unmeasured; no API-cache control claim. SDK dependency changes require explicit new renderer build registration, never silent old-policy replacement |
 
-Keep original IDs and exact bytes. Job unknown is not retry permission. A failed publication is a
-transport retry; a saved immutable result is retained. Fan-in reports partial counts and does not
-wait for one route before exposing another result. Same-repo locks and session pauses are retained
-where the authorized execution policy requires them; unrelated route storage remains independent.
+## Evidence and compatibility
 
-## Intermediate versus final PR
+For the PR14 code head: root **2,145 passed +56 inherited explicit browser skips**; GUI **60 passed**;
+**6** compiled CLI lifecycle cases and **17** additional independent adversarial cases passed.
+Root/GUI typecheck, lint and build passed. These are separate counts, not an inflated combined total.
+The 56 skipped cases are rendered-browser fixture tests, not passed live evidence. No real SDK
+inference, operational signing-key creation, cloud login, Windows execution or merge occurred in
+this checkpoint. Remote status/check/workflow-run counts were zero; no workflow source exists at
+this head. GitHub's empty aggregate status is not a queued or passing CI job.
 
-PR1, PR2 and PR3 may be reviewed as incremental work. The native candidate is explicitly incomplete
-and is not implicitly part of a secure-execution merge chain. The final PR label is reserved for
-actual request→claim/approval→CLI **and** normal-Chat→result→ACK evidence at a fixed reviewed head,
-plus the relevant negative/recovery checks. Until then, report precisely `implemented`, `fake tested`,
-`blocked`, `missing code`, or `live unverified` for each route.
+The published tree has538 files:37 intended changes over PR13, including29 additions; all501
+other inherited files were verified unchanged. The SDK family preserves global request dedupe and
+is skipped by unsupported legacy route pumps. Native/local ResultSpec, hosted response and SDK
+iterator evidence remain different types. Historical payload-only ACK cannot satisfy full delivery.
 
-## Approved integration contract
+The new browser renderer build digest is `feedc4b5b2f834dbd540a3d3d55b74a3becbeca148cd43e0ee8f8f443f0fdca6`.
+Operators explicitly register it for new jobs. Old accepted jobs retain the original renderer/policy;
+missing historical code remains unsupported/no-resend.
 
-[CONSOLIDATED-DESIGN](CONSOLIDATED-DESIGN.md) is the implementation authority for cross-route records, historical registration, sender and requester archives, full ACK proof, UI projection and ownership/acceptance IDs. Output-contract-1 is an independently reviewed normal-Chat-only amendment; unknown required inventory remains blocked. New integration evidence must identify its exact reviewed source checkpoint.
+## Provider permission and account limits
+
+General manual/bypass UI modes require provider-specific supported capabilities. Antigravity's
+[headless protocol](https://antigravity.google/docs/cli/headless/#unsupported-messages) rejects
+Claude-style control_request/control_response. Approval-needed tools can be soft-denied with exit0;
+that is not proof the requested work ran. Interactive TUI approval is a different design. An unavailable
+manual route never implies automatic bypass. The SDK trial is fixed no-tools and adds no such mode.
+
+Version/help and an old auth-status summary cannot establish the current subscription/billing route.
+Each host context is verified independently; no token copy or inherited API-key environment is used.
+The cloud SDK candidate is SDK0.3.287/CLI2.1.288, and its compatibility remains live-unverified.
+A different installed Windows version does not automatically satisfy that pin.
+
+## Recovery and final acceptance
+
+Keep the original IDs, exact bytes, signed provenance and pinned roots. Unknown is not retry permission.
+Transport retries, result recovery and ACK retries do not re-run providers. A failed or inaccessible
+artifact save remains pending. A one-shot key-intent marker is never deleted to regenerate identities
+silently; losing the temporary signer may require leaving delivery pending and preserving evidence.
+
+Use this matrix with [USAGE](USAGE.md), [TESTING](TESTING.md), [SDK usage](SDK-TEXT-USAGE.md),
+[SDK testing](SDK-TEXT-TESTING.md), [platform gaps](PLATFORM-GAPS.md) and the exact PR parent/head.
+Owners name responsibility, not permission to activate accounts, tasks, settings or services.
