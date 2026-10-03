@@ -1,7 +1,7 @@
 # Bridge Control GUI
 
-The existing Electron package now opens the Bridge v2 product UI: a 280×380 vertical status dock,
-with a separate detail window. It loads the same authenticated loopback service used by `chatgpt-bridge ui`.
+The Electron package now starts as a compact resident bar (up to 440×46),
+with explicit downward expansion in the same window to a total 440×604 panel. Every page uses the same frame and scrolls internally; drafts and selected jobs survive collapse. It loads the same authenticated loopback service used by `chatgpt-bridge ui`.
 This is a wired application entrypoint, not the standalone design mock.
 
 ## Build and launch
@@ -23,7 +23,7 @@ To exercise persistent synthetic lifecycle flows without models/processes/networ
 `$env:CHATGPT_BRIDGE_UI_PROFILE = 'demo'` before starting. Demo uses `runtime/ui-demo/jobs.db`;
 production uses `runtime/jobs.db`. Never treat synthetic results as real execution evidence.
 
-Tray click or Ctrl+Shift+C shows the v2 dock. The tray includes v2 details, the existing browser-chat
+Tray click restores the prior visible mode; Ctrl+Shift+C toggles hide/restore. The tray includes v2 details, the existing browser-chat
 UI, and Quit. Legacy `run/submit/status/wait/result` routes remain available. The old GUI's doctor
 polling starts only when the user opens that legacy view.
 
@@ -46,6 +46,7 @@ files used by an existing instance.
 `npm run build`, `npm run typecheck`, `npm run lint`, and `npm test` verify this package.
 Cloud checks do not establish Windows rendering, process-tree/NTFS behavior, or production model execution.
 
+- [Resident display/theme guide](../docs/bridge-v2/UI-PRESENTATION.md)
 - [Usage guide](../docs/bridge-v2/UI-USAGE.md)
 - [Test procedure](../docs/bridge-v2/UI-TESTING.md)
 

@@ -1821,3 +1821,669 @@ body.compact .dock button {
   flex: 0 0 auto;
   white-space: nowrap;
 }
+
+/* Presentation state never removes the existing task/forms from the document. */
+.resident-bar {
+  position: fixed;
+  z-index: 100;
+  right: 24px;
+  top: 22px;
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 11px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 10px 25px #24364c1a;
+}
+.resident-bar .mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 13px;
+  flex: none;
+}
+.resident-bar .badge {
+  font-size: 10px;
+  padding: 4px 6px;
+  flex: none;
+}
+.resident-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 600;
+}
+.bar-button {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: var(--bluep);
+  color: var(--blue);
+  font-size: 17px;
+}
+.resident-return {
+  position: fixed;
+  z-index: 8;
+  right: 18px;
+  bottom: 18px;
+}
+body.resident-view .shell {
+  display: none;
+}
+body.resident-view .completion-toast {
+  display: none;
+}
+body.resident-only {
+  width: 440px;
+  height: 46px;
+  overflow: hidden;
+  background: transparent;
+}
+body.resident-only .resident-bar {
+  position: static;
+  width: 440px;
+  max-width: none;
+  height: 46px;
+  border-radius: 0;
+  box-shadow: none;
+  -webkit-app-region: drag;
+}
+body.resident-only .resident-bar button {
+  -webkit-app-region: no-drag;
+}
+.presentation-dialog {
+  max-width: 620px;
+}
+.theme-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.theme-choices button[aria-pressed="true"] {
+  border-color: var(--blue);
+  background: var(--bluep);
+  color: var(--blue);
+}
+.preference-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin: 20px 0;
+}
+.preference-switch {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  color: var(--ink);
+}
+.preference-switch strong {
+  display: block;
+  font-size: 14px;
+}
+.preference-switch small {
+  display: block;
+  font-size: 12px;
+  margin-top: 4px;
+  color: var(--muted);
+}
+.switch-indicator {
+  width: 34px;
+  height: 20px;
+  border-radius: 14px;
+  background: #a3afbf;
+  flex: none;
+  padding: 3px;
+}
+.switch-indicator::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+}
+.preference-switch[aria-checked="true"] .switch-indicator {
+  background: var(--blue);
+}
+.preference-switch[aria-checked="true"] .switch-indicator::before {
+  transform: translateX(14px);
+}
+.completion-toast {
+  position: fixed;
+  z-index: 30;
+  right: 24px;
+  bottom: 24px;
+  width: 360px;
+  max-width: calc(100vw - 48px);
+  box-shadow: 0 12px 30px #17243a25;
+}
+.toast-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 18px;
+  margin-top: 10px;
+}
+.topmeta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #e6edf6;
+  --muted: #adb9cb;
+  --line: #364253;
+  --blue: #a6baff;
+  --bluep: #243451;
+  --green: #82d9b9;
+  --greenp: #1b3b32;
+  --amber: #f4ce86;
+  --amberp: #3b301e;
+  --red: #ffb0b5;
+  --redp: #442b30;
+}
+[data-theme="dark"] body {
+  background: #111821;
+}
+[data-theme="dark"] .main-panel,
+[data-theme="dark"] .dock,
+[data-theme="dark"] .resident-bar,
+[data-theme="dark"] .side-card,
+[data-theme="dark"] .dialog,
+[data-theme="dark"] .card,
+[data-theme="dark"] .demo-note,
+[data-theme="dark"] .outline,
+[data-theme="dark"] .btn,
+[data-theme="dark"] .mode,
+[data-theme="dark"] .preference-switch,
+[data-theme="dark"] .dock .result {
+  background: #1a2431;
+  border-color: var(--line);
+  color: var(--ink);
+}
+[data-theme="dark"] .action-footer,
+[data-theme="dark"] .dialog-header,
+[data-theme="dark"] .dialog-footer,
+[data-theme="dark"] .editor,
+[data-theme="dark"] .task-picker select,
+[data-theme="dark"] .receipt-hash,
+[data-theme="dark"] .delivery-strip,
+[data-theme="dark"] .check,
+[data-theme="dark"] .btn.subtle,
+[data-theme="dark"] .diagnostics-panel {
+  background: #202d3c;
+  border-color: var(--line);
+  color: var(--ink);
+}
+[data-theme="dark"] .card.tint,
+[data-theme="dark"] .current,
+[data-theme="dark"] .mode[aria-pressed="true"],
+[data-theme="dark"] .theme-choices button[aria-pressed="true"] {
+  background: var(--bluep);
+  color: var(--blue);
+  border-color: #516888;
+}
+[data-theme="dark"] .btn.primary {
+  background: #4462be;
+  border-color: #6d8ae4;
+  color: #fff;
+}
+[data-theme="dark"] .btn.danger {
+  background: var(--redp);
+  color: var(--red);
+  border-color: #885058;
+}
+[data-theme="dark"] .badge {
+  background: #2b3a4c;
+  color: #c0cddd;
+}
+[data-theme="dark"] .badge.run {
+  background: var(--bluep);
+  color: var(--blue);
+}
+[data-theme="dark"] .badge.done {
+  background: var(--greenp);
+  color: var(--green);
+}
+[data-theme="dark"] .badge.wait {
+  background: var(--amberp);
+  color: var(--amber);
+}
+[data-theme="dark"] .badge.error {
+  background: var(--redp);
+  color: var(--red);
+}
+[data-theme="dark"] .notice.info {
+  background: #26364b;
+  color: #ccdaee;
+}
+[data-theme="dark"] .notice.danger {
+  background: var(--redp);
+  color: var(--red);
+}
+[data-theme="dark"] .demo-note strong,
+[data-theme="dark"] .progressive summary,
+[data-theme="dark"] .file-tabs button,
+[data-theme="dark"] .inline-code,
+[data-theme="dark"] .dock .details,
+[data-theme="dark"] .copy-hint,
+[data-theme="dark"] .handshake div,
+[data-theme="dark"] .bar-button {
+  color: var(--muted);
+}
+[data-theme="dark"] .handshake .confirmed {
+  background: var(--greenp);
+  color: var(--green);
+}
+[data-theme="dark"] .dialog::backdrop {
+  background: #060b13b8;
+}
+@media (max-width: 560px) {
+  .resident-bar {
+    right: 16px;
+    top: 16px;
+    gap: 6px;
+  }
+  .resident-bar .badge {
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topmeta {
+    justify-content: flex-start;
+  }
+}
+
+body.resident-only {
+  width: 100vw;
+  max-width: 440px;
+}
+body.resident-only .resident-bar {
+  width: 100%;
+}
+
+.resident-notice {
+  border: 0;
+  max-width: 70px;
+  flex: none;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Accepted option A: the entire expanded panel, including header/footer, is 440×604.
+   Every page uses this frame. Content scrolls; task updates never resize the panel. */
+.option-a {
+  --product-width: min(440px, 100vw);
+  --product-height: min(604px, 100dvh);
+  --product-right: min(24px, max(0px, calc((100vw - 440px) / 2)));
+  --product-top: min(22px, max(0px, calc(100dvh - 604px)));
+  font-size: 13px;
+}
+.option-a h1 {
+  font-size: 18px;
+}
+.option-a h2 {
+  font-size: 15px;
+}
+.option-a h3 {
+  font-size: 13px;
+}
+.option-a .shell,
+.option-a .dialog {
+  position: fixed;
+  inset: var(--product-top) var(--product-right) auto auto;
+  width: var(--product-width);
+  height: var(--product-height);
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 12px 32px #24364c18;
+}
+.option-a .shell {
+  display: flex;
+  flex-direction: column;
+}
+.option-a.resident-view .shell {
+  display: none;
+}
+.option-a .dialog[open] {
+  display: grid;
+  grid-template-rows: 46px minmax(0, 1fr) 74px;
+}
+.option-a .dialog::backdrop {
+  background: transparent;
+}
+.option-a .topbar,
+.option-a .dialog-header {
+  flex: none;
+  height: 46px;
+  margin: 0;
+  padding: 0 11px;
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+.option-a .brand {
+  font-size: 14px;
+  gap: 7px;
+}
+.option-a .brand .mark {
+  width: 22px;
+  height: 22px;
+  font-size: 13px;
+  border-radius: 6px;
+}
+.option-a .brand-version {
+  font-size: 10px;
+}
+.option-a .topmeta {
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+.option-a .topmeta .outline {
+  width: 29px;
+  height: 29px;
+  padding: 0;
+}
+.option-a .topmeta .connection {
+  display: none;
+}
+.option-a .product-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  overscroll-behavior: contain;
+}
+.option-a .profile-banner {
+  display: block;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  font-size: 11px;
+}
+.option-a .profile-banner strong {
+  margin-right: 7px;
+}
+.option-a .state-message {
+  margin: 8px 0;
+  font-size: 11px;
+}
+.option-a .app-toolbar {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  margin-bottom: 10px;
+  align-items: end;
+}
+.option-a .task-picker {
+  gap: 3px;
+}
+.option-a .task-picker select {
+  height: 32px;
+  font-size: 12px;
+  padding-left: 8px;
+}
+.option-a .toolbar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.option-a .toolbar-actions .btn {
+  min-width: 0;
+  height: 28px;
+  padding: 0 7px;
+  font-size: 10px;
+}
+.option-a .workspace {
+  display: block;
+}
+.option-a .dock-wrap {
+  display: none;
+}
+.option-a .main-panel {
+  box-shadow: none;
+  border: 0;
+  border-radius: 0;
+}
+.option-a .empty-task {
+  padding: 18px 6px;
+}
+.option-a .empty-task p {
+  font-size: 12px;
+}
+.option-a .empty-task .btn {
+  margin-top: 18px;
+  font-size: 11px;
+  height: 32px;
+}
+.option-a .detail-heading {
+  padding: 5px 0 10px;
+  display: flex;
+  gap: 8px;
+}
+.option-a .detail-heading .description {
+  font-size: 11px;
+}
+.option-a .detail-heading .badge {
+  margin-top: 0;
+}
+.option-a .eyebrow {
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+.option-a .tablist {
+  padding: 0;
+  gap: 4px;
+}
+.option-a .tab {
+  height: 34px;
+  font-size: 11px;
+}
+.option-a .tab-panel {
+  padding: 12px 0;
+  height: auto;
+  min-height: 0;
+}
+.option-a .section-head {
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.option-a .section-head .muted {
+  font-size: 10px;
+}
+.option-a .cards,
+.option-a .evidence-grid,
+.option-a .recovery-steps,
+.option-a .draft-fields {
+  grid-template-columns: 1fr;
+  gap: 9px;
+}
+.option-a .card {
+  padding: 10px;
+}
+.option-a .card p,
+.option-a .recovery-explain,
+.option-a .approval-copy {
+  font-size: 12px;
+}
+.option-a .keylist {
+  grid-template-columns: 82px minmax(0, 1fr);
+  font-size: 11px;
+  gap: 6px 8px;
+}
+.option-a .notice {
+  font-size: 11px;
+  padding: 9px 10px;
+}
+.option-a .handshake {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.option-a .mode {
+  min-height: 58px;
+  padding: 7px;
+}
+.option-a .mode strong {
+  font-size: 11px;
+}
+.option-a .mode span {
+  font-size: 9px;
+}
+.option-a .action-footer {
+  flex: 0 0 74px;
+  height: 74px;
+  padding: 7px 12px;
+  overflow: hidden;
+}
+.option-a .action-footer .button-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+.option-a .action-footer .btn {
+  height: 30px;
+  font-size: 11px;
+  padding: 0 4px;
+}
+.option-a .action-explain {
+  font-size: 10px;
+  line-height: 14px;
+  min-height: 0;
+  max-height: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin: 0 0 5px;
+}
+.option-a .button-reasons {
+  display: none;
+}
+.option-a .bottomline {
+  flex: 0 0 23px;
+  height: 23px;
+  margin: 0;
+  padding: 3px 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 9px;
+}
+.option-a .bottomline span {
+  display: inline;
+}
+.option-a .dialog-header .eyebrow,
+.option-a .dialog-header .description {
+  display: none;
+}
+.option-a .dialog-header h2 {
+  font-size: 13px;
+}
+.option-a .dialog-header-actions {
+  display: flex;
+  gap: 5px;
+  flex: none;
+}
+.option-a .dialog-header .outline {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.option-a .dialog-body {
+  overflow: auto;
+  min-height: 0;
+  padding: 12px;
+  overscroll-behavior: contain;
+}
+.option-a .dialog-footer {
+  height: 74px;
+  padding: 9px 12px;
+  overflow: auto;
+}
+.option-a .dialog-footer .button-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.option-a .dialog-footer .btn {
+  font-size: 11px;
+  height: 32px;
+  padding: 0 7px;
+}
+.option-a .draft-fields .editor {
+  height: 190px;
+  font-size: 11px;
+}
+.option-a .field-label {
+  font-size: 11px;
+}
+.option-a .file-input {
+  max-width: 155px;
+}
+.option-a .preference-switch {
+  padding: 10px 12px;
+}
+.option-a .preference-switch strong {
+  font-size: 12px;
+}
+.option-a .preference-switch small {
+  font-size: 11px;
+}
+.option-a .resident-bar {
+  top: var(--product-top);
+  right: var(--product-right);
+  width: var(--product-width);
+  max-width: none;
+}
+.option-a .resident-return {
+  display: none;
+}
+.option-a .completion-toast {
+  top: calc(var(--product-top) + 48px);
+  right: calc(var(--product-right) + 10px);
+  bottom: auto;
+  width: calc(var(--product-width) - 20px);
+  margin: 0;
+}
+.option-a.native-product {
+  --product-top: 0px;
+  --product-right: 0px;
+  --product-height: 100dvh;
+  width: 100vw;
+  height: 100dvh;
+  overflow: hidden;
+}
+.option-a.native-product .shell,
+.option-a.native-product .dialog {
+  border-radius: 0;
+  box-shadow: none;
+}
+.option-a.native-product .topbar,
+.option-a.native-product .dialog-header {
+  -webkit-app-region: drag;
+}
+.option-a.native-product button,
+.option-a.native-product select {
+  -webkit-app-region: no-drag;
+}
+[data-theme="dark"] .option-a .shell,
+[data-theme="dark"] .option-a .dialog {
+  background: #1a2431;
+}

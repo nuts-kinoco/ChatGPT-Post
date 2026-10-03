@@ -182,9 +182,11 @@ export class TaskUiService {
         (record.result.synthetic || !!this.runtime.materialize) &&
           record.requesterId === this.authenticatedRequesterId &&
           !!this.runtime.store.handshake(record.result.request_id, "terminal_result"),
-        record.requesterId === this.authenticatedRequesterId
-          ? "A persisted terminal event and its exact payload hash are required"
-          : "This delivery belongs to another authenticated requester; its recipient adapter must acknowledge it",
+        record.requesterId !== this.authenticatedRequesterId
+          ? "This delivery belongs to another authenticated requester; its recipient adapter must acknowledge it"
+          : !record.result.synthetic && !this.runtime.materialize
+            ? "Requester-side materialization adapter is not configured"
+            : "A persisted terminal event and its exact payload hash are required",
       );
     }
     return answer;

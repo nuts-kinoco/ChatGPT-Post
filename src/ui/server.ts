@@ -16,6 +16,7 @@ import {
   type UiImport,
   validateUiBody,
 } from "../contracts/ui.js";
+import { openPresentationStore, type PresentationStore } from "./presentation.js";
 import { openUiService, type TaskUiService, type UiServiceOptions } from "./service.js";
 
 export const MAX_UI_BODY_BYTES = 2 * 1024 * 1024;
@@ -23,6 +24,8 @@ export interface UiServerOptions extends UiServiceOptions {
   port?: number;
   deploymentModule?: string;
   publicDir?: string;
+  /** Trusted Electron host capability; never accepted from an HTTP body. */
+  nativeControls?: boolean;
 }
 export interface UiServerHandle {
   server: Server;
@@ -30,12 +33,14 @@ export interface UiServerHandle {
   url: string;
   token: string;
   service: TaskUiService;
+  presentation: PresentationStore;
   close(): Promise<void>;
 }
 const ASSETS: Record<string, { name: string; type: string }> = {
   "/": { name: "index.html", type: "text/html; charset=utf-8" },
   "/index.html": { name: "index.html", type: "text/html; charset=utf-8" },
   "/app.js": { name: "app.js", type: "text/javascript; charset=utf-8" },
+  "/presentation.js": { name: "presentation.js", type: "text/javascript; charset=utf-8" },
   "/styles.css": { name: "styles.css", type: "text/css; charset=utf-8" },
 };
 function secureHeaders(response: ServerResponse): void {
@@ -185,6 +190,25 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     if (deployment?.close) await deployment.close();
     else service.close();
   };
+  let presentation: PresentationStore;
+  try {
+    presentation = await openPresentationStore(options.stateDir);
+  } catch (error) {
+    await closeRuntime();
+    throw error;
+  }
+  const presentationView = () => ({
+    ...service.metadata(),
+    presentation: presentation.snapshot(),
+    nativeControls: {
+      available: options.nativeControls === true,
+      reason:
+        options.nativeControls === true
+          ? "Desktop window controls are available"
+          : "Desktop window controls require the Bridge desktop app",
+    },
+  });
+
   const token = randomBytes(32).toString("base64url");
   const expected = Buffer.from(`Bearer ${token}`);
   const publicDir = options.publicDir ?? fileURLToPath(new URL("./public/", import.meta.url));
@@ -216,7 +240,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       if (query !== undefined) {
         const params = new URLSearchParams(query);
         const allowed: Record<string, RegExp> = {
-          view: /^(dock|detail)$/,
+          view: /^(dock|detail|resident)$/,
           tab: /^(approval|payload|evidence|recovery)$/,
           task: /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,
         };
@@ -249,6 +273,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         if (method !== "GET" && method !== "POST")
           throw new UiError("method_not_allowed", "Only GET and POST are supported", 405);
         if (method === "GET") {
+          if (rawUrl === "/api/presentation") return sendJson(response, presentationView());
           if (rawUrl === "/api/bootstrap") return sendJson(response, service.bootstrap());
           if (rawUrl === "/api/tasks")
             return sendJson(response, { ...service.metadata(), tasks: service.bootstrap().tasks });
@@ -288,6 +313,10 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
           }
         } else {
           const input = await body(request);
+          if (rawUrl === "/api/presentation") {
+            presentation.update(input, options.nativeControls === true);
+            return sendJson(response, presentationView());
+          }
           if (rawUrl === "/api/validate" || rawUrl === "/api/tasks") {
             validateUiBody("import", input);
             return sendJson(
@@ -380,7 +409,11 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     origin = `http://${host}`;
   } catch (error) {
     server.close();
-    await closeRuntime();
+    try {
+      await closeRuntime();
+    } finally {
+      presentation.close();
+    }
     throw error;
   }
   let closed = false;
@@ -390,6 +423,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     url: `${origin}/#token=${token}`,
     token,
     service,
+    presentation,
     close: async () => {
       if (closed) return;
       closed = true;
@@ -397,7 +431,11 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeIdleConnections();
       });
-      await closeRuntime();
+      try {
+        await closeRuntime();
+      } finally {
+        presentation.close();
+      }
     },
   };
 }

@@ -1,3 +1,5 @@
+import { mountPresentation } from "./presentation.js";
+
 /* No task state is generated here. Every accepted status and receipt comes from the local API. */
 const TOKEN_KEY = "bridge-v2-ui-token";
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
@@ -152,7 +154,6 @@ export function chooseSnapshot(current, incoming, selectedId) {
     current.result.status === incoming.result.status &&
     TERMINAL.has(incoming.result.status) &&
     current.handshakes?.result_ack &&
-    current.delivery?.acknowledged &&
     priorTerminal &&
     nextTerminal &&
     ["eventId", "payloadSha256", "sequence", "requestId", "taskSpecHash", "runId"].every(
@@ -163,8 +164,28 @@ export function chooseSnapshot(current, incoming, selectedId) {
     return {
       ...incoming,
       summary: chooseSummary(current.summary, incoming.summary),
-      handshakes: { ...incoming.handshakes, result_ack: current.handshakes.result_ack },
-      delivery: current.delivery,
+      handshakes: {
+        ...incoming.handshakes,
+        result_ack: incoming.delivery?.acknowledged
+          ? (incoming.handshakes.result_ack ?? current.handshakes.result_ack)
+          : current.handshakes.result_ack,
+      },
+      delivery: current.delivery?.acknowledged
+        ? current.delivery
+        : incoming.delivery?.acknowledged
+          ? incoming.delivery
+          : {
+              ...incoming.delivery,
+              acknowledged: false,
+              payloadAckObserved: true,
+              ...(current.delivery?.materialization === "verified" &&
+              current.delivery.materializationSha256
+                ? {
+                    materialization: "verified",
+                    materializationSha256: current.delivery.materializationSha256,
+                  }
+                : {}),
+            },
     };
   }
   return incoming;
@@ -209,6 +230,10 @@ function capabilityText(raw) {
       "開始記録は使用済みです。同じ依頼IDで記録を照合してください",
     "Terminal result is immutable": "終了した依頼の結果は変更できません",
     "No dispatch intent exists to reconcile": "まだ開始記録がないため、実行の照合は不要です",
+    "Requester-side materialization adapter is not configured":
+      "必要成果物を実体化・検証する依頼側アダプターが未構成です",
+    "Requester materialization of verified result, receipt and required artifact bytes is required":
+      "結果・終了証跡・必要成果物を依頼側で実体化して検証する必要があります",
     "A persisted terminal event and its exact payload hash are required":
       "終了結果の記録と、その内容に一致するハッシュが必要です",
     "Explicit detached approval for the inspected hashes":
@@ -258,6 +283,12 @@ function boot() {
   }
   const token = consumeToken(window.location, window.history, storage);
   const api = createApiClient(token);
+  const presentation = mountPresentation({
+    api,
+    document,
+    window,
+    statusLabel: (status) => STATUS[status]?.[0] || "未確認",
+  });
   const params = new URLSearchParams(window.location.search);
   const compact = params.get("view") === "dock";
   document.body.classList.toggle("compact", compact);
@@ -275,7 +306,7 @@ function boot() {
     refreshing: false,
     tab: ["approval", "payload", "evidence", "recovery"].includes(params.get("tab"))
       ? params.get("tab")
-      : "approval",
+      : "evidence",
     draft: { rawSpec: "", taskMarkdown: "", revision: 0, validatedRevision: -1, validation: null },
   };
   const text = (id, value) => {
@@ -319,13 +350,13 @@ function boot() {
     capabilityText(capabilityFor(state.bootstrap, task ? state.task : null, name).reason);
   const setButton = (id, action, reasonId) => {
     $(id).disabled =
-      !state.task || !can(action) || (action === "ack" && !!state.task.handshakes.result_ack);
+      !state.task || !can(action) || (action === "ack" && !!state.task.delivery.acknowledged);
     $(id).title =
       blockedReason(action) || capabilityFor(state.bootstrap, state.task, action).reason;
     if (reasonId)
       text(
         reasonId,
-        action === "ack" && state.task?.handshakes.result_ack
+        action === "ack" && state.task?.delivery.acknowledged
           ? "この結果は受領済みです"
           : reason(action),
       );
@@ -446,6 +477,8 @@ function boot() {
     $("capabilities").replaceChildren(...items);
   }
   function render() {
+    presentation.renderTask(state.task);
+    presentation.observeTasks(state.bootstrap?.tasks || []);
     const bootstrap = state.bootstrap,
       task = state.task;
     text("connection", state.connected ? (isBusy() ? "処理中" : "ローカル接続中") : "接続未確認");
@@ -480,6 +513,7 @@ function boot() {
     $("task-main").setAttribute("aria-busy", String(isBusy() || state.refreshing));
     $("empty-task").hidden = !!task;
     $("task-detail").hidden = !task;
+    $("task-actions").hidden = !task;
     $("empty-import").hidden = !bootstrap || !!bootstrap.tasks.length;
     if (!task) {
       text(
@@ -489,13 +523,13 @@ function boot() {
       text(
         "empty-description",
         bootstrap
-          ? "JSON と Markdown を取り込み、依頼の許可範囲・受け渡し・結果をひとつの画面で確認します。取り込みだけでは開始しません"
+          ? "LLMがBridge CLIから作った依頼が、保存後ここに表示されます。普段は進行と結果を確認し、必要なときだけ承認や設定を開きます。手動取り込みも利用できます"
           : "サーバーが表示した起動URLから開いてください。接続後、保存された記録を表示します",
       );
       text("dock-title", state.selectedId ? "依頼を確認中" : "依頼を選んでください");
       text("dock-status", "未確認");
       $("dock-status").className = "badge";
-      text("dock-reason", blockedReason() || "依頼を取り込むと、保存された状態を表示します");
+      text("dock-reason", blockedReason() || "LLMから届いた依頼の保存記録を表示します");
       text("dock-destination", isDemo() ? "デモ専用 · synthetic" : "ローカル記録");
       text("dock-mode", "");
       text("dock-time", "");
@@ -608,10 +642,16 @@ function boot() {
       ["result_ack", "hs-ack"],
     ]) {
       const handshake = task.handshakes[key];
-      $(id).classList.toggle("confirmed", !!handshake);
-      $(id).querySelector("small").textContent = handshake
-        ? `観測 #${handshake.sequence}`
-        : "未記録";
+      $(id).classList.toggle(
+        "confirmed",
+        !!handshake && (key !== "result_ack" || task.delivery.acknowledged),
+      );
+      $(id).querySelector("small").textContent =
+        key === "result_ack" && handshake && !task.delivery.acknowledged
+          ? "本文ACKのみ・成果物受領は未確認"
+          : handshake
+            ? `観測 #${handshake.sequence}`
+            : "未記録";
     }
     text(
       "evidence-execution",
@@ -629,11 +669,13 @@ function boot() {
     text("evidence-seq", `観測 #${result.observation_seq}`);
     text(
       "result-ack",
-      task.handshakes.result_ack
+      task.delivery.acknowledged
         ? "受領済み"
-        : task.handshakes.terminal_result
-          ? "未受領"
-          : "結果待ち",
+        : task.handshakes.result_ack
+          ? "本文ACKのみ・成果物受領は未確認"
+          : task.handshakes.terminal_result
+            ? "未受領"
+            : "結果待ち",
     );
     text("result-time", result.finished_at ? time(result.finished_at) : "終了時刻は未取得");
     text("evidence-run", result.run_id || "未発行");
@@ -703,7 +745,7 @@ function boot() {
     );
     text(
       "dock-result-detail",
-      `${task.handshakes.result_ack ? "結果受領済み" : result.outcome_known ? "結果確認待ち" : "結果未確定"} · 観測 #${result.observation_seq}`,
+      `${task.delivery.acknowledged ? "成果物受領済み" : task.handshakes.result_ack ? "本文ACKのみ" : result.outcome_known ? "結果確認待ち" : "結果未確定"} · 観測 #${result.observation_seq}`,
     );
     text(
       "dock-footer",
@@ -735,7 +777,8 @@ function boot() {
   async function refresh(manual = false) {
     if (isBusy() || state.refreshing) return;
     const epoch = ++state.readEpoch,
-      selectedEpoch = state.selectionEpoch;
+      selectedEpoch = state.selectionEpoch,
+      presentationReadGeneration = presentation.observationGeneration();
     state.refreshing = true;
     renderControls();
     try {
@@ -749,6 +792,7 @@ function boot() {
         chooseSummary(priorSummaries.get(task.requestId), task),
       );
       state.bootstrap = bootstrap;
+      presentation.observeTasks(bootstrap.tasks, true, presentationReadGeneration);
       state.connected = true;
       const selectedId = state.selectedId;
       if (selectedEpoch === state.selectionEpoch) {
@@ -913,7 +957,7 @@ function boot() {
   $("new-task").addEventListener("click", () => openDraft());
   $("empty-import").addEventListener("click", () => openDraft());
   $("copy-draft").addEventListener("click", () => openDraft(true));
-  $("close-draft").addEventListener("click", () => $("draft-dialog").close());
+  $("close-draft").addEventListener("click", () => presentation.closeDialog("draft-dialog"));
   $("draft-dialog").addEventListener("cancel", (event) => {
     if (isBusy()) event.preventDefault();
   });
@@ -999,7 +1043,7 @@ function boot() {
         select: true,
         message: "依頼を取り込みました。実行はまだ開始していません",
         success: () => {
-          $("draft-dialog").close();
+          presentation.closeDialog("draft-dialog");
           state.draft = {
             rawSpec: "",
             taskMarkdown: "",
@@ -1065,11 +1109,11 @@ function boot() {
       $("task-md").hidden = button.dataset.file !== "md";
       $("task-json").hidden = button.dataset.file !== "json";
     });
-  $("show-diagnostics").addEventListener("click", () => {
-    $("diagnostics").open = true;
-    $("diagnostics").scrollIntoView({ block: "start" });
-    $("diagnostics").querySelector("summary").focus();
-  });
+  for (const id of ["show-diagnostics", "open-diagnostics"])
+    $(id).addEventListener("click", () => {
+      if (!$("diagnostics").open) $("diagnostics").showModal();
+    });
+  $("close-diagnostics").addEventListener("click", () => $("diagnostics").close());
   render();
   void refresh();
   // Read-only observations, never a mutation retry. Explicit refresh clears an uncertain POST.

@@ -10,31 +10,35 @@
   <link rel="stylesheet" href="/styles.css">
   <script type="module" src="/app.js"></script>
 </head>
-<body>
+<body class="resident-view option-a">
+<section id="resident-bar" class="resident-bar" aria-label="Bridge常駐バー"><span class="mark" aria-hidden="true">B</span><span id="resident-status" class="badge">接続確認</span><span id="resident-title" class="resident-title">依頼を確認しています</span><span id="resident-profile" class="micro"></span><button type="button" id="resident-notice" class="badge done resident-notice" aria-live="polite" hidden>結果</button><button type="button" id="resident-settings" class="bar-button" aria-label="表示設定">⚙</button><button type="button" id="resident-expand" class="bar-button" aria-label="Bridgeを展開">↗</button></section>
+<button type="button" id="resident-return" class="resident-return outline" hidden>常駐バーへ戻る</button>
+<div id="completion-toast" class="completion-toast notice info" role="status" aria-live="polite" hidden><p id="completion-message"></p><div class="toast-actions"><button type="button" id="disable-completion-toast" class="text-button">完了通知をOFF</button><button type="button" id="close-completion-toast" class="text-button">閉じる</button></div></div>
 <main class="shell">
   <header class="topbar">
     <div class="brand"><span class="mark" aria-hidden="true">B</span>Bridge <span class="muted brand-version">v2</span></div>
-    <div class="topmeta"><span id="connection" class="connection">接続を確認中</span><button type="button" class="outline" id="refresh">記録を再読込</button></div>
+    <div class="topmeta"><span id="connection" class="connection" title="接続状態">接続を確認中</span><button type="button" class="outline" id="refresh" aria-label="記録を再読込" title="記録を再読込">↻</button><button type="button" class="outline" id="show-presentation" aria-label="表示設定" title="表示設定">⚙</button><button type="button" class="outline" id="collapse-product" title="入力を保持して畳む" aria-label="入力を保持して畳む">⌃</button><button type="button" class="outline" id="minimize-product" title="設定した最小化動作" aria-label="最小化">−</button></div>
   </header>
+  <div class="product-body">
   <noscript><p class="notice danger">この画面には JavaScript が必要です。依頼の状態はサーバーの記録から取得します</p></noscript>
   <div id="profile-banner" class="demo-note profile-banner"><strong id="profile-label">接続確認</strong><span id="profile-description">ローカルサーバーの情報を読み込んでいます</span></div>
   <div id="message" class="notice info state-message" role="status" aria-live="polite"></div>
   <div class="app-toolbar">
     <div class="task-picker"><label for="task-select">依頼一覧 <span id="task-count" class="task-count"></span></label><select id="task-select" disabled><option value="">依頼を読み込んでいます</option></select></div>
-    <div class="toolbar-actions"><button type="button" class="btn subtle" id="new-task" disabled>JSON + MD を取り込む</button><button type="button" class="btn primary" id="new-demo" hidden disabled>新しいデモ依頼</button></div>
+    <div class="toolbar-actions"><button type="button" class="btn subtle" id="new-task" disabled>手動で取り込む</button><button type="button" class="btn primary" id="new-demo" hidden disabled>新しいデモ依頼</button></div>
   </div>
   <div class="workspace">
     <section class="main-panel task-main" id="task-main" aria-label="依頼の詳細" aria-busy="true">
-      <div class="empty-task" id="empty-task"><div class="eyebrow">BRIDGE V2 · JSON + MD</div><h1 id="empty-title">依頼の記録を確認</h1><p id="empty-description">接続を確認すると、保存された依頼をここに表示します</p><button type="button" class="btn primary" id="empty-import" hidden>最初の依頼を取り込む</button></div>
+      <div class="empty-task" id="empty-task"><div class="eyebrow">BRIDGE · MONITOR</div><h1 id="empty-title">依頼の記録を確認</h1><p id="empty-description">接続を確認すると、保存された依頼をここに表示します</p><button type="button" class="btn primary" id="empty-import" hidden>手動取り込みを開く</button></div>
       <div id="task-detail" hidden>
-        <div class="detail-heading"><div><div class="eyebrow" id="task-id"></div><h1 id="task-title">依頼の詳細</h1><p class="description">受け渡す内容と許可の範囲を、同じ依頼IDで確認</p></div><span id="main-status" class="badge"></span></div>
+        <div class="detail-heading"><div><div class="eyebrow" id="task-id"></div><h1 id="task-title">依頼の詳細</h1><p class="description">LLMから届いた依頼と結果を、同じIDで確認</p></div><span id="main-status" class="badge"></span></div>
         <div class="tablist" role="tablist" aria-label="依頼の詳細ページ">
-          <button type="button" class="tab" role="tab" id="tab-approval" aria-controls="panel-approval" aria-selected="true" data-tab="approval">承認と許可</button>
-          <button type="button" class="tab" role="tab" id="tab-payload" aria-controls="panel-payload" aria-selected="false" tabindex="-1" data-tab="payload">依頼の内容</button>
-          <button type="button" class="tab" role="tab" id="tab-evidence" aria-controls="panel-evidence" aria-selected="false" tabindex="-1" data-tab="evidence">実行の記録</button>
-          <button type="button" class="tab" role="tab" id="tab-recovery" aria-controls="panel-recovery" aria-selected="false" tabindex="-1" data-tab="recovery">復旧の確認</button>
+          <button type="button" class="tab" role="tab" id="tab-approval" aria-controls="panel-approval" aria-selected="false" tabindex="-1" data-tab="approval">承認</button>
+          <button type="button" class="tab" role="tab" id="tab-payload" aria-controls="panel-payload" aria-selected="false" tabindex="-1" data-tab="payload">内容</button>
+          <button type="button" class="tab" role="tab" id="tab-evidence" aria-controls="panel-evidence" aria-selected="true" data-tab="evidence">状況・結果</button>
+          <button type="button" class="tab" role="tab" id="tab-recovery" aria-controls="panel-recovery" aria-selected="false" tabindex="-1" data-tab="recovery">復旧</button>
         </div>
-        <section class="tab-panel" id="panel-approval" role="tabpanel" aria-labelledby="tab-approval">
+        <section class="tab-panel" id="panel-approval" role="tabpanel" aria-labelledby="tab-approval" hidden>
           <div class="section-head"><h2>確認の方法</h2><span class="muted small">この依頼に保存された設定</span></div>
           <div class="segmented">
             <div class="mode" data-mode="manual"><strong>手動承認</strong><span>manual · 依頼ごとに確認</span></div>
@@ -58,7 +62,7 @@
           <p class="notice info">受理した依頼は上書きできません。変更は新しい UUID の下書きへコピーし、内容を検証して別の依頼として取り込みます</p>
           <div class="task-toolbar spaced"><button type="button" class="btn subtle" id="copy-draft">新しいIDで編集する</button><p>前の承認は引き継ぎません</p></div>
         </section>
-        <section class="tab-panel" id="panel-evidence" role="tabpanel" aria-labelledby="tab-evidence" hidden>
+        <section class="tab-panel" id="panel-evidence" role="tabpanel" aria-labelledby="tab-evidence">
           <div class="section-head"><h2>結果と実行の証跡</h2><span class="badge" id="evidence-origin"></span></div>
           <div class="handshake">
             <div id="hs-received"><strong>1. 受信確認</strong><span>receipt ACK</span><small></small></div><div id="hs-started"><strong>2. 開始確認</strong><span>start receipt</span><small></small></div><div id="hs-result"><strong>3. 終了結果</strong><span>terminal result</span><small></small></div><div id="hs-ack"><strong>4. 結果受領</strong><span>result ACK</span><small></small></div>
@@ -67,7 +71,7 @@
           <div class="evidence-grid spaced"><article class="card"><div class="kicker">実行の記録</div><div class="value" id="evidence-execution"></div><p id="evidence-execution-detail"></p></article><article class="card"><div class="kicker">観測した状態</div><div class="value" id="evidence-status"></div><p id="evidence-seq"></p></article><article class="card"><div class="kicker">結果の受け取り</div><div class="value" id="result-ack"></div><p id="result-time"></p></article></div>
           <dl class="keylist details-list"><dt>run ID</dt><dd class="mono" id="evidence-run"></dd><dt>実行情報</dt><dd id="evidence-identity"></dd><dt>終了レシート</dt><dd class="mono" id="evidence-receipt"></dd><dt>検証</dt><dd id="evidence-verification"></dd></dl>
           <section class="timeline" id="timeline" aria-label="サーバーの観測履歴"></section>
-          <div class="task-toolbar spaced"><button type="button" class="btn subtle" id="ack-result" disabled>結果を受領済みにする</button><p id="ack-reason"></p></div>
+          <div class="task-toolbar spaced"><button type="button" class="btn subtle" id="ack-result" disabled>成果物の受領を確認</button><p id="ack-reason"></p></div>
           <details class="progressive"><summary>ResultSpec と受け渡し記録</summary><div class="progressive-body"><pre id="result-json" class="editor source-pre record-source"></pre><pre id="handshake-json" class="editor source-pre record-source spaced"></pre></div></details>
         </section>
         <section class="tab-panel" id="panel-recovery" role="tabpanel" aria-labelledby="tab-recovery" hidden>
@@ -79,7 +83,7 @@
           <details class="progressive"><summary>実行意図の原記録</summary><pre id="intent-json" class="editor source-pre record-source spaced"></pre></details>
           <section id="demo-simulations" class="demo-simulations" hidden><h3>デモ用の観測入力</h3><p>模擬アダプターへ結果を渡し、コアの状態遷移を確認します。外部プロセスは起動しません</p><div class="button-row"><button type="button" class="btn" data-observation="succeeded">模擬完了を観測</button><button type="button" class="btn" data-observation="failed">模擬失敗を観測</button><button type="button" class="btn" data-observation="unknown">観測不能にする</button></div><p id="demo-reason" class="hint"></p></section>
         </section>
-        <footer class="action-footer"><p id="action-explain" class="action-explain"></p><div class="button-row"><button type="button" id="approve" class="btn subtle" disabled>この内容を承認</button><button type="button" id="start" class="btn primary" disabled>依頼を開始</button><button type="button" id="cancel" class="btn danger" disabled>停止を要求</button></div><div class="button-reasons"><p id="approve-reason"></p><p id="start-reason"></p><p id="cancel-reason"></p></div></footer>
+
       </div>
     </section>
     <aside class="dock-wrap" aria-label="縦型ステータスドック">
@@ -94,16 +98,23 @@
       <p class="side-note">この画面の状態はサーバーの記録を表示します。接続の失敗や経過時間だけで、成功・停止済みとは判断しません</p>
     </aside>
   </div>
-  <details id="diagnostics" class="diagnostics-panel"><summary>接続の診断と利用できる操作</summary><div class="progressive-body"><div class="cards"><article class="card"><h3>このサーバーの機能</h3><dl id="capabilities" class="capability-list"></dl></article><article class="card"><h3>既存のブラウザチャット経路</h3><p>通常の ChatGPT 会話を使う既存の browser-chat 経路は別機能です。この v2 画面の実行アダプターや Work / dot 向け MCP Events としては扱いません</p><p class="notice info">実行できる操作は、接続の診断と各ボタンの利用条件で確認できます。未設定の実行経路は停止します</p></article></div><details class="progressive"><summary>診断情報の原記録</summary><pre id="diagnostics-json" class="editor source-pre diagnostics-json spaced"></pre></details></div></details>
-  <div class="bottomline"><span>Bridge v2 · 依頼単位の承認と、証跡に基づく状態確認</span><span id="last-updated">未取得</span></div>
+  </div>
+  <footer class="action-footer" id="task-actions"><p id="action-explain" class="action-explain"></p><div class="button-row"><button type="button" id="approve" class="btn subtle" disabled>この内容を承認</button><button type="button" id="start" class="btn primary" disabled>依頼を開始</button><button type="button" id="cancel" class="btn danger" disabled>停止を要求</button></div><div class="button-reasons"><p id="approve-reason"></p><p id="start-reason"></p><p id="cancel-reason"></p></div></footer>
+  <div class="bottomline"><button type="button" id="open-diagnostics" class="text-button">接続・設定の確認</button><span id="last-updated">未取得</span></div>
 </main>
+<dialog id="diagnostics" class="dialog" aria-labelledby="diagnostics-title"><div class="dialog-header"><h2 id="diagnostics-title">接続と利用できる操作</h2><div class="dialog-header-actions"><button type="button" class="outline" id="collapse-diagnostics" data-collapse-product="" aria-label="入力を保持して畳む">⌃</button><button type="button" id="close-diagnostics" class="outline">戻る</button></div></div><div class="dialog-body"><div class="progressive-body"><div class="cards"><article class="card"><h3>このサーバーの機能</h3><dl id="capabilities" class="capability-list"></dl></article><article class="card"><h3>既存のブラウザチャット経路</h3><p>通常の ChatGPT 会話を使う既存の browser-chat 経路は別機能です。この v2 画面の実行アダプターや Work / dot 向け MCP Events としては扱いません</p><p class="notice info">実行できる操作は、接続の診断と各ボタンの利用条件で確認できます。未設定の実行経路は停止します</p></article></div><details class="progressive"><summary>診断情報の原記録</summary><pre id="diagnostics-json" class="editor source-pre diagnostics-json spaced"></pre></details></div></div><div class="dialog-footer"><p class="small muted">構成済みの機能だけが利用可能です。秘密情報はこの画面に入力しません</p></div></dialog>
 <dialog id="draft-dialog" class="dialog" aria-labelledby="draft-title">
-  <div class="dialog-header"><div><div class="eyebrow">新しい依頼 · JSON + MD</div><h2 id="draft-title">取り込む内容を確認</h2><p class="description">検証と保存を分けて行います。取り込みだけでは開始しません</p></div><button type="button" class="outline" id="close-draft" aria-label="下書きを閉じる">閉じる</button></div>
+  <div class="dialog-header"><div><div class="eyebrow">新しい依頼 · JSON + MD</div><h2 id="draft-title">取り込む内容を確認</h2><p class="description">検証と保存を分けて行います。取り込みだけでは開始しません</p></div><div class="dialog-header-actions"><button type="button" class="outline" id="collapse-draft-dialog" data-collapse-product="" aria-label="入力を保持して畳む">⌃</button><button type="button" class="outline" id="close-draft" aria-label="下書きを閉じる">閉じる</button></div></div>
   <div class="dialog-body"><p class="notice info compact">下書きはこのページを閉じるまで保持します。受理済みIDの内容は変更できません。変更版には「新しいUUIDを設定」を使ってください</p><p class="import-note">UTF-8 の task.json と task.md を選ぶか、内容を貼り付けてください。ファイル読込時は改行を含む原文を保ち、編集すると表示どおりのテキストで検証します</p>
     <div class="draft-fields"><div class="draft-field"><div class="field-label"><label for="draft-spec">TaskSpec JSON</label><input id="import-spec" class="file-input" type="file" accept=".json,application/json" aria-label="TaskSpec JSON ファイルを読み込む"></div><textarea id="draft-spec" class="editor" spellcheck="false" placeholder="TaskSpec JSON の原文を貼り付け" aria-describedby="draft-state"></textarea></div><div class="draft-field"><div class="field-label"><label for="draft-md">依頼本文 · Markdown</label><input id="import-md" class="file-input" type="file" accept=".md,.markdown,.txt,text/plain,text/markdown" aria-label="依頼本文のファイルを読み込む"></div><textarea id="draft-md" class="editor" spellcheck="false" placeholder="依頼本文を貼り付け" aria-describedby="draft-state"></textarea></div></div>
     <div class="draft-tools"><button type="button" class="btn subtle" id="new-uuid">新しいUUIDを設定</button><button type="button" class="btn subtle" id="bind-md">本文ハッシュをJSONへ反映</button></div><p class="dialog-state" id="draft-state">未検証の下書きです</p><div id="validation-output" class="notice info validation-output" role="status" aria-live="polite" hidden><strong id="validation-title"></strong><ul id="validation-errors" class="validation-list"></ul><dl class="keylist"><dt>TaskSpec hash</dt><dd id="validation-spec-hash" class="mono"></dd><dt>MD hash</dt><dd id="validation-md-hash" class="mono"></dd></dl></div>
   </div>
   <div class="dialog-footer"><div class="button-row"><button type="button" class="btn subtle" id="validate-draft">内容を検証する</button><button type="button" class="btn primary" id="import-draft" disabled>検証した内容を取り込む</button></div><p id="draft-error" class="hint" role="status" aria-live="polite"></p></div>
 </dialog>
+<dialog id="presentation-dialog" class="dialog presentation-dialog" aria-labelledby="presentation-title">
+<div class="dialog-header"><div><div class="eyebrow">表示だけの設定</div><h2 id="presentation-title">いつもの表示にする</h2><p class="description">入力と処理を残したまま、必要なときに開けます</p></div><div class="dialog-header-actions"><button type="button" class="outline" id="collapse-presentation-dialog" data-collapse-product="" aria-label="入力を保持して畳む">⌃</button><button type="button" id="close-presentation" class="outline">閉じる</button></div></div>
+<div class="dialog-body"><h3>テーマ</h3><div class="theme-choices"><button type="button" id="theme-light" class="btn" aria-pressed="false">ライト</button><button type="button" id="theme-dark" class="btn" aria-pressed="false">ダーク</button></div><p class="small muted">テーマはドック・詳細・入力画面で共通です。ブラウザへの保存はテーマだけです</p>
+<div class="preference-list"><button type="button" id="pref-alwaysOnTop" class="preference-switch" role="switch" aria-checked="false"><span><strong>最前面に表示</strong><small>ほかのアプリより手前に置く</small></span><span class="switch-indicator" aria-hidden="true"></span></button><button type="button" id="pref-hideWhenInactive" class="preference-switch" role="switch" aria-checked="false"><span><strong>非アクティブで隠す</strong><small>トレイ・ショートカットから同じ画面へ戻る</small></span><span class="switch-indicator" aria-hidden="true"></span></button><button type="button" id="pref-minimizeToTray" class="preference-switch" role="switch" aria-checked="false"><span><strong>最小化でトレイへ隠す</strong><small>OFFなら小さな常駐バーへ戻る</small></span><span class="switch-indicator" aria-hidden="true"></span></button><button type="button" id="pref-completionNotifications" class="preference-switch" role="switch" aria-checked="false"><span><strong>画面内の完了通知</strong><small>OFFでも結果と履歴は保持。勝手に展開しません</small></span><span class="switch-indicator" aria-hidden="true"></span></button></div>
+<p id="presentation-native" class="notice info"></p><p id="presentation-status" class="notice info">設定を読み込んでいます</p><p id="presentation-revision" class="small muted"></p><p class="small muted">外部Email・Discord・ペットへの送信は、この表示設定では行いません</p></div><div class="dialog-footer"><button type="button" id="refresh-presentation" class="btn subtle">設定を再読込</button></div></dialog>
 </body>
 </html>
