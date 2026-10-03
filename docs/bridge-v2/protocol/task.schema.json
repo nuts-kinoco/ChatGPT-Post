@@ -1,0 +1,661 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/bridge-v2/task.schema.json",
+  "title": "Bridge v2 TaskSpec",
+  "description": "設計契約。構造の妥当性は実行許可ではない。mode=design_fixture は常に起動禁止。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "request_id",
+    "agent",
+    "requested_model",
+    "repo",
+    "base_commit",
+    "mode",
+    "policy_snapshot_sha256",
+    "allowed_paths",
+    "allowed_commands",
+    "task_file",
+    "task_file_hash",
+    "approval",
+    "timeout",
+    "success_criteria",
+    "task_network",
+    "environment",
+    "retry_policy"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": "2.0"
+    },
+    "request_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "agent": {
+      "$ref": "#/$defs/id"
+    },
+    "requested_model": {
+      "$ref": "#/$defs/id"
+    },
+    "repo": {
+      "$ref": "#/$defs/id"
+    },
+    "base_commit": {
+      "$ref": "#/$defs/commit"
+    },
+    "mode": {
+      "enum": [
+        "design_fixture",
+        "read_only",
+        "edit"
+      ]
+    },
+    "policy_snapshot_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "allowed_paths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/pathRule"
+      },
+      "maxItems": 256,
+      "uniqueItems": true
+    },
+    "allowed_commands": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/commandRule"
+      },
+      "maxItems": 128,
+      "uniqueItems": true
+    },
+    "task_file": {
+      "$ref": "#/$defs/relativePath"
+    },
+    "task_file_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "approval": {
+      "$ref": "#/$defs/approvalPolicy"
+    },
+    "timeout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "cancel_grace_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 300
+        }
+      },
+      "required": [
+        "run_seconds",
+        "cancel_grace_seconds"
+      ]
+    },
+    "success_criteria": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/criterion"
+      },
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true
+    },
+    "task_network": {
+      "const": "deny"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {},
+      "required": []
+    },
+    "retry_policy": {
+      "const": "no-automatic-reexecution"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "design_fixture"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "allowed_paths": {
+            "maxItems": 0,
+            "type": "array"
+          },
+          "allowed_commands": {
+            "maxItems": 0,
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "else": {
+        "properties": {
+          "allowed_paths": {
+            "minItems": 1,
+            "type": "array"
+          },
+          "base_commit": {
+            "not": {
+              "pattern": "^0+(?![\\s\\S])",
+              "type": "string"
+            }
+          },
+          "policy_snapshot_sha256": {
+            "not": {
+              "pattern": "^0+(?![\\s\\S])",
+              "type": "string"
+            }
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "read_only"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "allowed_paths": {
+            "items": {
+              "properties": {
+                "permissions": {
+                  "items": {
+                    "const": "read"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}(?![\\s\\S])"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![\\s\\S])",
+      "format": "uuid"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z(?![\\s\\S])"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9_-](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?(?:/[A-Za-z0-9_-](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?)*(?![\\s\\S])",
+      "description": "保守的な相対パス構文。OS 上の同一性、予約名、リンク、包含性の検証は別途必須。"
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/id"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "media_type": {
+          "enum": [
+            "text/plain",
+            "text/x-diff",
+            "application/json",
+            "application/octet-stream"
+          ]
+        }
+      },
+      "required": [
+        "artifact_id",
+        "sha256",
+        "size_bytes",
+        "media_type"
+      ]
+    },
+    "exitCode": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 4294967295
+    },
+    "pathRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "scope": {
+          "enum": [
+            "exact",
+            "subtree"
+          ]
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "path",
+        "scope",
+        "permissions"
+      ]
+    },
+    "commandRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command_id": {
+          "$ref": "#/$defs/id"
+        },
+        "executable_id": {
+          "$ref": "#/$defs/id"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096,
+            "pattern": "^[^\u0000-\u001f]*(?![\\s\\S])"
+          },
+          "maxItems": 128
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "const": "."
+            },
+            {
+              "$ref": "#/$defs/relativePath"
+            }
+          ]
+        },
+        "max_runs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "accepted_exit_codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/exitCode"
+          },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "command_id",
+        "executable_id",
+        "executable_sha256",
+        "argv",
+        "cwd",
+        "max_runs",
+        "accepted_exit_codes"
+      ]
+    },
+    "criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "criterion_id": {
+          "$ref": "#/$defs/id"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "evaluator_id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": [
+        "criterion_id",
+        "description",
+        "evaluator_id"
+      ]
+    },
+    "approvalPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tier": {
+          "enum": [
+            "manual",
+            "automatic",
+            "bypass"
+          ]
+        },
+        "preauthorization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/preauthorizationRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required": {
+          "const": true
+        },
+        "binding": {
+          "const": "sha256-raw-task-spec"
+        },
+        "source": {
+          "const": "detached-authoritative-record"
+        },
+        "max_age_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 86400
+        },
+        "max_starts": {
+          "const": 1
+        }
+      },
+      "required": [
+        "tier",
+        "preauthorization",
+        "required",
+        "binding",
+        "source",
+        "max_age_seconds",
+        "max_starts"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "tier": {
+                "const": "manual"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "preauthorization": {
+                "const": null
+              }
+            },
+            "type": "object"
+          },
+          "else": {
+            "properties": {
+              "preauthorization": {
+                "$ref": "#/$defs/preauthorizationRef"
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "preauthorizationRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy_id": {
+          "$ref": "#/$defs/id"
+        },
+        "policy_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "session_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      },
+      "required": [
+        "policy_id",
+        "policy_version",
+        "policy_sha256",
+        "session_id"
+      ]
+    },
+    "approvalEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol_version": {
+          "const": "2.0"
+        },
+        "approval_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "tier": {
+          "enum": [
+            "manual",
+            "automatic",
+            "bypass"
+          ]
+        },
+        "preauthorization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/preauthorizationRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage_reservation_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decision": {
+          "enum": [
+            "approved",
+            "denied",
+            "revoked"
+          ]
+        },
+        "task_spec_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "task_file_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "policy_snapshot_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bridge_id": {
+          "$ref": "#/$defs/id"
+        },
+        "executor_id": {
+          "$ref": "#/$defs/id"
+        },
+        "approver_id": {
+          "$ref": "#/$defs/id"
+        },
+        "issued_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "nonce": {
+          "$ref": "#/$defs/uuid"
+        },
+        "max_starts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "protocol_version",
+        "approval_id",
+        "request_id",
+        "tier",
+        "preauthorization",
+        "usage_reservation_id",
+        "decision",
+        "task_spec_sha256",
+        "task_file_sha256",
+        "policy_snapshot_sha256",
+        "bridge_id",
+        "executor_id",
+        "approver_id",
+        "issued_at",
+        "expires_at",
+        "nonce",
+        "max_starts"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "decision": {
+                "const": "approved"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "max_starts": {
+                "const": 1
+              }
+            },
+            "type": "object"
+          },
+          "else": {
+            "properties": {
+              "max_starts": {
+                "const": 0
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tier": {
+                "const": "manual"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "preauthorization": {
+                "const": null
+              },
+              "usage_reservation_id": {
+                "const": null
+              }
+            },
+            "type": "object"
+          },
+          "else": {
+            "properties": {
+              "preauthorization": {
+                "$ref": "#/$defs/preauthorizationRef"
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tier": {
+                "enum": [
+                  "automatic",
+                  "bypass"
+                ]
+              },
+              "decision": {
+                "const": "approved"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "usage_reservation_id": {
+                "$ref": "#/$defs/uuid"
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    }
+  }
+}

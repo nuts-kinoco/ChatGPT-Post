@@ -1,0 +1,1567 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/bridge-v2/result.schema.json",
+  "title": "Bridge v2 Result snapshot",
+  "description": "実行結果と観測状態の契約。Schema 合格は receipt の真正性や完了を証明しない。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "request_id",
+    "task_spec_hash",
+    "task_file_hash",
+    "synthetic",
+    "status",
+    "last_confirmed_status",
+    "observation_seq",
+    "observed_at",
+    "outcome_known",
+    "started_at",
+    "finished_at",
+    "actual_agent",
+    "actual_model",
+    "base_commit",
+    "resulting_commit",
+    "run_id",
+    "fencing_token",
+    "process_identity",
+    "commands_run",
+    "tests",
+    "exit_codes",
+    "changed_files",
+    "diff",
+    "stdout_ref",
+    "stderr_ref",
+    "error",
+    "receipt",
+    "verification"
+  ],
+  "properties": {
+    "protocol_version": {
+      "const": "2.0"
+    },
+    "request_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "task_spec_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "task_file_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "synthetic": {
+      "type": "boolean"
+    },
+    "status": {
+      "enum": [
+        "received",
+        "awaiting_approval",
+        "approved",
+        "running",
+        "cancel_requested",
+        "cancelled",
+        "succeeded",
+        "failed",
+        "unknown"
+      ]
+    },
+    "last_confirmed_status": {
+      "anyOf": [
+        {
+          "enum": [
+            "received",
+            "awaiting_approval",
+            "approved",
+            "running",
+            "cancel_requested",
+            "cancelled",
+            "succeeded",
+            "failed"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observation_seq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "observed_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "outcome_known": {
+      "type": "boolean"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actual_agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actual_model": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "base_commit": {
+      "$ref": "#/$defs/commit"
+    },
+    "resulting_commit": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/commit"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fencing_token": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "process_identity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/processIdentity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "commands_run": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/commandRun"
+      },
+      "maxItems": 12800
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/testResult"
+      },
+      "maxItems": 6400
+    },
+    "exit_codes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "invocation_id": {
+            "$ref": "#/$defs/uuid"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/exitCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "invocation_id",
+          "exit_code"
+        ]
+      },
+      "maxItems": 12800
+    },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/changedFile"
+      },
+      "maxItems": 100000
+    },
+    "diff": {
+      "$ref": "#/$defs/diff"
+    },
+    "stdout_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stderr_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/artifactRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/receipt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": [
+            "pending",
+            "verified",
+            "rejected",
+            "synthetic"
+          ]
+        },
+        "checked_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/artifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "checked_at",
+        "evidence_ref"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "received",
+              "awaiting_approval",
+              "approved"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "started_at": {
+            "const": null
+          },
+          "finished_at": {
+            "const": null
+          },
+          "actual_agent": {
+            "const": null
+          },
+          "actual_model": {
+            "const": null
+          },
+          "run_id": {
+            "const": null
+          },
+          "process_identity": {
+            "const": null
+          },
+          "receipt": {
+            "const": null
+          },
+          "error": {
+            "const": null
+          },
+          "outcome_known": {
+            "const": false
+          },
+          "fencing_token": {
+            "const": 0
+          },
+          "commands_run": {
+            "maxItems": 0,
+            "type": "array"
+          },
+          "tests": {
+            "maxItems": 0,
+            "type": "array"
+          },
+          "exit_codes": {
+            "maxItems": 0,
+            "type": "array"
+          },
+          "changed_files": {
+            "maxItems": 0,
+            "type": "array"
+          },
+          "resulting_commit": {
+            "const": null
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "running",
+              "cancel_requested"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "started_at": {
+            "$ref": "#/$defs/timestamp"
+          },
+          "finished_at": {
+            "const": null
+          },
+          "actual_agent": {
+            "$ref": "#/$defs/id"
+          },
+          "actual_model": {
+            "$ref": "#/$defs/id"
+          },
+          "run_id": {
+            "$ref": "#/$defs/uuid"
+          },
+          "fencing_token": {
+            "minimum": 1,
+            "type": "integer",
+            "maximum": 9007199254740991
+          },
+          "process_identity": {
+            "$ref": "#/$defs/processIdentity"
+          },
+          "receipt": {
+            "const": null
+          },
+          "outcome_known": {
+            "const": false
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "cancelled",
+              "succeeded",
+              "failed"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "finished_at": {
+            "$ref": "#/$defs/timestamp"
+          },
+          "outcome_known": {
+            "const": true
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "unknown"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "finished_at": {
+            "const": null
+          },
+          "outcome_known": {
+            "const": false
+          },
+          "receipt": {
+            "const": null
+          },
+          "error": {
+            "$ref": "#/$defs/error"
+          },
+          "verification": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "pending",
+                  "rejected",
+                  "synthetic"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "failed",
+              "cancelled"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "$ref": "#/$defs/error"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "started_at": {
+            "$ref": "#/$defs/timestamp"
+          },
+          "actual_agent": {
+            "$ref": "#/$defs/id"
+          },
+          "actual_model": {
+            "$ref": "#/$defs/id"
+          },
+          "run_id": {
+            "$ref": "#/$defs/uuid"
+          },
+          "fencing_token": {
+            "minimum": 1,
+            "type": "integer",
+            "maximum": 9007199254740991
+          },
+          "process_identity": {
+            "$ref": "#/$defs/processIdentity"
+          },
+          "error": {
+            "const": null
+          },
+          "resulting_commit": {
+            "$ref": "#/$defs/commit"
+          },
+          "tests": {
+            "minItems": 1,
+            "items": {
+              "properties": {
+                "outcome": {
+                  "const": "passed"
+                },
+                "evidence_ref": {
+                  "$ref": "#/$defs/artifactRef"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "commands_run": {
+            "items": {
+              "properties": {
+                "termination": {
+                  "const": "exited"
+                },
+                "exit_code": {
+                  "$ref": "#/$defs/exitCode"
+                },
+                "finished_at": {
+                  "$ref": "#/$defs/timestamp"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "diff": {
+            "properties": {
+              "complete": {
+                "const": true
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "synthetic": {
+            "const": true
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "properties": {
+              "state": {
+                "const": "synthetic"
+              },
+              "checked_at": {
+                "const": null
+              },
+              "evidence_ref": {
+                "const": null
+              }
+            },
+            "type": "object"
+          },
+          "receipt": {
+            "const": null
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "synthetic": {
+            "const": false
+          },
+          "status": {
+            "enum": [
+              "cancelled",
+              "succeeded",
+              "failed"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "receipt": {
+            "$ref": "#/$defs/receipt"
+          },
+          "verification": {
+            "properties": {
+              "state": {
+                "const": "verified"
+              },
+              "checked_at": {
+                "$ref": "#/$defs/timestamp"
+              },
+              "evidence_ref": {
+                "$ref": "#/$defs/artifactRef"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "synthetic": {
+            "const": false
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "properties": {
+              "state": {
+                "not": {
+                  "const": "synthetic"
+                }
+              }
+            },
+            "type": "object"
+          },
+          "base_commit": {
+            "not": {
+              "pattern": "^0+(?![\\s\\S])",
+              "type": "string"
+            }
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "synthetic": {
+            "const": false
+          },
+          "status": {
+            "const": "cancelled"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "receipt": {
+            "properties": {
+              "terminal_status": {
+                "const": "cancelled"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "synthetic": {
+            "const": false
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "receipt": {
+            "properties": {
+              "terminal_status": {
+                "const": "succeeded"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "synthetic": {
+            "const": false
+          },
+          "status": {
+            "const": "failed"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "receipt": {
+            "properties": {
+              "terminal_status": {
+                "const": "failed"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "started_at": {
+            "type": "null"
+          },
+          "status": {
+            "enum": [
+              "cancelled",
+              "failed"
+            ]
+          },
+          "synthetic": {
+            "const": false
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "commands_run": {
+            "maxItems": 0,
+            "type": "array"
+          },
+          "actual_agent": {
+            "const": null
+          },
+          "actual_model": {
+            "const": null
+          },
+          "process_identity": {
+            "const": null
+          },
+          "receipt": {
+            "properties": {
+              "process_state": {
+                "const": "never_started"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "started_at": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "cancelled",
+              "failed"
+            ]
+          },
+          "synthetic": {
+            "const": false
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "run_id": {
+            "$ref": "#/$defs/uuid"
+          },
+          "fencing_token": {
+            "minimum": 1,
+            "type": "integer",
+            "maximum": 9007199254740991
+          },
+          "process_identity": {
+            "$ref": "#/$defs/processIdentity"
+          },
+          "receipt": {
+            "properties": {
+              "process_state": {
+                "const": "all_terminated"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "cancelled",
+              "succeeded",
+              "failed"
+            ]
+          },
+          "synthetic": {
+            "const": false
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "commands_run": {
+            "items": {
+              "properties": {
+                "termination": {
+                  "enum": [
+                    "exited",
+                    "killed"
+                  ]
+                },
+                "finished_at": {
+                  "$ref": "#/$defs/timestamp"
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "run_id": {
+            "const": null
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "fencing_token": {
+            "const": 0
+          }
+        },
+        "type": "object"
+      },
+      "else": {
+        "properties": {
+          "fencing_token": {
+            "minimum": 1,
+            "type": "integer",
+            "maximum": 9007199254740991
+          }
+        },
+        "type": "object"
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}(?![\\s\\S])"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![\\s\\S])",
+      "format": "uuid"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z(?![\\s\\S])"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9_-](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?(?:/[A-Za-z0-9_-](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?)*(?![\\s\\S])",
+      "description": "保守的な相対パス構文。OS 上の同一性、予約名、リンク、包含性の検証は別途必須。"
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/$defs/id"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "media_type": {
+          "enum": [
+            "text/plain",
+            "text/x-diff",
+            "application/json",
+            "application/octet-stream"
+          ]
+        }
+      },
+      "required": [
+        "artifact_id",
+        "sha256",
+        "size_bytes",
+        "media_type"
+      ]
+    },
+    "exitCode": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 4294967295
+    },
+    "processIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host_id": {
+          "$ref": "#/$defs/id"
+        },
+        "boot_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "creation_time": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "executable_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "process_group_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "host_id",
+        "boot_id",
+        "pid",
+        "creation_time",
+        "executable_sha256",
+        "process_group_id"
+      ]
+    },
+    "commandRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "invocation_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "command_id": {
+          "$ref": "#/$defs/id"
+        },
+        "executable_id": {
+          "$ref": "#/$defs/id"
+        },
+        "resolved_binary_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "argv_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "const": "."
+            },
+            {
+              "$ref": "#/$defs/relativePath"
+            }
+          ]
+        },
+        "started_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/exitCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "termination": {
+          "enum": [
+            "running",
+            "exited",
+            "killed",
+            "unknown"
+          ]
+        },
+        "stdout_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/artifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stderr_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/artifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "invocation_id",
+        "command_id",
+        "executable_id",
+        "resolved_binary_sha256",
+        "argv_sha256",
+        "cwd",
+        "started_at",
+        "finished_at",
+        "exit_code",
+        "termination",
+        "stdout_ref",
+        "stderr_ref"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "termination": {
+                "enum": [
+                  "running",
+                  "unknown"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "finished_at": {
+                "const": null
+              },
+              "exit_code": {
+                "const": null
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "termination": {
+                "const": "exited"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "finished_at": {
+                "$ref": "#/$defs/timestamp"
+              },
+              "exit_code": {
+                "$ref": "#/$defs/exitCode"
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "termination": {
+                "const": "killed"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "finished_at": {
+                "$ref": "#/$defs/timestamp"
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "testResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "test_id": {
+          "$ref": "#/$defs/id"
+        },
+        "criterion_id": {
+          "$ref": "#/$defs/id"
+        },
+        "outcome": {
+          "enum": [
+            "passed",
+            "failed",
+            "skipped",
+            "unknown"
+          ]
+        },
+        "command_invocation_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/uuid"
+          },
+          "uniqueItems": true
+        },
+        "evidence_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/artifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "test_id",
+        "criterion_id",
+        "outcome",
+        "command_invocation_ids",
+        "evidence_ref"
+      ]
+    },
+    "changedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "change": {
+          "enum": [
+            "added",
+            "modified",
+            "deleted"
+          ]
+        },
+        "before_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "change",
+        "before_sha256",
+        "after_sha256"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "const": "added"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "before_sha256": {
+                "const": null
+              },
+              "after_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "const": "deleted"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "before_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "after_sha256": {
+                "const": null
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "const": "modified"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "before_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "after_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "diff": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "none",
+            "git_binary_patch"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "artifact_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/artifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "complete",
+        "artifact_ref"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "none"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "artifact_ref": {
+                "const": null
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "git_binary_patch"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "artifact_ref": {
+                "$ref": "#/$defs/artifactRef"
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/id"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "retryable": {
+          "const": false
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ]
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "receipt_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "request_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "task_spec_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fencing_token": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "ledger_sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "terminal_status": {
+          "enum": [
+            "cancelled",
+            "succeeded",
+            "failed"
+          ]
+        },
+        "process_state": {
+          "enum": [
+            "never_started",
+            "all_terminated"
+          ]
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "evidence_ref": {
+          "$ref": "#/$defs/artifactRef"
+        }
+      },
+      "required": [
+        "receipt_id",
+        "request_id",
+        "task_spec_sha256",
+        "run_id",
+        "fencing_token",
+        "ledger_sequence",
+        "terminal_status",
+        "process_state",
+        "recorded_at",
+        "evidence_ref"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "process_state": {
+                "const": "all_terminated"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "run_id": {
+                "$ref": "#/$defs/uuid"
+              },
+              "fencing_token": {
+                "minimum": 1,
+                "type": "integer",
+                "maximum": 9007199254740991
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "terminal_status": {
+                "const": "succeeded"
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "process_state": {
+                "const": "all_terminated"
+              }
+            },
+            "type": "object"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "run_id": {
+                "const": null
+              }
+            },
+            "type": "object"
+          },
+          "then": {
+            "properties": {
+              "fencing_token": {
+                "const": 0
+              }
+            },
+            "type": "object"
+          },
+          "else": {
+            "properties": {
+              "fencing_token": {
+                "minimum": 1,
+                "type": "integer",
+                "maximum": 9007199254740991
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    }
+  }
+}

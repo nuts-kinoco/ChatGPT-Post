@@ -1,0 +1,42 @@
+{
+  "protocol_version": "2.0",
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "agent": "fixture-chat",
+  "requested_model": "fixture-model",
+  "repo": "fixture-repo",
+  "base_commit": "0000000000000000000000000000000000000000",
+  "mode": "design_fixture",
+  "policy_snapshot_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "allowed_paths": [],
+  "allowed_commands": [],
+  "task_file": "ui-task-fixture.md",
+  "task_file_hash": "e7f783e66ea8efa05140d45cfe54629bc1b22fb6add464a0c7ce54896a261ead",
+  "approval": {
+    "tier": "bypass",
+    "preauthorization": {
+      "policy_id": "demo-policy",
+      "policy_version": 1,
+      "policy_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "session_id": "00000000-0000-4000-8000-000000000099"
+    },
+    "required": true,
+    "binding": "sha256-raw-task-spec",
+    "source": "detached-authoritative-record",
+    "max_age_seconds": 900,
+    "max_starts": 1
+  },
+  "timeout": {
+    "run_seconds": 60,
+    "cancel_grace_seconds": 5
+  },
+  "success_criteria": [
+    {
+      "criterion_id": "fixture-no-process",
+      "description": "画面デモからプロセスを起動しない",
+      "evaluator_id": "fixture-design-check"
+    }
+  ],
+  "task_network": "deny",
+  "environment": {},
+  "retry_policy": "no-automatic-reexecution"
+}

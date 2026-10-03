@@ -1,0 +1,37 @@
+{
+  "protocol_version": "2.0",
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "agent": "fixture-agent",
+  "requested_model": "fixture-model",
+  "repo": "fixture-repo",
+  "base_commit": "0000000000000000000000000000000000000000",
+  "mode": "design_fixture",
+  "policy_snapshot_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "allowed_paths": [],
+  "allowed_commands": [],
+  "task_file": "task_example.md",
+  "task_file_hash": "31d2cb7854e16ac198c39ca8f0959d43222242b12af2d1e103765098296903b5",
+  "approval": {
+    "tier": "manual",
+    "preauthorization": null,
+    "required": true,
+    "binding": "sha256-raw-task-spec",
+    "source": "detached-authoritative-record",
+    "max_age_seconds": 900,
+    "max_starts": 1
+  },
+  "timeout": {
+    "run_seconds": 60,
+    "cancel_grace_seconds": 5
+  },
+  "success_criteria": [
+    {
+      "criterion_id": "fixture-no-process",
+      "description": "設計用 fixture からプロセスを起動しないこと",
+      "evaluator_id": "fixture-design-check"
+    }
+  ],
+  "task_network": "deny",
+  "environment": {},
+  "retry_policy": "no-automatic-reexecution"
+}

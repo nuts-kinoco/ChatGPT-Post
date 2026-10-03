@@ -1,0 +1,43 @@
+{
+  "protocol_version": "2.0",
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "task_spec_hash": "3ae9588585512866a92080a9b2d2a1893864a38a9693bb4aa344742b41d2c6fb",
+  "task_file_hash": "31d2cb7854e16ac198c39ca8f0959d43222242b12af2d1e103765098296903b5",
+  "synthetic": true,
+  "status": "failed",
+  "last_confirmed_status": null,
+  "observation_seq": 1,
+  "observed_at": "2026-10-03T00:00:01Z",
+  "outcome_known": true,
+  "started_at": null,
+  "finished_at": "2026-10-03T00:00:01Z",
+  "actual_agent": null,
+  "actual_model": null,
+  "base_commit": "0000000000000000000000000000000000000000",
+  "resulting_commit": null,
+  "run_id": null,
+  "fencing_token": 0,
+  "process_identity": null,
+  "commands_run": [],
+  "tests": [],
+  "exit_codes": [],
+  "changed_files": [],
+  "diff": {
+    "kind": "none",
+    "complete": true,
+    "artifact_ref": null
+  },
+  "stdout_ref": null,
+  "stderr_ref": null,
+  "error": {
+    "code": "fixture_not_executable",
+    "message": "合成例。設計用 fixture のため実行入口で拒否された場合を表す。実際の受信、拒否、実行を観測した記録ではない。",
+    "retryable": false
+  },
+  "receipt": null,
+  "verification": {
+    "state": "synthetic",
+    "checked_at": null,
+    "evidence_ref": null
+  }
+}
