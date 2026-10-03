@@ -46,3 +46,8 @@ Focused tests use fake child processes plus real private fixture-file checks. Th
 The implemented fd-bound host was also run against the existing real AGY 1.2.15 binary for `--version` and `--help` only. It verified the raw help digest and reported auth/model/zero-tools/OS limits honestly. A separate earlier `models` metadata attempt in a fresh empty HOME reached authentication-required and was stopped immediately; no model rows, login or inference were produced. No Windows, real model generation, new credentials or permission changes were performed.
 
 Sources: [headless CLI](https://www.antigravity.google/docs/cli/headless/), [models](https://www.antigravity.google/docs/models/), [custom agents](https://www.antigravity.google/docs/subagents/), [permissions](https://www.antigravity.google/docs/permissions/), [hooks](https://www.antigravity.google/docs/hooks/).
+
+
+## Running host integration
+
+The follow-on [metadata host](ANTIGRAVITY-METADATA-HOST.md) now wires these libraries into explicit production CLI/deployment configuration, persistent storage, startup/background lifecycle and a protected UI panel. The original implementation boundary described above is historical; model-list grammar, ordinary-account availability and actual task execution remain unverified.

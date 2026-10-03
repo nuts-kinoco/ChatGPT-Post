@@ -21,7 +21,7 @@ export interface AntigravityCatalogOptions {
 export class AntigravityCatalogSource implements CatalogMetadataSource {
   private readonly options: AntigravityCatalogOptions;
   constructor(
-    private readonly probe: AntigravityMetadataProbe,
+    private readonly probe: Pick<AntigravityMetadataProbe, "start">,
     options: AntigravityCatalogOptions,
   ) {
     this.options = structuredClone(options);
@@ -74,6 +74,12 @@ export class AntigravityCatalogSource implements CatalogMetadataSource {
       };
       return { kind: "snapshot", snapshot };
     });
-    return { result, exited: lease.exited, cancel: () => lease.cancel() };
+    // Preserve the probe's result-before-exit ordering after the asynchronous normalization.
+    // The concrete probe settles result before exited; a broken injected source stays bounded
+    // by the cache timeout without authorizing another probe.
+    const exited = lease.exited.then(async () => {
+      await result;
+    });
+    return { result, exited, cancel: () => lease.cancel() };
   }
 }

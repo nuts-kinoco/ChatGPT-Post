@@ -4,6 +4,12 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  type AntigravityMetadataHostPort,
+  openAntigravityMetadataHost,
+  unavailableMetadataView,
+} from "../adapters/antigravity-metadata-host.js";
+import type { AntigravityMetadataConfiguration } from "../adapters/antigravity-metadata-store.js";
 import { openTrustedDeployment } from "../adapters/deployment-loader.js";
 import type { ResidentWorkerLifecycle } from "../adapters/resident-worker.js";
 import { ArchiveError } from "../archive/types.js";
@@ -36,6 +42,7 @@ import { openUiService, type TaskUiService, type UiServiceOptions } from "./serv
 export const MAX_UI_BODY_BYTES = 2 * 1024 * 1024;
 export interface UiServerOptions extends UiServiceOptions {
   port?: number;
+  antigravityMetadata?: AntigravityMetadataConfiguration;
   deploymentModule?: string;
   publicDir?: string;
   /** Trusted Electron host capability; never accepted from an HTTP body. */
@@ -61,6 +68,10 @@ export interface UiServerHandle {
 const ASSETS: Record<string, { name: string; type: string }> = {
   "/": { name: "index.html", type: "text/html; charset=utf-8" },
   "/index.html": { name: "index.html", type: "text/html; charset=utf-8" },
+  "/provider-catalog-view.js": {
+    name: "provider-catalog-view.js",
+    type: "text/javascript; charset=utf-8",
+  },
   "/app.js": { name: "app.js", type: "text/javascript; charset=utf-8" },
   "/notification-view.js": { name: "notification-view.js", type: "text/javascript; charset=utf-8" },
   "/pro-counter-view.js": { name: "pro-counter-view.js", type: "text/javascript; charset=utf-8" },
@@ -201,6 +212,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     throw new Error("deployment_profile_conflict");
   const deployment = options.deploymentModule
     ? await openTrustedDeployment<{
+        antigravityMetadata?: AntigravityMetadataConfiguration;
         uiRuntime?: import("./service.js").UiRuntime;
         uiOperationsSources?: UiOperationsFactory;
         uiComposer?: UiComposerPort;
@@ -217,6 +229,20 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     await deployment.close?.();
     throw new Error("deployment_ui_runtime_missing");
   }
+  if (options.antigravityMetadata && deployment?.antigravityMetadata) {
+    await deployment.close?.();
+    throw new Error("deployment_metadata_configuration_conflict");
+  }
+  const metadataConfig = options.antigravityMetadata ?? deployment?.antigravityMetadata;
+  let metadataHost: AntigravityMetadataHostPort | null = null;
+  let metadataUnavailable = unavailableMetadataView(
+    options.profile === "demo"
+      ? "demo_disabled"
+      : metadataConfig && !metadataConfig.enabled
+        ? "disabled"
+        : "unconfigured",
+  );
+  const metadataView = () => metadataHost?.view() ?? metadataUnavailable;
   let service: TaskUiService;
   try {
     service = await openUiService(
@@ -401,6 +427,8 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         if (method !== "GET" && method !== "POST")
           throw new UiError("method_not_allowed", "Only GET and POST are supported", 405);
         if (method === "GET") {
+          if (rawUrl === "/api/provider-catalog")
+            return sendJson(response, { ...service.metadata(), metadata: metadataView() });
           if (rawUrl === "/api/settings/notifications")
             return sendJson(response, {
               ...service.metadata(),
@@ -494,6 +522,23 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
               "New mutations are disabled during shutdown",
               409,
             );
+          }
+          if (rawUrl === "/api/provider-catalog/refresh") {
+            if (
+              !input ||
+              typeof input !== "object" ||
+              Array.isArray(input) ||
+              Object.keys(input).join() !== "version" ||
+              (input as { version?: unknown }).version !== "bridge-antigravity-metadata-host-1"
+            )
+              throw new UiError(
+                "metadata_refresh_invalid",
+                "Use the fixed metadata refresh request",
+              );
+            return sendJson(response, {
+              ...service.metadata(),
+              metadata: metadataHost ? await metadataHost.refresh() : metadataView(),
+            });
           }
           if (rawUrl === "/api/settings/notifications")
             return sendJson(response, {
@@ -660,10 +705,30 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     if (!address || typeof address === "string") throw new Error("loopback_bind_failed");
     host = `127.0.0.1:${address.port}`;
     origin = `http://${host}`;
+    if (options.profile !== "demo" && metadataConfig?.enabled) {
+      try {
+        metadataHost = await openAntigravityMetadataHost(metadataConfig, options.stateDir);
+        metadataHost.start();
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        const reason = new Set([
+          "metadata_context_changed",
+          "metadata_ownership_unknown",
+          "metadata_platform_unsupported",
+          "metadata_storage_invalid",
+          "metadata_storage_untrusted",
+          "metadata_configuration_invalid",
+        ]).has(code)
+          ? code.replace(/^metadata_/, "")
+          : "storage_unavailable";
+        metadataUnavailable = unavailableMetadataView(reason);
+      }
+    }
     deployment?.residentWorker?.start();
   } catch (error) {
     server.close();
     try {
+      await (metadataHost as AntigravityMetadataHostPort | null)?.close();
       await deployment?.residentWorker?.close();
       await closeRuntime();
     } finally {
@@ -693,12 +758,14 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       if (closed) return;
       if (closing) return closing;
       shutdownStarted = true;
+      metadataHost?.beginShutdown();
       service.beginShutdown();
       operations.beginShutdown();
       closing = (async () => {
         const drainedHttp = stopHttp();
         // Keep stores open if either owned worker or outstanding API handlers cannot drain.
         // The same pending HTTP close is awaited again on an explicit shutdown retry.
+        await metadataHost?.close();
         await deployment?.residentWorker?.close();
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {

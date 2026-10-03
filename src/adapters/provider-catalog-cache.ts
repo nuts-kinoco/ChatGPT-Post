@@ -14,6 +14,16 @@ export interface CatalogMetadataSource {
   /** No inference, authentication setup, settings change or arbitrary prompt is allowed here. */
   start(scope: ProviderCatalogScope): MetadataProbeLease<CatalogRefreshResult>;
 }
+export interface CatalogCacheCheckpoint {
+  schema: "bridge-provider-catalog-checkpoint-1";
+  scope: ProviderCatalogScope;
+  catalog: ProviderCatalogSnapshot | null;
+  attemptedAt: number | null;
+  nextAt: number | null;
+  error: CatalogReason | null;
+  lastClock: number;
+  failures: number;
+}
 export interface CatalogCacheOptions {
   scope: ProviderCatalogScope;
   source: CatalogMetadataSource;
@@ -23,6 +33,9 @@ export interface CatalogCacheOptions {
   refreshTimeoutMs?: number;
   /** A previously verified read-only cache snapshot; never a policy or execution grant. */
   initialSnapshot?: ProviderCatalogSnapshot;
+  initialCheckpoint?: CatalogCacheCheckpoint;
+  /** Synchronous durable commit. Failure fences all subsequent probes. */
+  persist?: (checkpoint: CatalogCacheCheckpoint) => void;
 }
 const MIN_INTERVAL = 15 * 60 * 1000;
 const DAY = 24 * 60 * 60 * 1000;
@@ -104,7 +117,9 @@ function snapshotValid(
     !["cli_metadata", "browser_dom"].includes(s.source.kind) ||
     !text(s.source.operation, 128) ||
     !text(s.source.formatId, 128) ||
-    (s.source.contentSha256 !== null && !/^[a-f0-9]{64}$/.test(s.source.contentSha256)) ||
+    (s.source.contentSha256 !== null &&
+      (typeof s.source.contentSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(s.source.contentSha256))) ||
     !Array.isArray(s.options) ||
     s.options.length > 256 ||
     !s.effortSyntax ||
@@ -154,10 +169,15 @@ export class ProviderCatalogCache {
   private error: CatalogReason | null = null;
   private lastClock: number;
   private failures = 0;
+  private readonly persist: CatalogCacheOptions["persist"];
+  private persistenceFailed = false;
+  private stopping = false;
+  private readonly idleWaiters = new Set<() => void>();
   private active: { promise: Promise<ProviderCatalogView>; cancel(): void } | null = null;
   private loop: ReturnType<typeof setInterval> | null = null;
   constructor(options: CatalogCacheOptions) {
     scopeValid(options.scope);
+    this.persist = options.persist;
     this.scope = structuredClone(options.scope);
     this.source = options.source;
     this.now = options.now ?? (() => new Date());
@@ -179,11 +199,81 @@ export class ProviderCatalogCache {
       this.timeout > 10000
     )
       throw new Error("catalog_cache_configuration_invalid");
+    if (options.initialSnapshot && options.initialCheckpoint)
+      throw new Error("catalog_initial_state_conflict");
+    if (options.initialCheckpoint) {
+      const c = options.initialCheckpoint;
+      const stamp = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+      if (
+        !c ||
+        Object.keys(c).sort().join() !==
+          "attemptedAt,catalog,error,failures,lastClock,nextAt,schema,scope" ||
+        c.schema !== "bridge-provider-catalog-checkpoint-1" ||
+        !isDeepStrictEqual(c.scope, this.scope) ||
+        !stamp(c.lastClock) ||
+        c.lastClock > this.lastClock ||
+        (c.attemptedAt !== null && (!stamp(c.attemptedAt) || c.attemptedAt > c.lastClock)) ||
+        (c.nextAt !== null && (!stamp(c.nextAt) || c.nextAt > c.lastClock + 7 * DAY)) ||
+        (c.attemptedAt !== null && (c.nextAt === null || c.nextAt < c.attemptedAt)) ||
+        (c.error !== null && (!REASONS.has(c.error) || c.error === "none")) ||
+        !Number.isSafeInteger(c.failures) ||
+        c.failures < 0 ||
+        c.failures > 6
+      )
+        throw new Error("catalog_checkpoint_invalid");
+      if (c.catalog !== null) snapshotValid(c.catalog, this.scope, c.lastClock);
+      this.catalog = structuredClone(c.catalog);
+      this.attemptedAt = c.attemptedAt;
+      this.nextAt = c.nextAt;
+      this.error = c.error;
+      this.failures = c.failures;
+    }
     if (options.initialSnapshot) {
       snapshotValid(options.initialSnapshot, this.scope, this.lastClock);
       this.catalog = structuredClone(options.initialSnapshot);
       this.nextAt = time(options.initialSnapshot.observedAt) + this.interval;
     }
+  }
+  checkpoint(): CatalogCacheCheckpoint {
+    return {
+      schema: "bridge-provider-catalog-checkpoint-1",
+      scope: structuredClone(this.scope),
+      catalog: structuredClone(this.catalog),
+      attemptedAt: this.attemptedAt,
+      nextAt: this.nextAt,
+      error: this.error,
+      lastClock: this.lastClock,
+      failures: this.failures,
+    };
+  }
+  private commit(): boolean {
+    if (this.persistenceFailed) return false;
+    try {
+      this.persist?.(this.checkpoint());
+      return true;
+    } catch {
+      this.persistenceFailed = true;
+      this.error = "unavailable";
+      this.stopRefreshLoop();
+      return false;
+    }
+  }
+  /** Fence immediately; the owning host retains/drains source leases before releasing storage. */
+  beginShutdown(): void {
+    this.stopping = true;
+    this.stopRefreshLoop();
+    try {
+      this.active?.cancel();
+    } catch {
+      /* Unknown ownership remains held. */
+    }
+  }
+  /** Resolves only after the exact source lease exits and its normalized result is retained. */
+  waitForIdle(): Promise<void> {
+    if (!this.active) return Promise.resolve();
+    return new Promise((resolve) => {
+      this.idleWaiters.add(resolve);
+    });
   }
   private clock(): number {
     const now = this.now().getTime();
@@ -217,6 +307,7 @@ export class ProviderCatalogCache {
   }
   /** Startup, active-host periodic refresh or explicit refresh. Never exceeds the minimum interval. */
   refreshIfDue(explicit = false): Promise<ProviderCatalogView> {
+    if (this.stopping || this.persistenceFailed) return Promise.resolve(this.view());
     if (this.active) return this.active.promise.then(() => this.view());
     const now = this.clock();
     if (
@@ -237,7 +328,7 @@ export class ProviderCatalogCache {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const failure = (reason: Exclude<CatalogReason, "none">) => {
       this.error = reason;
-      this.failures++;
+      this.failures = Math.min(6, this.failures + 1);
       this.nextAt =
         this.clock() +
         Math.min(Math.max(DAY, this.interval), this.interval * 2 ** Math.min(6, this.failures - 1));
@@ -266,8 +357,14 @@ export class ProviderCatalogCache {
       } else if (!REASONS.has(result.reason) || result.reason === ("none" as string))
         failure("malformed_output");
       else failure(result.reason);
+      this.commit();
       resolve(this.view());
     };
+    if (!this.commit()) {
+      this.active = null;
+      resolve(this.view());
+      return promise;
+    }
     try {
       const lease = this.source.start(structuredClone(this.scope));
       active.cancel = () => lease.cancel();
@@ -284,10 +381,14 @@ export class ProviderCatalogCache {
         () => {
           if (!settled) finish({ kind: "failed", reason: "process_failed" });
           if (this.active === active) this.active = null;
+          this.commit();
+          for (const resolve of this.idleWaiters) resolve();
+          this.idleWaiters.clear();
         },
         () => {
           if (!settled) finish({ kind: "failed", reason: "process_failed" });
           else if (this.error === null) failure("process_failed");
+          this.commit();
           // A completed metadata result does not prove process exit. Unknown exit keeps ownership;
           // preserve an earlier timeout/error instead of replacing it with a late observation.
         },
@@ -300,7 +401,7 @@ export class ProviderCatalogCache {
   }
   /** Explicit opt-in by the active host. This schedules metadata checks, never model requests. */
   startRefreshLoop(): void {
-    if (this.loop) return;
+    if (this.loop || this.stopping || this.persistenceFailed) return;
     void this.refreshIfDue();
     this.loop = setInterval(() => {
       void this.refreshIfDue();

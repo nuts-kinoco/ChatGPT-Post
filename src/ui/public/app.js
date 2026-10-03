@@ -4,6 +4,7 @@ import { mountNotificationPreferences } from "./notification-view.js";
 import { mountOperations } from "./operations-view.js";
 import { mountPresentation } from "./presentation.js";
 import { mountProCounter } from "./pro-counter-view.js";
+import { mountProviderCatalog } from "./provider-catalog-view.js";
 
 /* No task state is generated here. Every accepted status and receipt comes from the local API. */
 const AGENT_LABELS = {
@@ -1013,6 +1014,7 @@ function boot() {
   $("close-pro-dialog").addEventListener("click", () =>
     presentation.closeDialog("pro-counter-dialog"),
   );
+  mountProviderCatalog({ api, document });
   mountComposer({ api, document, presentation });
   mountArchive({
     api,

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 const target = new URL("../dist/ui/public/", import.meta.url);
 await mkdir(target, { recursive: true });
 // Deliberate allowlist: no development fixtures, credentials or runtime records are packaged.
-for (const file of ["index.html", "styles.css", "app.js", "presentation.js", "operations-view.js", "composer-view.js", "archive-view.js", "pro-counter-view.js", "notification-view.js"]) {
+for (const file of ["index.html", "styles.css", "app.js", "presentation.js", "operations-view.js", "composer-view.js", "archive-view.js", "pro-counter-view.js", "notification-view.js", "provider-catalog-view.js"]) {
   await copyFile(
     fileURLToPath(new URL(`../src/ui/public/${file}`, import.meta.url)),
     fileURLToPath(new URL(file, target)),
