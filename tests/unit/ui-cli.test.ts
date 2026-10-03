@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { runUiCli } from "../../src/cli/ui.js";
+import { EventEmitter } from "node:events";
+import { describe, expect, it, vi } from "vitest";
+import { createUiStopSignalQueue, runUiCli } from "../../src/cli/ui.js";
 
 describe("product UI CLI", () => {
   it("defaults to production, prints the private launch URL, and closes on stop", async () => {
@@ -90,5 +91,66 @@ describe("product UI CLI", () => {
       }),
     ).toBe(0);
     expect(text).toContain("no model/process execution");
+  });
+  it("keeps the same CLI instance after pending drain and retries only after another explicit stop", async () => {
+    let retry!: () => void;
+    const signal = new Promise<void>((resolve) => {
+      retry = resolve;
+    });
+    const wait = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementation(() => signal);
+    const close = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("metadata_shutdown_pending"))
+      .mockResolvedValue(undefined);
+    const start = vi.fn(async () => ({ url: "local", close }));
+    const errors: string[] = [];
+    const run = runUiCli([], {
+      env: {},
+      start,
+      stdout: () => {},
+      stderr: (text) => errors.push(text),
+      waitForStop: wait,
+    });
+    await vi.waitFor(() => expect(wait).toHaveBeenCalledTimes(2));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(errors.join("")).toContain("UI_SHUTDOWN_PENDING");
+    expect(errors.join("")).not.toContain("UI_START_FAILED");
+    retry();
+    expect(await run).toBe(0);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+  it("retains stop listeners during drain, coalesces signals and disposes the keepalive", async () => {
+    vi.useFakeTimers();
+    const events = new EventEmitter(),
+      queue = createUiStopSignalQueue(events);
+    try {
+      const first = queue.next();
+      events.emit("SIGINT");
+      await first;
+      expect(events.listenerCount("SIGINT")).toBe(1);
+      events.emit("SIGINT");
+      events.emit("SIGTERM");
+      await queue.next();
+      let stopped = false;
+      const next = queue.next().then(() => {
+        stopped = true;
+      });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      expect(vi.getTimerCount()).toBe(1);
+      events.emit("SIGTERM");
+      await next;
+    } finally {
+      queue.dispose();
+    }
+    expect(events.listenerCount("SIGINT")).toBe(0);
+    expect(events.listenerCount("SIGTERM")).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
   });
 });

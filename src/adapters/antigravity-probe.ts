@@ -258,7 +258,9 @@ export class AntigravityMetadataProbe {
     return { result, exited, cancel: () => stop("cancelled") };
   }
 }
-export async function inspectInstalledAntigravity(probe: AntigravityMetadataProbe): Promise<{
+export async function inspectInstalledAntigravity(
+  probe: Pick<AntigravityMetadataProbe, "start">,
+): Promise<{
   version: string;
   capabilities: AntigravityCliCapabilities;
   authentication: "unknown";

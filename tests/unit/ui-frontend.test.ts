@@ -25,6 +25,10 @@ const presentationScript = readFileSync(
   new URL("../../src/ui/public/presentation.js", import.meta.url),
   "utf8",
 );
+const catalogScript = readFileSync(
+  new URL("../../src/ui/public/provider-catalog-view.js", import.meta.url),
+  "utf8",
+);
 const notificationScript = readFileSync(
   new URL("../../src/ui/public/notification-view.js", import.meta.url),
   "utf8",
@@ -261,7 +265,7 @@ async function harness(
     }),
   };
   runInNewContext(
-    `${presentationScript}\n${operationsScript}\n${composerScript}\n${archiveScript}\n${counterScript}\n${notificationScript}\n${script.replace(/^import .*?;$/gm, "")}`.replace(
+    `${presentationScript}\n${operationsScript}\n${composerScript}\n${archiveScript}\n${counterScript}\n${notificationScript}\n${catalogScript}\n${script.replace(/^import .*?;$/gm, "")}`.replace(
       /\bexport /g,
       "",
     ),
