@@ -1,8 +1,22 @@
-import { readFile, stat, unlink } from "node:fs/promises";
+import { stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { atomicWriteFile } from "../contracts/atomic-write.js";
+import { parseStrictJsonBytes } from "../contracts/task.js";
+import { readBoundedUsageText, USAGE_MARKER_MAX_BYTES } from "./usage-read.js";
 
+export interface SubmissionBinding {
+  version: 1;
+  requestId: string;
+  attemptId: string;
+  attemptedAt: string;
+  scopeId: string;
+  owner: "direct" | "hosted";
+}
 export interface SubmitMarker {
+  submissionBinding?: SubmissionBinding;
+  recoveredUsage?: { raw: string };
+  observedModelBefore?: string | null;
+  observedPresetBefore?: string | null;
   target?: "dot";
   completionMarker?: string | undefined;
   requestId: string;
@@ -32,15 +46,19 @@ export async function markerExists(path: string): Promise<boolean> {
 
 export async function readMarker(path: string): Promise<SubmitMarker | null> {
   try {
-    return JSON.parse(await readFile(path, "utf8")) as SubmitMarker;
+    return parseStrictJsonBytes(
+      Buffer.from(await readBoundedUsageText(path, USAGE_MARKER_MAX_BYTES)),
+    ) as SubmitMarker;
   } catch {
     return null;
   }
 }
 
-/** Write-ahead: tmp -> fsync -> rename. Throws AtomicWriteError on failure. */
+/** Write-ahead: tmp -> file fsync -> rename. Process-crash atomicity; directory power-loss durability is not certified. */
 export async function writeMarker(path: string, marker: SubmitMarker): Promise<void> {
-  await atomicWriteFile(path, `${JSON.stringify(marker, null, 2)}\n`);
+  const raw = `${JSON.stringify(marker, null, 2)}\n`;
+  if (Buffer.byteLength(raw) > USAGE_MARKER_MAX_BYTES) throw new Error("usage_marker_oversized");
+  await atomicWriteFile(path, raw);
 }
 
 /** Post-dispatch append (best-effort; caller catches). */
@@ -50,7 +68,7 @@ export async function updateMarker(
 ): Promise<void> {
   const current = await readMarker(path);
   if (!current) throw new Error("marker unreadable");
-  await atomicWriteFile(path, `${JSON.stringify({ ...current, ...patch }, null, 2)}\n`);
+  await writeMarker(path, { ...current, ...patch });
 }
 
 export async function deleteMarker(path: string): Promise<void> {

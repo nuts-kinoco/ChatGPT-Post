@@ -36,6 +36,9 @@ export function parseCounterFields(fields) {
     timeZone: fields.timezone.trim() || null,
     otherUsage: number(fields.other),
   };
+  // JST is a presentation draft default, not evidence of an account reset window.
+  if (settings.startsAt === null && settings.endsAt === null && settings.timeZone === "Asia/Tokyo")
+    settings.timeZone = null;
   if (
     settings.warnRemaining !== null &&
     (settings.limit === null || settings.warnRemaining > settings.limit)
@@ -67,12 +70,26 @@ export function counterCopy(counter) {
       danger: false,
     };
   const view = counter.view;
+  const settings = view.configuration?.settings;
+  let bounds = "未設定";
+  if (settings?.startsAt && settings?.endsAt && settings?.timeZone) {
+    try {
+      const format = new Intl.DateTimeFormat("ja-JP", {
+        timeZone: settings.timeZone,
+        dateStyle: "medium",
+        timeStyle: "short",
+      });
+      bounds = `${format.format(new Date(settings.startsAt))}〜${format.format(new Date(settings.endsAt))} (${settings.timeZone})`;
+    } catch {
+      bounds = "日時の確認が必要";
+    }
+  }
   return {
     counts: `Bridge観測：確認済み ${view.confirmed}回 · 利用した可能性 ${view.possible}回`,
     remaining: view.remaining
       ? `設定に対する残りの参考範囲：${view.remaining.lower}〜${view.remaining.upper}回`
       : "残りの参考回数は不明です",
-    coverage: `公式quota・アカウント全体の利用量は不明。時間枠：${view.windowState} · 現在の枠に対応しない記録 ${view.unassignedInWindow}件 · 最終表示 ${view.observedAt}`,
+    coverage: `公式quota・アカウント全体の利用量は不明。時間枠：${view.windowState} · ${bounds} · 現在の枠に対応しない記録 ${view.unassignedInWindow}件 · 記録の欠落 ${view.coverageGaps ?? 0}件${view.coveragePending ? " · 観測の照合中" : ""} · 最終表示 ${view.observedAt}`,
     warning: view.warning.text,
     danger: view.warning.active === true,
   };
@@ -114,7 +131,7 @@ export function mountProCounter({
       threshold: settings.warnRemaining,
       start: settings.startsAt,
       end: settings.endsAt,
-      timezone: settings.timeZone,
+      timezone: settings.timeZone ?? "Asia/Tokyo",
       other: settings.otherUsage,
     };
     for (const key of FIELDS) node(key).value = values[key] === null ? "" : String(values[key]);

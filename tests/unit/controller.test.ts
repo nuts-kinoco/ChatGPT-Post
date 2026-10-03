@@ -1239,3 +1239,284 @@ describe("trusted hosted prompt binding gate", () => {
     },
   );
 });
+
+describe("ordinary Chat immutable usage identity", () => {
+  it("durably binds a unique attempt before dispatch and reuses it after dispatch", async () => {
+    let captured: import("../../src/state/marker.js").SubmitMarker | undefined;
+    const f = fake({
+      dispatchSubmit: async () => {
+        expect(captured?.submissionBinding?.attemptId).toMatch(/^[a-f0-9-]{36}$/);
+        return { kind: "dispatched", url: "https://chatgpt.com/c/123" };
+      },
+    });
+    const write = f.ports.lock.writeMarker;
+    f.ports.lock.writeMarker = async (id, marker) => {
+      captured = marker;
+      await write(id, marker);
+    };
+    const result = await run(f);
+    expect(result.result?.submitted).toBe("yes");
+    expect(captured?.submissionBinding).toMatchObject({
+      version: 1,
+      requestId: "req-00000001",
+      owner: "direct",
+    });
+  });
+  it("forwards an existing hosted binding and never opens a direct run or projects auth", async () => {
+    const { randomUUID } = await import("node:crypto");
+    const binding = {
+      version: 1 as const,
+      requestId: "req-00000001",
+      attemptId: randomUUID(),
+      attemptedAt: "2026-09-15T11:59:59.000Z",
+      scopeId: "a".repeat(64),
+      owner: "hosted" as const,
+    };
+    let direct = 0;
+    const usage = {
+      scopeId: binding.scopeId,
+      beginRun: async () => {
+        direct++;
+      },
+      markerWritten: async () => {
+        direct++;
+      },
+      resolveNotSent: async () => {
+        direct++;
+      },
+      resultWritten: async () => {
+        direct++;
+      },
+    };
+    const f = fake();
+    await run(f, { submissionBinding: binding, usage });
+    expect(
+      (f.markers.get(binding.requestId) as import("../../src/state/marker.js").SubmitMarker)
+        .submissionBinding,
+    ).toEqual(binding);
+    expect(direct).toBe(0);
+    const auth = fake({ navigateAndObserveAuth: async () => ({ kind: "AUTH_REQUIRED" }) });
+    await run(auth, { submissionBinding: binding, usage });
+    expect(direct).toBe(0);
+  });
+  it("projects a real controller run through its durable marker/result files into the shared store", async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { loadConfig } = await import("../../src/cli/config.js");
+    const { openBridgeProCounter } = await import("../../src/ui/pro-counter-runtime.js");
+    const markers = await import("../../src/state/marker.js");
+    const dir = await mkdtemp(join(tmpdir(), "controller-usage-"));
+    const f = fake({
+      resolvePreset: async () => ({
+        kind: "observed",
+        preset: "pro",
+        label: "Pro",
+        model: "gpt-5.5",
+        modelLabel: "5.5",
+      }),
+      extractLatest: async () => ({
+        markdown: "done",
+        method: "dom",
+        quality: "full",
+        modelSlug: "gpt-5-5-pro",
+      }),
+    });
+    const cfg = loadConfig({ CHATGPT_BRIDGE_RUNTIME_DIR: dir });
+    const usage = await openBridgeProCounter(cfg, "production", f.ports.clock.now);
+    try {
+      const start = f.ports.clock.now();
+      usage.store.configure(
+        {
+          limit: 7,
+          warnRemaining: 2,
+          startsAt: start.toISOString(),
+          endsAt: new Date(start.getTime() + 3600000).toISOString(),
+          timeZone: "Asia/Tokyo",
+          otherUsage: null,
+        },
+        0,
+      );
+      f.ports.lock.writeMarker = (id, marker) =>
+        markers.writeMarker(markers.markerPath(cfg.stateDir, id), marker);
+      f.ports.lock.updateMarker = (id, patch) =>
+        markers.updateMarker(markers.markerPath(cfg.stateDir, id), patch);
+      f.ports.lock.deleteMarker = (id) =>
+        markers.deleteMarker(markers.markerPath(cfg.stateDir, id));
+      f.ports.contracts.writeResult = async (_directory, result) => {
+        const path = join(dir, "result.json");
+        await writeFile(path, JSON.stringify(result));
+        return path;
+      };
+      const outcome = await run(f, { requestPath: join(dir, "request.json"), usage });
+      expect(outcome.result?.submitted).toBe("yes");
+      await usage.refresh();
+      expect(usage.store.view()).toMatchObject({
+        confirmed: 1,
+        possible: 0,
+        remaining: { lower: 6, upper: 6 },
+      });
+    } finally {
+      await usage.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("durable not-sent resolution on every marker deletion path", () => {
+  const paths = ["dispatch_not_confirmed", "observer_cleanup", "submit_aborted"] as const;
+  function cleanupFake(path: (typeof paths)[number]): Fake {
+    const f = fake(
+      path === "submit_aborted"
+        ? { dispatchSubmit: async () => ({ kind: "aborted" }) }
+        : path === "dispatch_not_confirmed"
+          ? {
+              dispatchSubmit: async () => ({
+                kind: "not_confirmed",
+                cause: "exact unsent draft",
+                url: "https://chatgpt.com/c/123",
+              }),
+            }
+          : {
+              observe: async (t) =>
+                observation({
+                  t,
+                  assistantCount: 0,
+                  userTurnCount: 0,
+                  composerText: "hi",
+                  streaming: false,
+                }),
+            },
+    );
+    if (path === "observer_cleanup") {
+      const validate = f.ports.contracts.validate;
+      f.ports.contracts.validate = async (raw, dir) => {
+        const value = await validate(raw, dir);
+        return value.kind === "valid"
+          ? { ...value, request: { ...value.request, newChat: false } }
+          : value;
+      };
+    }
+    return f;
+  }
+  it.each(paths)("%s records the exact no-send binding before unlink", async (path) => {
+    const f = cleanupFake(path);
+    const order: string[] = [];
+    const remove = f.ports.lock.deleteMarker;
+    f.ports.lock.deleteMarker = async (id) => {
+      order.push("unlink");
+      await remove(id);
+    };
+    let durable: BridgeResult | undefined;
+    const usage = {
+      scopeId: "a".repeat(64),
+      beginRun: async () => {},
+      markerWritten: async () => {},
+      resultWritten: async () => {},
+      resolveNotSent: async (
+        binding: import("../../src/state/marker.js").SubmissionBinding,
+        evidence: BridgeResult,
+      ) => {
+        expect(binding).toEqual(
+          (f.markers.get("req-00000001") as import("../../src/state/marker.js").SubmitMarker)
+            .submissionBinding,
+        );
+        expect(checkResultInvariants(evidence)).toEqual([]);
+        expect(evidence.submitted).toBe("no");
+        durable = evidence;
+        order.push("persist");
+      },
+    };
+    const out = await run(f, { usage });
+    expect(order).toEqual(["persist", "unlink"]);
+    expect(durable?.requestId).toBe("req-00000001");
+    expect(out.result?.submitted).toBe("no");
+    expect(f.markers.size).toBe(0);
+  });
+  it.each(paths)("%s retains marker if durable no-send recording fails", async (path) => {
+    const f = cleanupFake(path);
+    let records = 0;
+    const usage = {
+      scopeId: "a".repeat(64),
+      beginRun: async () => {},
+      markerWritten: async () => {},
+      resultWritten: async () => {},
+      resolveNotSent: async () => {
+        records++;
+        throw new Error("durable recorder unavailable");
+      },
+    };
+    const out = await run(f, { usage });
+    expect(records).toBe(1);
+    expect(f.calls).not.toContain("deleteMarker");
+    expect(f.markers.size).toBe(1);
+    if (path !== "submit_aborted")
+      expect(out.result).toMatchObject({
+        submitted: "unknown",
+        error: { code: "SUBMIT_STATE_UNKNOWN", retryable: false },
+      });
+  });
+  it.each(paths)(
+    "%s keeps durable no-send evidence across failure after unlink and missing terminal result",
+    async (path) => {
+      const { mkdtemp, rm } = await import("node:fs/promises");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const { loadConfig } = await import("../../src/cli/config.js");
+      const { openBridgeProCounter } = await import("../../src/ui/pro-counter-runtime.js");
+      const markers = await import("../../src/state/marker.js");
+      const f = cleanupFake(path);
+      const dir = await mkdtemp(join(tmpdir(), "cleanup-crash-"));
+      const cfg = loadConfig({ CHATGPT_BRIDGE_RUNTIME_DIR: dir });
+      let usage = await openBridgeProCounter(cfg, "production", f.ports.clock.now);
+      try {
+        const start = f.ports.clock.now();
+        usage.store.configure(
+          {
+            limit: 5,
+            warnRemaining: 1,
+            startsAt: start.toISOString(),
+            endsAt: new Date(start.getTime() + 3600000).toISOString(),
+            timeZone: "Asia/Tokyo",
+            otherUsage: null,
+          },
+          0,
+        );
+        f.ports.lock.writeMarker = (id, marker) =>
+          markers.writeMarker(markers.markerPath(cfg.stateDir, id), marker);
+        f.ports.lock.updateMarker = (id, patch) =>
+          markers.updateMarker(markers.markerPath(cfg.stateDir, id), patch);
+        f.ports.lock.deleteMarker = async (id) => {
+          await markers.deleteMarker(markers.markerPath(cfg.stateDir, id));
+          throw new Error("crash boundary after unlink");
+        };
+        f.ports.contracts.writeResult = async () => {
+          throw new Error("terminal result did not survive crash");
+        };
+        const out = await run(f, { usage, requestPath: join(dir, "request.json") });
+        expect(out.result).toBe(null);
+        expect(await markers.markerExists(markers.markerPath(cfg.stateDir, "req-00000001"))).toBe(
+          false,
+        );
+        await usage.close();
+        usage = await openBridgeProCounter(cfg, "production", f.ports.clock.now);
+        const events: import("../../src/state/usage-lifecycle.js").BridgeUsageEvent[] = [];
+        await usage.drainLifecycle("crash_fixture", (event) => {
+          events.push(event);
+        });
+        expect(events.map((event) => event.kind)).toEqual(["start", "result"]);
+        expect(events[1]?.result?.submitted).toBe("no");
+        expect(events[1]?.attemptId).toBe(events[0]?.attemptId);
+        expect(usage.store.view()).toMatchObject({
+          confirmed: 0,
+          possible: 0,
+          coveragePending: false,
+          remaining: { lower: 5, upper: 5 },
+        });
+      } finally {
+        await usage.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+});

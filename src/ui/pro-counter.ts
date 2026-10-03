@@ -28,7 +28,10 @@ export interface ProSubmissionObservation {
   observedAt: string;
   submitted: "yes" | "no" | "unknown";
   observedPreset: "pro" | "other" | "unknown";
-  source: "trusted-ordinary-chat-observer" | "trusted-hosted-start-intent";
+  source:
+    | "trusted-ordinary-chat-observer"
+    | "trusted-hosted-start-intent"
+    | "trusted-direct-start-intent";
   synthetic: boolean;
 }
 type CountState = "confirmed_pro" | "possible_pro" | "not_pro";
@@ -49,6 +52,9 @@ export interface ProCounterView {
   possible: number;
   /** In-range observations with no pin to the currently configured window remain uncertain. */
   unassignedInWindow: number;
+  coverageGaps: number;
+  coveragePending: boolean;
+  observationScope: string | null;
   otherUsage: { value: number | null; source: "user-reported-unverified" };
   remaining: { lower: number; upper: number; source: "configured-reference-only" } | null;
   warning: { active: boolean; severity: "unknown" | "normal" | "warning"; text: string };
@@ -162,7 +168,7 @@ function observation(input: ProSubmissionObservation): ProSubmissionObservation 
 }
 function validObservation(input: ProSubmissionObservation, synthetic: boolean): boolean {
   return (
-    UUID.test(input.requestId) &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]{6,62}[A-Za-z0-9]$/.test(input.requestId) &&
     UUID.test(input.attemptId) &&
     bounded(input.revision, Number.MAX_SAFE_INTEGER) &&
     input.revision >= 1 &&
@@ -170,7 +176,8 @@ function validObservation(input: ProSubmissionObservation, synthetic: boolean): 
     instant(input.observedAt) &&
     input.observedAt >= input.attemptedAt &&
     (input.source === "trusted-ordinary-chat-observer" ||
-      (input.source === "trusted-hosted-start-intent" &&
+      ((input.source === "trusted-hosted-start-intent" ||
+        input.source === "trusted-direct-start-intent") &&
         input.submitted === "unknown" &&
         input.observedPreset === "unknown" &&
         input.observedAt === input.attemptedAt)) &&
@@ -188,15 +195,81 @@ interface ObservationRow {
 }
 export class ProObservationStore {
   private readonly db: DatabaseSync;
+  readonly generationId: string;
   constructor(
     path: string,
     readonly synthetic: boolean,
     private readonly now: () => Date = () => new Date(),
+    readonly scopeId: string | null = null,
   ) {
     this.db = new DatabaseSync(path);
+    // A populated pre-scope database is never silently migrated or written by scoped open.
+    if (
+      scopeId !== null &&
+      !this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pro_counter_scope'")
+        .get()
+    ) {
+      const populated = ["pro_counter_settings", "pro_counter_observations"].some(
+        (table) =>
+          !!this.db
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+            .get(table) &&
+          Number(this.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()?.n) > 0,
+      );
+      if (populated) {
+        this.db.close();
+        throw new UiError(
+          "counter_scope_unavailable",
+          "Counter observation scope cannot be verified",
+          409,
+        );
+      }
+    }
     this.db.exec(
       "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS pro_counter_identity (id INTEGER PRIMARY KEY CHECK(id=1), synthetic INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS pro_counter_settings (revision INTEGER PRIMARY KEY, body TEXT NOT NULL, digest TEXT); CREATE TABLE IF NOT EXISTS pro_counter_observations (request_id TEXT NOT NULL,attempt_id TEXT NOT NULL,revision INTEGER NOT NULL,digest TEXT NOT NULL,body TEXT NOT NULL, PRIMARY KEY(request_id,attempt_id));",
     );
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS pro_counter_scope(id INTEGER PRIMARY KEY CHECK(id=1),scope_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pro_counter_gaps(id TEXT PRIMARY KEY,attempted_at TEXT); CREATE TABLE IF NOT EXISTS pro_counter_pending(source TEXT PRIMARY KEY,pending INTEGER NOT NULL);",
+    );
+    const scoped = this.db.prepare("SELECT scope_id FROM pro_counter_scope WHERE id=1").get();
+    if (scopeId !== null) {
+      if (
+        !HASH.test(scopeId) ||
+        (scoped && scoped.scope_id !== scopeId) ||
+        (!scoped &&
+          (Number(this.db.prepare("SELECT COUNT(*) AS n FROM pro_counter_observations").get()?.n) >
+            0 ||
+            Number(this.db.prepare("SELECT COUNT(*) AS n FROM pro_counter_settings").get()?.n) > 0))
+      ) {
+        this.db.close();
+        throw new UiError(
+          "counter_scope_unavailable",
+          "Counter observation scope cannot be verified",
+          409,
+        );
+      }
+      this.db.prepare("INSERT OR IGNORE INTO pro_counter_scope VALUES(1,?)").run(scopeId);
+    } else if (scoped) {
+      this.db.close();
+      throw new UiError(
+        "counter_scope_unavailable",
+        "Scoped counter requires its trusted host binding",
+        409,
+      );
+    }
+    this.db.exec(
+      "CREATE TABLE IF NOT EXISTS pro_counter_generation(id INTEGER PRIMARY KEY CHECK(id=1),generation_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pro_counter_projection_receipts(source_id TEXT PRIMARY KEY,sequence INTEGER NOT NULL);",
+    );
+    this.db.prepare("INSERT OR IGNORE INTO pro_counter_generation VALUES(1,?)").run(randomUUID());
+    this.generationId = String(
+      this.db.prepare("SELECT generation_id FROM pro_counter_generation WHERE id=1").get()
+        ?.generation_id,
+    );
+    if (!UUID.test(this.generationId)) {
+      this.db.close();
+      integrity();
+    }
     // Add storage for integrity without rewriting/backfilling old unchecked configurations.
     if (
       !this.db
@@ -362,7 +435,10 @@ export class ProObservationStore {
   }
   /** Called only for a newly durable hosted attempt. Repeated reads/cancellation revisions never advance it. */
   observeStartIntent(input: ProSubmissionObservation): void {
-    if (input.source !== "trusted-hosted-start-intent")
+    if (
+      input.source !== "trusted-hosted-start-intent" &&
+      input.source !== "trusted-direct-start-intent"
+    )
       throw new UiError("invalid_pro_observation", "Durable start intent provenance is required");
     this.record(input, true);
   }
@@ -455,6 +531,41 @@ export class ProObservationStore {
       throw error;
     }
   }
+  projectionPosition(sourceId: string): number {
+    if (!UUID.test(sourceId))
+      throw new UiError("invalid_counter_source", "Invalid projection source");
+    const row = this.db
+      .prepare("SELECT sequence FROM pro_counter_projection_receipts WHERE source_id=?")
+      .get(sourceId);
+    const value = row ? Number(row.sequence) : 0;
+    if (!Number.isSafeInteger(value) || value < 0) integrity();
+    return value;
+  }
+  /** Persist after idempotent projection and before the source consumer advances its cursor. */
+  recordProjectionPosition(sourceId: string, sequence: number): void {
+    if (!UUID.test(sourceId) || !Number.isSafeInteger(sequence) || sequence < 1)
+      throw new UiError("invalid_counter_source", "Invalid projection receipt");
+    this.projectionPosition(sourceId);
+    this.db
+      .prepare(
+        "INSERT INTO pro_counter_projection_receipts VALUES(?,?) ON CONFLICT(source_id) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
+      )
+      .run(sourceId, sequence);
+  }
+  recordCoverageGap(id: string, attemptedAt: string | null): void {
+    if (!id || id.length > 256 || (attemptedAt !== null && !instant(attemptedAt)))
+      throw new UiError("invalid_counter_gap", "Invalid coverage gap");
+    this.db.prepare("INSERT OR IGNORE INTO pro_counter_gaps VALUES(?,?)").run(id, attemptedAt);
+  }
+  setSourcePending(source: string, pending: boolean): void {
+    if (!source || source.length > 256)
+      throw new UiError("invalid_counter_source", "Invalid source");
+    this.db
+      .prepare(
+        "INSERT INTO pro_counter_pending VALUES(?,?) ON CONFLICT(source) DO UPDATE SET pending=excluded.pending",
+      )
+      .run(source, pending ? 1 : 0);
+  }
   view(): ProCounterView {
     const history = this.configurations();
     const configuration = history.at(-1) ?? null,
@@ -492,11 +603,25 @@ export class ProObservationStore {
         row.attemptedAt >= settings.startsAt &&
         row.attemptedAt < settings.endsAt,
     ).length;
+    const gaps = this.db.prepare("SELECT attempted_at FROM pro_counter_gaps").all();
+    const coverageGaps = gaps.filter(
+      (row) =>
+        row.attempted_at === null ||
+        !settings?.startsAt ||
+        !settings.endsAt ||
+        (String(row.attempted_at) >= settings.startsAt &&
+          String(row.attempted_at) < settings.endsAt),
+    ).length;
+    const coveragePending = !!this.db
+      .prepare("SELECT 1 FROM pro_counter_pending WHERE pending=1 LIMIT 1")
+      .get();
     const remaining =
       windowState === "active" &&
       settings?.limit !== null &&
       settings?.limit !== undefined &&
-      unassignedInWindow === 0
+      unassignedInWindow === 0 &&
+      coverageGaps === 0 &&
+      !coveragePending
         ? {
             lower: Math.max(0, settings.limit - confirmed - possible - (settings.otherUsage ?? 0)),
             upper: Math.max(0, settings.limit - confirmed - (settings.otherUsage ?? 0)),
@@ -520,6 +645,9 @@ export class ProObservationStore {
       confirmed,
       possible,
       unassignedInWindow,
+      coverageGaps,
+      coveragePending,
+      observationScope: this.scopeId,
       otherUsage: { value: settings?.otherUsage ?? null, source: "user-reported-unverified" },
       remaining,
       warning: {

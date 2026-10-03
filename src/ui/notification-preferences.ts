@@ -70,6 +70,8 @@ function hash(value: unknown): string {
   return sha256Bytes(Buffer.from(JSON.stringify(value)));
 }
 export class NotificationPreferencesStore {
+  /** Canonical local store scope, not an account identity. In-memory stores cannot own a durable sink. */
+  readonly runtimeScopeId: string | null;
   private readonly db: DatabaseSync;
   private closed = false;
   constructor(
@@ -84,8 +86,16 @@ export class NotificationPreferencesStore {
         500,
       );
     this.db = new DatabaseSync(path);
+    this.runtimeScopeId =
+      path === ":memory:"
+        ? null
+        : hash({
+            path: realpathSync(path),
+            principal: process.getuid?.() ?? "platform-unverified",
+            profile,
+          });
     this.db.exec(
-      "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS notification_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), profile TEXT NOT NULL); CREATE TABLE IF NOT EXISTS notification_preferences (actor_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL, body TEXT NOT NULL);",
+      "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS notification_identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), profile TEXT NOT NULL); CREATE TABLE IF NOT EXISTS notification_preferences (actor_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, digest TEXT NOT NULL, body TEXT NOT NULL); CREATE TABLE IF NOT EXISTS notification_clock(id INTEGER PRIMARY KEY CHECK(id=1),last_at INTEGER NOT NULL);",
     );
     this.db.prepare("INSERT OR IGNORE INTO notification_identity VALUES(1,?)").run(profile);
     if (
@@ -184,13 +194,32 @@ export class NotificationPreferencesStore {
           "Notification preference capacity has been reached",
           409,
         );
-      const updatedAt = this.now().toISOString();
-      if (previous.updatedAt && updatedAt < previous.updatedAt)
+      const observed = this.now().getTime();
+      const highWater = Number(
+        this.db.prepare("SELECT last_at FROM notification_clock WHERE id=1").get()?.last_at ?? 0,
+      );
+      if (!Number.isSafeInteger(observed) || !Number.isSafeInteger(highWater))
+        throw new UiError(
+          "notification_clock_regression",
+          "Notification clock cannot be verified",
+          409,
+        );
+      const minimum = Math.max(highWater, previous.updatedAt ? Date.parse(previous.updatedAt) : 0);
+      if (preferences.enabled && observed < minimum)
         throw new UiError(
           "notification_clock_regression",
           "Notification settings clock moved backwards",
           409,
         );
+      // Turning OFF only removes authority and remains available during rollback. It retains the
+      // prior logical high-water boundary so a later enable cannot admit an old OFF-era event.
+      const savedTime = Math.max(observed, minimum);
+      const updatedAt = new Date(savedTime).toISOString();
+      this.db
+        .prepare(
+          "INSERT INTO notification_clock VALUES(1,?) ON CONFLICT(id) DO UPDATE SET last_at=excluded.last_at",
+        )
+        .run(savedTime);
       const value: NotificationPreferenceSnapshot = {
         version: "bridge-notification-preferences-1",
         profile: this.profile,
@@ -215,6 +244,20 @@ export class NotificationPreferencesStore {
         .run(actorId, value.revision, hash(value), body);
       this.db.exec("COMMIT");
       return value;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  /** Trusted local notification runtime only. This never crosses the HTTP boundary.
+   * Keeping preferences, outbox claims and rate reservations in one DB gives cross-process CAS. */
+  withRuntimeTransaction<T>(operation: (database: DatabaseSync) => T): T {
+    if (this.closed) throw new Error("notification_store_closed");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation(this.db);
+      this.db.exec("COMMIT");
+      return result;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;

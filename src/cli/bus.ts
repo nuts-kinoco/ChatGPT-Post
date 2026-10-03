@@ -20,6 +20,7 @@ export interface BusDeployment {
     context: import("../adapters/github-transport.js").DeliveryAcceptanceContext,
   ): Promise<import("../contracts/materialization.js").MaterializationReceiptV1>;
   browser?: BrowserDeliveryService;
+  proCounterRuntime?: import("../ui/pro-counter-runtime.js").BridgeProCounterRuntime;
   /** Bound by the trusted local host login, never populated from arguments/task files. */
   localAuthority?(): { actorId: string; authenticated: true; expiresAt: string };
   close?(): Promise<void> | void;
@@ -73,6 +74,22 @@ export async function runBusCli(args: string[]): Promise<unknown> {
   )
     throw new Error("bus_command_invalid");
   const deployment = await openTrustedDeployment<BusDeployment>(args[1]);
+  let usage = deployment.proCounterRuntime;
+  let ownUsage = false;
+  try {
+    if (deployment.browser) {
+      if (!usage) {
+        usage = await (await import("../ui/pro-counter-runtime.js")).openBridgeProCounter(
+          deployment.browser.config,
+        );
+        ownUsage = true;
+      }
+      usage.attachHosted(deployment.browser);
+      await usage.refresh();
+    }
+  } catch {
+    process.stderr.write("Bridge usage observations unavailable; remaining reference is unknown\n");
+  }
   try {
     const bus = deployment.bus;
     if (command === "catalogue" || command === "template") {
@@ -256,7 +273,14 @@ export async function runBusCli(args: string[]): Promise<unknown> {
       acknowledgedPayloadSha256: hash,
     };
   } finally {
-    await deployment.close?.();
+    try {
+      if (usage) await usage.refresh();
+    } catch {
+      process.stderr.write("Bridge usage projection pending; remaining reference is unknown\n");
+    } finally {
+      if (ownUsage) await usage?.close();
+      await deployment.close?.();
+    }
   }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
