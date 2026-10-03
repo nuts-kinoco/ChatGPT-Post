@@ -4,7 +4,17 @@
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-export async function openTrustedDeployment<T>(path: string): Promise<T> {
+export interface DeploymentStartupControl {
+  signal: AbortSignal;
+}
+export async function openTrustedDeployment<T>(
+  path: string,
+  startup?: DeploymentStartupControl,
+): Promise<T> {
+  const stopped = () => {
+    if (startup?.signal.aborted) throw new Error("deployment_startup_aborted");
+  };
+  stopped();
   if (!isAbsolute(path) || !path.endsWith(".mjs")) throw new Error("deployment_path_required");
   const file = resolve(path);
   if ((await realpath(file)) !== file) throw new Error("deployment_symlink_denied");
@@ -32,7 +42,11 @@ export async function openTrustedDeployment<T>(path: string): Promise<T> {
     // inspect NTFS ACL inheritance; require the native platform trust verifier before activation.
     throw new Error("deployment_windows_acl_verifier_unavailable");
   }
-  const module = (await import(pathToFileURL(file).href)) as { openDeployment?: () => Promise<T> };
+  stopped();
+  const module = (await import(pathToFileURL(file).href)) as {
+    openDeployment?: (startup?: DeploymentStartupControl) => Promise<T>;
+  };
+  stopped();
   if (typeof module.openDeployment !== "function") throw new Error("deployment_factory_missing");
-  return module.openDeployment();
+  return startup ? module.openDeployment(startup) : module.openDeployment();
 }

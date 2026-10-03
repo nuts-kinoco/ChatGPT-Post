@@ -1233,6 +1233,8 @@ export class BrowserDeliveryService {
         this.receive(issued, raw, taskBytes, outputContractRaw);
         received.push(issued.requestId);
       } catch (error) {
+        if (error instanceof Error && error.message === "transport_text_route_unsupported")
+          continue;
         blocked.push({
           path,
           reason:

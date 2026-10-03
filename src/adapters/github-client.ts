@@ -14,10 +14,25 @@ export interface GitSnapshot {
   commit: string;
   tree: string;
   files: ReadonlyMap<string, string>;
+  /** Complete bounded Git metadata; unrelated repository files are not task paths. */
+  entries?: ReadonlyMap<string, { sha: string; type: "blob" | "tree" | "commit"; mode: string }>;
 }
 export interface GitHubCredentialProvider {
   /** Return an already provisioned credential. Never log it or persist it in task data. */
   authorization(): Promise<string>;
+}
+/** Already-authenticated host mediation, e.g. an approved connector. No credential transfer. */
+export interface GitHubDatabasePort {
+  request(
+    input: {
+      repositoryFullName: string;
+      branch: string;
+      path: string;
+      method: string;
+      body?: unknown;
+    },
+    signal: AbortSignal,
+  ): Promise<Uint8Array>;
 }
 export class GitHubHttpError extends Error {
   constructor(readonly status: number) {
@@ -47,7 +62,7 @@ export class GitHubGitStore implements GitObjectStore {
   private readonly ref: string;
   constructor(
     config: { owner: string; repository: string; branch: string },
-    private readonly credentials: GitHubCredentialProvider,
+    private readonly credentials: GitHubCredentialProvider | null,
     private readonly request: typeof fetch = fetch,
     private readonly limits = {
       timeoutMs: 10000,
@@ -55,9 +70,19 @@ export class GitHubGitStore implements GitObjectStore {
       maxFiles: 10000,
       conflicts: 4,
     },
+    private readonly databasePort?: GitHubDatabasePort,
   ) {
+    if (!credentials && !databasePort) throw new Error("github_credential_unavailable");
+    if (databasePort)
+      this.databasePort = Object.freeze({ request: databasePort.request.bind(databasePort) });
     if (
-      ![config.owner, config.repository].every((v) => /^[a-zA-Z0-9_.-]+$/.test(v)) ||
+      ![config.owner, config.repository].every(
+        (v) =>
+          typeof v === "string" &&
+          v.length <= 100 &&
+          /^[a-zA-Z0-9_.-]+$/.test(v) &&
+          ![".", ".."].includes(v),
+      ) ||
       !/^[a-zA-Z0-9_/-]+$/.test(config.branch) ||
       config.branch.includes("//")
     )
@@ -99,6 +124,23 @@ export class GitHubGitStore implements GitObjectStore {
       }, this.limits.timeoutMs);
     });
     const operation = async () => {
+      if (this.databasePort) {
+        const bytes = await this.databasePort.request(
+          {
+            repositoryFullName: this.destination.repositoryFullName,
+            branch: this.destination.branch,
+            path,
+            method,
+            ...(body === undefined ? {} : { body: structuredClone(body) }),
+          },
+          abort.signal,
+        );
+        if (abort.signal.aborted) throw new Error("github_timeout");
+        if (!(bytes instanceof Uint8Array) || bytes.length > this.limits.maxBytes)
+          throw new Error("github_response_too_large");
+        return object(parseStrictJsonBytes(bytes));
+      }
+      if (!this.credentials) throw new Error("github_credential_unavailable");
       const authorization = await this.credentials.authorization();
       if (abort.signal.aborted) throw new Error("github_timeout");
       if (!/^(Bearer|token) [^\s]+$/.test(authorization))
@@ -164,7 +206,11 @@ export class GitHubGitStore implements GitObjectStore {
     const value = await this.api(`/git/commits/${commit}`);
     if (sha(value.sha) !== commit) throw new Error("github_commit_mismatch");
     const tree = sha(object(value.tree).sha);
-    const data = await this.api(`/git/trees/${tree}?recursive=1`);
+    return this.treeSnapshot(tree, commit);
+  }
+  private async treeSnapshot(tree: string, commit: string): Promise<GitSnapshot> {
+    const data = await this.api(`/git/trees/${sha(tree)}?recursive=1`);
+    if (sha(data.sha) !== tree) throw new Error("github_tree_mismatch");
     if (
       data.truncated !== false ||
       !Array.isArray(data.tree) ||
@@ -172,21 +218,49 @@ export class GitHubGitStore implements GitObjectStore {
     )
       throw new Error("github_tree_incomplete");
     const files = new Map<string, string>();
+    const entries = new Map<
+      string,
+      { sha: string; type: "blob" | "tree" | "commit"; mode: string }
+    >();
     for (const item of data.tree) {
       const entry = object(item);
-      if (entry.type !== "blob") continue;
-      if (typeof entry.path !== "string" || entry.mode !== "100644")
-        throw new Error("github_unsafe_file");
-      transportPath(entry.path);
-      if (files.has(entry.path)) throw new Error("github_duplicate_path");
-      files.set(entry.path, sha(entry.sha));
+      if (
+        typeof entry.path !== "string" ||
+        entry.path.length < 1 ||
+        Buffer.byteLength(entry.path) > 4096 ||
+        entry.path.includes("\0") ||
+        entry.path.startsWith("/") ||
+        entry.path.split("/").some((p) => !p || p === "." || p === "..") ||
+        !["blob", "tree", "commit"].includes(String(entry.type)) ||
+        typeof entry.mode !== "string" ||
+        !(entry.type === "tree"
+          ? entry.mode === "040000"
+          : entry.type === "commit"
+            ? entry.mode === "160000"
+            : ["100644", "100755", "120000"].includes(entry.mode))
+      )
+        throw new Error("github_tree_invalid");
+      if (entries.has(entry.path)) throw new Error("github_duplicate_path");
+      const metadata = {
+        sha: sha(entry.sha),
+        type: entry.type as "blob" | "tree" | "commit",
+        mode: entry.mode,
+      };
+      entries.set(entry.path, metadata);
+      if (metadata.type === "blob") files.set(entry.path, metadata.sha);
     }
-    return { commit, tree, files };
+    return { commit, tree, files, entries };
   }
+
   async read(snapshot: GitSnapshot, path: string): Promise<Uint8Array | null> {
     transportPath(path);
     const expected = snapshot.files.get(path);
+    const metadata = snapshot.entries?.get(path);
+    if (metadata && (metadata.type !== "blob" || metadata.mode !== "100644"))
+      throw new Error("github_unsafe_file");
     if (!expected) return null;
+    if (snapshot.entries && (!metadata || metadata.sha !== expected))
+      throw new Error("github_snapshot_inconsistent");
     const blob = await this.api(`/git/blobs/${sha(expected)}`);
     if (
       blob.encoding !== "base64" ||
@@ -204,9 +278,43 @@ export class GitHubGitStore implements GitObjectStore {
       throw new Error("github_blob_hash_mismatch");
     return bytes;
   }
+  private verifyOverlay(
+    base: GitSnapshot,
+    created: GitSnapshot,
+    desired: ReadonlyMap<string, string>,
+  ): void {
+    if (!base.entries || !created.entries) throw new Error("github_tree_metadata_missing");
+    const expected = new Map([...base.entries].filter(([, e]) => e.type !== "tree"));
+    for (const [path, hash] of desired)
+      expected.set(path, { sha: hash, type: "blob", mode: "100644" });
+    const leaves = [...created.entries].filter(([, e]) => e.type !== "tree");
+    if (
+      leaves.length !== expected.size ||
+      leaves.some(([p, e]) => {
+        const want = expected.get(p);
+        return !want || want.sha !== e.sha || want.mode !== e.mode || want.type !== e.type;
+      })
+    )
+      throw new Error("github_created_tree_mismatch");
+    const affected = new Set<string>();
+    for (const path of desired.keys()) {
+      const parts = path.split("/");
+      for (let i = 1; i < parts.length; i++) affected.add(parts.slice(0, i).join("/"));
+    }
+    for (const [path, e] of base.entries) {
+      if (e.type !== "tree") continue;
+      const now = created.entries.get(path);
+      if (now?.type !== "tree" || now.mode !== e.mode || (!affected.has(path) && now.sha !== e.sha))
+        throw new Error("github_created_tree_mismatch");
+    }
+    for (const [path, e] of created.entries)
+      if (e.type === "tree" && !base.entries.has(path) && !affected.has(path))
+        throw new Error("github_created_tree_mismatch");
+  }
   /** Append-only atomic batch. CAS is the non-force fast-forward of a single-parent commit.
    * A lost PATCH reply reconciles exact file blobs on the current head, never reexecutes a job. */
   async append(files: ReadonlyMap<string, Uint8Array>, message: string): Promise<string> {
+    files = new Map([...files].map(([path, bytes]) => [path, Buffer.from(bytes)]));
     if (!files.size || files.size > 32 || message.length > 200)
       throw new Error("github_batch_invalid");
     const desired = new Map<string, string>();
@@ -215,11 +323,37 @@ export class GitHubGitStore implements GitObjectStore {
       if (bytes.length > this.limits.maxBytes / 2) throw new Error("github_file_too_large");
       desired.set(path, gitBlobSha(bytes));
     }
+    const desiredPaths = [...desired.keys()];
+    if (
+      desiredPaths.some((path) =>
+        desiredPaths.some((other) => other !== path && other.startsWith(`${path}/`)),
+      )
+    )
+      throw new Error("github_batch_path_conflict");
     for (let attempt = 0; attempt < this.limits.conflicts; attempt++) {
       const base = await this.snapshot();
       let present = 0;
       for (const [path, hash] of desired) {
         const existing = base.files.get(path);
+        const metadata = base.entries?.get(path);
+        const ancestors = path
+          .split("/")
+          .slice(0, -1)
+          .map((_, i) =>
+            path
+              .split("/")
+              .slice(0, i + 1)
+              .join("/"),
+          );
+        if (
+          (metadata && (metadata.type !== "blob" || metadata.mode !== "100644")) ||
+          ancestors.some(
+            (p) =>
+              base.files.has(p) || (base.entries?.has(p) && base.entries.get(p)?.type !== "tree"),
+          ) ||
+          [...(base.entries?.keys() ?? base.files.keys())].some((p) => p.startsWith(`${path}/`))
+        )
+          throw new Error("github_immutable_conflict");
         if (existing && existing !== hash) throw new Error("github_immutable_conflict");
         if (existing) present++;
       }
@@ -236,20 +370,49 @@ export class GitHubGitStore implements GitObjectStore {
         entries.push({ path, mode: "100644", type: "blob", sha: blob.sha });
       }
       const tree = await this.api("/git/trees", "POST", { base_tree: base.tree, tree: entries });
+      const createdTree = sha(tree.sha);
+      this.verifyOverlay(base, await this.treeSnapshot(createdTree, base.commit), desired);
       const commit = await this.api("/git/commits", "POST", {
         message,
-        tree: sha(tree.sha),
+        tree: createdTree,
         parents: [base.commit],
       });
       const head = sha(commit.sha);
+      const confirmed = await this.api(`/git/commits/${head}`);
+      if (
+        sha(confirmed.sha) !== head ||
+        sha(object(confirmed.tree).sha) !== createdTree ||
+        !Array.isArray(confirmed.parents) ||
+        confirmed.parents.length !== 1 ||
+        sha(object(confirmed.parents[0]).sha) !== base.commit
+      )
+        throw new Error("github_created_commit_mismatch");
       try {
         await this.api(`/git/refs/heads/${this.ref}`, "PATCH", { sha: head, force: false });
-        return head;
+        const visible = await this.snapshot();
+        if (
+          ![...desired].every(
+            ([path, hash]) =>
+              visible.files.get(path) === hash &&
+              visible.entries?.get(path)?.type === "blob" &&
+              visible.entries?.get(path)?.mode === "100644",
+          )
+        )
+          throw new Error("github_publication_unconfirmed");
+        return visible.commit;
       } catch (error) {
         if (error instanceof GitHubHttpError && ![409, 422].includes(error.status)) throw error;
         // Network loss might mean PATCH succeeded. One bounded reread establishes that.
         const after = await this.snapshot();
-        if ([...desired].every(([path, hash]) => after.files.get(path) === hash))
+        if (
+          [...desired].every(
+            ([path, hash]) =>
+              after.files.get(path) === hash &&
+              (!after.entries ||
+                (after.entries.get(path)?.type === "blob" &&
+                  after.entries.get(path)?.mode === "100644")),
+          )
+        )
           return after.commit;
         if (!(error instanceof GitHubHttpError)) throw new Error("github_commit_outcome_unknown");
       }

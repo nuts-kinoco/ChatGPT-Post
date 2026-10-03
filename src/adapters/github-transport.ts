@@ -25,6 +25,7 @@ import type {
   ProjectRegistrationReference,
   ProjectRegistryPort,
 } from "../contracts/project-registry.js";
+import { type TextPacket, validateTextPacket } from "../contracts/sdk-text-inference.js";
 import {
   loadTaskSpec,
   parseStrictJsonBytes,
@@ -124,6 +125,7 @@ export interface DeliveryAcceptanceContext {
   outputContractRaw: Uint8Array | null;
 }
 type BusMessage =
+  | TextPacket
   | IssuedMessage
   | ClaimMessage
   | EventMessage
@@ -217,6 +219,15 @@ export class SignedBusCodec {
     )
       throw new Error("transport_signature_invalid");
     const data = record(parseStrictJsonBytes(raw));
+    if (data.kind === "text_inference") {
+      const packet = validateTextPacket(data);
+      const requesterStage = packet.stage === "issued" || packet.stage === "acceptance";
+      if (identity.actorId !== (requesterStage ? packet.requesterId : packet.recipientId))
+        throw new Error("transport_text_actor_denied");
+      this.role(packet.requesterId, "requester");
+      this.role(packet.recipientId, "recipient");
+      return { actorId: identity.actorId, message: packet };
+    }
     if (data.kind === "issued") {
       exactKeys(data, [
         "kind",
@@ -716,6 +727,14 @@ export class GitHubTaskBus {
     const bytes = await this.git.read(snapshot, path);
     if (!bytes) throw new Error("transport_issued_missing");
     const { message } = this.codec.decode(bytes);
+    if (message.kind === "text_inference") {
+      if (
+        message.stage !== "issued" ||
+        path !== `${this.prefix}/request-index/${message.requestId}.json`
+      )
+        throw new Error("transport_issued_path_mismatch");
+      throw new Error("transport_text_route_unsupported");
+    }
     if (message.kind !== "issued" || path !== this.path("inbox", message.requestId, "issued.json"))
       throw new Error("transport_issued_path_mismatch");
     this.bindProject(
@@ -1204,6 +1223,7 @@ export class GitHubRecipientPump {
         result.received.push(requestId);
       } catch (error) {
         const reason = safeCode(error);
+        if (reason === "transport_text_route_unsupported") continue;
         this.journal.failed(path, digest, this.now(), reason);
         result.blocked.push({ requestId, reason });
       } finally {
