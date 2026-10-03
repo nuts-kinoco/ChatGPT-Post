@@ -14,7 +14,10 @@ import { startPollLoop } from "./poll-loop.js";
 import { RENDERER_SCHEME, rendererFilePath, resolveRendererUrl } from "./renderer-protocol.js";
 import { bottomRightPosition, clampToWorkArea, isSavedPositionValid, popupBoundsForAnchor, type WindowBounds, type WindowPosition } from "./bar-position.js";
 import * as fs from "node:fs/promises";
-import { productNavigation, productStartupError, productUrl, revealExistingProductDetail, startProductUi, type ProductUiServer } from "./product-ui.js";
+import { createProductShutdown } from "./product-shutdown.js";
+import { initialProductAnchor, productBounds } from "./product-geometry.js";
+import { ProductWindowState, isProductAction } from "./product-window-state.js";
+import { isTrustedProductFrame, productNavigation, productStartupError, productUrl, startProductUi, type ProductUiServer } from "./product-ui.js";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: RENDERER_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
@@ -62,25 +65,66 @@ let lastProgrammaticBounds: WindowBounds | undefined;
 let productServer: ProductUiServer | undefined;
 let productStarting: Promise<ProductUiServer> | undefined;
 let productDock: BrowserWindow | undefined;
-let productDetail: BrowserWindow | undefined;
+let productAnchor: WindowPosition | undefined;
+let lastProductBounds: WindowBounds | undefined;
+let residentPreparing: Promise<BrowserWindow> | undefined;
+let productPreferencesUnsubscribe: (() => void) | undefined;
+
+const productWindows = new ProductWindowState({
+  prepare: async _mode => {
+    const window = await prepareProductResident();
+    if (!window) throw new Error("product_window_unavailable");
+  },
+  activate: mode => {
+    if (mode === "hidden") { productDock?.hide(); return; }
+    if (productDock?.isMinimized()) productDock.restore();
+    positionProductWindow(mode === "expanded");
+    productDock?.show(); productDock?.focus();
+    positionProductWindow(mode === "expanded");
+  },
+  preferencesChanged: preferences => {
+    if (productDock && !productDock.isDestroyed()) productDock.setAlwaysOnTop(preferences.alwaysOnTop);
+
+  },
+  anyFocused: () => (productDock && !productDock.isDestroyed() && productDock.isFocused()) === true,
+});
+productWindows.subscribe(state => {
+  if (productDock && !productDock.isDestroyed()) productDock.webContents.send("bridge-product:state", state);
+
+});
+function trustedProductSender(event: Electron.IpcMainInvokeEvent): boolean {
+  try {
+    return isTrustedProductFrame(event.sender, [productDock?.webContents], event.senderFrame, event.sender.mainFrame, event.senderFrame?.url ?? "", productServer?.origin);
+  } catch { return false; }
+}
+
+function actOnProduct(action: "expand"|"collapse"|"hide"|"restore"|"minimize"|"settings") {
+  void productWindows.action(action).catch(showProductError);
+}
 
 async function ensureProductServer(): Promise<ProductUiServer> {
   if (productServer) return productServer;
   if (!bridgePaths.ok) throw new Error(bridgePaths.error);
   productStarting ??= startProductUi(bridgePaths.root, process.env);
   try {
-    productServer = await productStarting;
+    const started = await productStarting;
+    if (productServer) return productServer;
+    productServer = started;
+    if (productServer.presentation) {
+      productWindows.applyPreferences(productServer.presentation.snapshot().values);
+      productPreferencesUnsubscribe = productServer.presentation.subscribe(snapshot => productWindows.applyPreferences(snapshot.values));
+    }
     return productServer;
   } finally { productStarting = undefined; }
 }
 
 function secureProductWindow(window: BrowserWindow, server: ProductUiServer) {
-  // This content has no Electron preload or Node access. All authority stays in the
+  // This content has only a cosmetic window-state preload, with no Node, file or CLI access. All authority stays in the
   // authenticated loopback API, and every navigation is inspected by the main process.
   window.webContents.on("will-navigate", (event, target) => {
     event.preventDefault();
     const navigation = productNavigation(target, server.origin);
-    if (navigation?.view === "detail") void showProductDetail(navigation);
+    if (navigation?.view === "detail") actOnProduct("expand");
   });
   window.webContents.on("will-redirect", (event) => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -88,33 +132,12 @@ function secureProductWindow(window: BrowserWindow, server: ProductUiServer) {
   window.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
-    window.hide();
+    actOnProduct("minimize");
   });
+  window.on("blur", () => { setTimeout(() => { if (!isQuitting) void productWindows.inactive().catch(() => undefined); }, 75); });
+  window.on("minimize", () => { if (!isQuitting) actOnProduct("minimize"); });
 }
 
-async function showProductDetail(navigation?: { tab?: string; task?: string }) {
-  // The detail window owns its selected task, pending action and unsent draft. Repeated
-  // dock/tray navigation focuses it; changing selection happens inside that existing UI.
-  if (revealExistingProductDetail(productDetail)) return;
-  try {
-    const server = await ensureProductServer();
-    if (!productDetail) {
-      productDetail = new BrowserWindow({
-        width: 1280, height: 900, minWidth: 440, minHeight: 600, show: false,
-        title: "Bridge v2 · 依頼の確認",
-        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, partition: "bridge-v2-ui" },
-      });
-      secureProductWindow(productDetail, server);
-    }
-    await productDetail.loadURL(productUrl(server, "detail", navigation));
-    productDetail.show();
-    productDetail.focus();
-  } catch (error) {
-    if (productDetail && !productDetail.isDestroyed()) productDetail.destroy();
-    productDetail = undefined;
-    showProductError(error);
-  }
-}
 
 function showProductError(error: unknown) {
   // Never include the capability URL in errors or diagnostics.
@@ -122,31 +145,34 @@ function showProductError(error: unknown) {
   dialog.showErrorBox("Bridge v2 UI を起動できません", `${message}\nBridgeのルートで npm run build を実行してから再起動してください。`);
 }
 
-async function showProductDock() {
-  try {
+async function prepareProductResident(): Promise<BrowserWindow> {
+  if (residentPreparing) return residentPreparing;
+  if (productDock) return productDock;
+  residentPreparing = (async () => {
     const server = await ensureProductServer();
-    if (!productDock) {
-      const workArea = screen.getPrimaryDisplay().workArea;
-      const position = bottomRightPosition(workArea, 280, 380, WINDOW_MARGIN);
-      productDock = new BrowserWindow({
-        width: 280, height: 380, ...position, useContentSize: true, frame: false,
-        resizable: false, skipTaskbar: true, alwaysOnTop: true, show: false,
-        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, partition: "bridge-v2-ui" },
-      });
-      secureProductWindow(productDock, server);
-      await productDock.loadURL(productUrl(server, "dock"));
-    }
-    if (productDock.isMinimized()) productDock.restore();
-    ensureWindowIsOnOneDisplay();
-    productDock.show();
-    productDock.focus();
-  } catch (error) {
-    if (productDock && !productDock.isDestroyed()) productDock.destroy();
-    productDock = undefined;
-    showProductError(error);
-  }
+    const workArea = screen.getPrimaryDisplay().workArea;
+    productAnchor ??= initialProductAnchor(workArea);
+    const bounds = productBounds(productAnchor, workArea, false);
+    const window = new BrowserWindow({
+      ...bounds, useContentSize: true, frame: false,
+      resizable: false, skipTaskbar: true, alwaysOnTop: productWindows.snapshot().preferences.alwaysOnTop, show: false,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, partition: "bridge-v2-ui", preload: path.join(__dirname, "product-preload.cjs") },
+    });
+    productDock = window;
+    secureProductWindow(window, server);
+    window.on("moved", () => {
+      const current = window.getBounds();
+      if (lastProductBounds && sameBounds(current, lastProductBounds)) { lastProductBounds = undefined; return; }
+      productAnchor = {x:current.x,y:current.y};
+      positionProductWindow(productWindows.snapshot().mode === "expanded");
+    });
+    try { await window.loadURL(productUrl(server, "resident")); return window; }
+    catch (error) { if (!window.isDestroyed()) window.destroy(); productDock = undefined; throw error; }
+  })();
+  try { return await residentPreparing; } finally { residentPreparing = undefined; }
 }
-function toggleProductDock() { if (productDock?.isVisible()) productDock.hide(); else void showProductDock(); }
+
+function toggleProductDock() { actOnProduct(productWindows.snapshot().mode === "hidden" ? "restore" : "hide"); }
 
 function rendererUrl(): string { return resolveRendererUrl(app.isPackaged, process.env.ELECTRON_RENDERER_URL); }
 function registerRendererProtocol() {
@@ -226,13 +252,16 @@ function positionWindow(): WindowBounds | undefined {
   if (!sameBounds(barWindow.getBounds(), bounds)) applyWindowBounds(bounds);
   return bounds;
 }
+function positionProductWindow(expanded: boolean) {
+  if (!productDock || productDock.isDestroyed()) return;
+  const current=productDock.getBounds();
+  productAnchor ??= {x:current.x,y:current.y};
+  const area=screen.getDisplayMatching({...productAnchor,width:440,height:46}).workArea;
+  const next=productBounds(productAnchor,area,expanded);
+  if (!sameBounds(current,next)) { lastProductBounds=next;productDock.setBounds(next); }
+}
 function ensureWindowIsOnOneDisplay() {
-  if (productDock) {
-    const bounds = productDock.getBounds();
-    const area = screen.getDisplayMatching(bounds).workArea;
-    const clamped = clampToWorkArea(bounds, area);
-    if (!sameBounds(bounds, clamped)) productDock.setBounds(clamped);
-  }
+  positionProductWindow(productWindows.snapshot().mode === "expanded");
   if (!barWindow) return;
   positionWindow();
 }
@@ -479,8 +508,19 @@ async function pollDoctor(): Promise<void> {
 async function pollRequests() { scannedRequests = await scanRequests(REQUESTS_PATH); publishState(); }
 
 if (hasSingleInstanceLock) {
-  app.on("before-quit", () => { isQuitting = true; void productServer?.close(); });
-  app.on("second-instance", () => { if (bridgePaths.ok) void app.whenReady().then(showProductDock); });
+  const productShutdown = createProductShutdown({
+    close: async () => {
+      const server = productServer ?? await productStarting;
+      await server?.close();
+    },
+    ready: () => { isQuitting = true; productPreferencesUnsubscribe?.(); app.quit(); },
+    failed: () => {
+      isQuitting = false;
+      dialog.showErrorBox("Bridge の終了を保留しています", "処理の停止・保存を確認できません。アプリを保持しています。保存済みの記録を確認し、終了をもう一度選んでください。");
+    },
+  });
+  app.on("before-quit", (event) => productShutdown.beforeQuit(event));
+  app.on("second-instance", () => { if (bridgePaths.ok) void app.whenReady().then(() => actOnProduct("restore")); });
 
   app.whenReady().then(() => {
     registerRendererProtocol();
@@ -492,13 +532,24 @@ if (hasSingleInstanceLock) {
     tray = new Tray(createTrayIcon());
     tray.setToolTip("ChatGPT Bridge Control");
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: "Bridge v2 を表示", click: () => void showProductDock() },
-      { label: "依頼の詳細", click: () => void showProductDetail() },
+      { label: "Bridge v2 を表示", click: () => actOnProduct("restore") },
+      { label: "常駐バーへ畳む", click: () => actOnProduct("collapse") },
+      { label: "表示設定", click: () => actOnProduct("settings") },
+      { label: "依頼の詳細", click: () => actOnProduct("expand") },
       { label: "従来のブラウザチャット", click: () => void showBar() },
       { type: "separator" }, { label: "終了", click: () => app.quit() },
     ]));
-    tray.on("click", () => void showProductDock());
-    void showProductDock();
+    tray.on("click", () => actOnProduct("restore"));
+    ipcMain.handle("bridge-product:state", event => {
+      if (!trustedProductSender(event)) throw new Error("product_sender_denied");
+      return productWindows.snapshot();
+    });
+    ipcMain.handle("bridge-product:action", async (event, action: unknown) => {
+      if (!trustedProductSender(event) || !isProductAction(action)) throw new Error("product_action_denied");
+      try { return await productWindows.action(action); }
+      catch (error) { showProductError(error); throw new Error("product_window_unavailable"); }
+    });
+    actOnProduct("collapse");
     ipcMain.on("bridge-gui:subscribe", (event) => event.sender.send("bridge-gui:state", bridgeState));
     ipcMain.on("bridge-gui:toggle-popup", () => { popupOpen = !popupOpen; positionWindow(); });
     ipcMain.handle("bridge-gui:window-controls", (): WindowControlState => windowControls);

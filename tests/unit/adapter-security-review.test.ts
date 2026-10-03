@@ -367,6 +367,7 @@ describe("independent offline adversarial adapter checks", () => {
         throw Error("unused");
       },
       quota: {
+        providerId: "codex",
         readRateLimits: async () => {
           if (++calls === 1) return pending;
           throw Error("quota_unavailable");

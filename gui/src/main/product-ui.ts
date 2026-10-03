@@ -1,5 +1,6 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import type { ProductPreferences } from "./product-window-state.js";
 
 export type ProductUiProfile = "production" | "demo";
 export interface ProductUiServer {
@@ -7,11 +8,13 @@ export interface ProductUiServer {
   origin: string;
   token: string;
   close(): Promise<void>;
+  presentation?: { snapshot(): { values: ProductPreferences }; subscribe(callback: (snapshot: {values:ProductPreferences}) => void): () => void };
 }
 export interface ProductUiOptions {
   stateDir: string;
   profile: ProductUiProfile;
   port: number;
+  nativeControls: true;
   deploymentModule?: string;
 }
 export interface ProductUiModule {
@@ -38,19 +41,20 @@ export async function startProductUi(
     profile,
     stateDir: path.resolve(env.CHATGPT_BRIDGE_RUNTIME_DIR ?? path.join(root, "runtime")),
     port: 0,
+    nativeControls: true,
     ...(env.CHATGPT_BRIDGE_DEPLOYMENT_MODULE ? { deploymentModule: env.CHATGPT_BRIDGE_DEPLOYMENT_MODULE } : {}),
   });
 }
 
 /** Do not forward arbitrary URLs, API endpoints, fragments or query parameters to new windows. */
-export function productNavigation(raw: string, origin: string): { view: "dock" | "detail"; tab?: string; task?: string } | null {
+export function productNavigation(raw: string, origin: string): { view: "dock" | "detail" | "resident"; tab?: string; task?: string } | null {
   try {
     const url = new URL(raw);
     if (url.origin !== origin || url.username || url.password || url.pathname !== "/") return null;
     const keys = [...url.searchParams.keys()];
     if (new Set(keys).size !== keys.length) return null;
     const view = url.searchParams.get("view");
-    if (view !== "dock" && view !== "detail") return null;
+    if (view !== "dock" && view !== "detail" && view !== "resident") return null;
     if ([...url.searchParams.keys()].some((key) => !["view", "tab", "task"].includes(key))) return null;
     const tab = url.searchParams.get("tab");
     if (tab && !["approval", "payload", "evidence", "recovery"].includes(tab)) return null;
@@ -60,7 +64,7 @@ export function productNavigation(raw: string, origin: string): { view: "dock" |
   } catch { return null; }
 }
 
-export function productUrl(server: ProductUiServer, view: "dock" | "detail", navigation?: { tab?: string; task?: string }): string {
+export function productUrl(server: ProductUiServer, view: "dock" | "detail" | "resident", navigation?: { tab?: string; task?: string }): string {
   const url = new URL("/", server.origin);
   url.searchParams.set("view", view);
   if (navigation?.tab) url.searchParams.set("tab", navigation.tab);
@@ -90,4 +94,9 @@ export function productStartupError(error: unknown): string {
   if (code === "ERR_UNKNOWN_BUILTIN_MODULE")
     return "この実行環境は必要な Node.js 組み込み機能に対応していません。";
   return "ローカル UI サーバーまたは画面を起動できませんでした。";
+}
+
+/** A permitted WebContents is insufficient: IPC must originate in its validated main frame. */
+export function isTrustedProductFrame(sender: unknown, allowed: readonly unknown[], senderFrame: unknown, mainFrame: unknown, url: string, origin: string | undefined): boolean {
+  return !!sender && allowed.includes(sender) && !!senderFrame && senderFrame === mainFrame && !!origin && productNavigation(url, origin) !== null;
 }

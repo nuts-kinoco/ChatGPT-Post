@@ -17,7 +17,7 @@ import type {
 import type { ExecutionIdentity, ExecutorObservation, TaskExecutor } from "./task-executor.js";
 import { isTerminalTask } from "./task-machine.js";
 import { checkFilesystemPath, checkTaskPolicy, type TaskPolicy } from "./task-policy.js";
-import { type QuotaFallback, type QuotaObservation, quotaDecision } from "./task-preflight.js";
+import { quotaDecision } from "./task-preflight.js";
 import {
   type AccountQuotaPort,
   type TaskQuotaSnapshot,
@@ -59,11 +59,7 @@ export class TaskController {
     readonly executor: TaskExecutor,
     readonly policy: TaskPolicy,
     private readonly now: () => Date = () => new Date(),
-    private readonly quotaGuard?: {
-      observation: QuotaObservation;
-      fallback: QuotaFallback | null;
-      strictMoneyBudget: boolean;
-    },
+    private readonly quotaGuard?: import("./task-quota.js").TaskQuotaGuard,
     private readonly rpcTimeoutMs = 5000,
     private readonly quotaSource?: AccountQuotaPort,
     readonly artifactArchive?: TaskArchivePort,
@@ -261,10 +257,11 @@ export class TaskController {
     return grant;
   }
 
-  async start(requestId: string, approvalId: string): Promise<TaskRecord> {
+  async start(requestId: string, approvalId: string, signal?: AbortSignal): Promise<TaskRecord> {
     const record = this.required(requestId);
     if (record.intent || isTerminalTask(record.result.status)) return record; // Idempotent, no restart.
     if (record.result.status !== "approved") throw new Error("approval_required");
+    if (signal?.aborted) throw new Error("dispatch_stopped");
     const task = taskOf(record);
     checkTaskPolicy(task, this.policy, this.now());
     await this.bounded(this.executor.checkCapabilities(structuredClone(task)));
@@ -278,7 +275,8 @@ export class TaskController {
     if (!rootStat.isDirectory() || rootStat.ino === 0)
       throw new Error("worktree_identity_unavailable");
     const writeLockKey = `${rootStat.dev}:${rootStat.ino}`;
-    const quotaLimits = this.quotaLimits();
+    if (signal?.aborted) throw new Error("dispatch_stopped");
+    const quotaLimits = this.quotaLimits(task.agent);
     const claimed = next(record, this.now());
     claimed.intent = {
       runId: randomUUID(),
@@ -310,8 +308,9 @@ export class TaskController {
       claimed,
       record.result.observation_seq,
       (grant) => {
+        if (signal?.aborted) throw new Error("dispatch_stopped");
         this.checkGrant(grant, record);
-        const finalLimits = this.quotaLimits();
+        const finalLimits = this.quotaLimits(task.agent);
         if (
           finalLimits.maxStarts < quotaLimits.maxStarts ||
           finalLimits.maxRunSeconds < quotaLimits.maxRunSeconds
@@ -523,8 +522,12 @@ export class TaskController {
   }
   private async captureQuota(requestId: string, phase: TaskQuotaSnapshot["phase"]): Promise<void> {
     if (!this.quotaSource) return;
+    const requestedAgent = taskOf(this.required(requestId)).agent;
+    const providerId = this.quotaSource.providerId === "codex" ? "codex" : null;
     const snapshot: TaskQuotaSnapshot = {
       requestId,
+      providerId,
+      requestedAgent,
       phase,
       requestStartedAt: this.now().toISOString(),
       fetchedAt: this.now().toISOString(),
@@ -533,6 +536,8 @@ export class TaskController {
       error: null,
     };
     try {
+      if (providerId !== "codex" || requestedAgent !== "codex")
+        throw new Error("quota_provider_mismatch");
       const result = structuredClone(await this.bounded(this.quotaSource.readRateLimits()));
       validateAccountRateLimits(result);
       snapshot.observation = result;
@@ -544,11 +549,21 @@ export class TaskController {
     this.store.appendQuotaObservation(snapshot); // separate row; never mutates acknowledged Result bytes
   }
 
-  private quotaLimits(): { maxStarts: number; maxRunSeconds: number } {
+  private quotaLimits(agent: string): { maxStarts: number; maxRunSeconds: number } {
     if (!this.quotaGuard) return { maxStarts: this.policy.maxStarts, maxRunSeconds: 86400 };
     const guard = this.quotaGuard;
+    const observation =
+      guard.providerId === "codex" && agent === "codex" && guard.observation.source === "provider"
+        ? guard.observation
+        : {
+            ...guard.observation,
+            source: "unknown" as const,
+            observedAt: null,
+            windowEndsAt: null,
+            remainingPercent: null,
+          };
     const decision = quotaDecision(
-      guard.observation,
+      observation,
       guard.fallback,
       guard.strictMoneyBudget,
       this.now(),

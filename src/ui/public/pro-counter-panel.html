@@ -1,0 +1,21 @@
+<!-- Same-frame section. Parent mounts explicitly; never opens a popup or native window. -->
+<section id="pro-counter-panel" hidden aria-labelledby="pro-counter-title">
+  <div class="section-head"><h2 id="pro-counter-title">Pro利用の参考カウンター</h2><button id="pro-counter-close" type="button" class="text-button">戻る</button></div>
+  <p class="small muted">Bridgeが通常チャットへの送信を観測した分だけを表示します。公式の利用枠・アカウント全体の残数は不明です。上限と時間枠は手動設定です</p>
+  <p id="pro-counter-message" class="notice info" role="status" aria-live="polite"></p>
+  <div class="card"><p id="pro-counter-counts"></p><p id="pro-counter-remaining"></p><p id="pro-counter-coverage" class="small muted"></p><p id="pro-counter-warning" class="notice info" role="status"></p></div>
+  <form id="pro-counter-form" class="spaced">
+    <fieldset id="pro-counter-fields" disabled>
+      <legend>参考値の設定</legend>
+      <label for="pro-counter-limit">手動の上限回数（空欄は不明）</label><input id="pro-counter-limit" type="number" inputmode="numeric" min="1" max="100000" step="1" autocomplete="off">
+      <label for="pro-counter-threshold">残り回数の警告しきい値（空欄はOFF）</label><input id="pro-counter-threshold" type="number" inputmode="numeric" min="0" max="100000" step="1" autocomplete="off">
+      <label for="pro-counter-start">時間枠の開始（UTC）</label><input id="pro-counter-start" type="text" placeholder="2026-10-03T08:00:00.000Z" spellcheck="false" autocomplete="off" aria-describedby="pro-counter-window-help">
+      <label for="pro-counter-end">時間枠の終了（UTC）</label><input id="pro-counter-end" type="text" placeholder="2026-10-03T09:00:00.000Z" spellcheck="false" autocomplete="off" aria-describedby="pro-counter-window-help">
+      <label for="pro-counter-timezone">時間枠のタイムゾーン（IANA）</label><input id="pro-counter-timezone" type="text" placeholder="Asia/Tokyo" spellcheck="false" autocomplete="off" aria-describedby="pro-counter-window-help">
+      <p id="pro-counter-window-help" class="small muted">UTCの開始・終了とIANA名を明示します。3項目とも空欄なら時間枠は未設定です。自動リセットや過去記録の付け替えは行いません</p>
+      <label for="pro-counter-other">Bridge外の利用回数（手動・未検証、空欄は不明）</label><input id="pro-counter-other" type="number" inputmode="numeric" min="0" max="100000" step="1" autocomplete="off">
+    </fieldset>
+    <div class="button-row"><button id="pro-counter-save" type="submit" class="btn primary" disabled>参考値を保存</button><button id="pro-counter-refresh" type="button" class="outline">記録を再読込</button><button id="pro-counter-reset-draft" type="button" class="text-button">編集を取り消す</button></div>
+    <p class="small muted">設定は次の依頼の実行許可や公式quotaを変更しません。値はブラウザーへ保存せず、ホストの専用記録に保存します</p>
+  </form>
+</section>

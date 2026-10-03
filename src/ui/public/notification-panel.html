@@ -1,0 +1,14 @@
+<!-- Same-frame preference surface. Parent inserts and mounts explicitly; no sender or test-send. -->
+<section id="notification-panel" hidden aria-labelledby="notification-title">
+  <div class="section-head"><h2 id="notification-title">認証で止まったときの通知設定</h2><button id="notification-close" type="button" class="text-button">戻る</button></div>
+  <p class="small muted">接続中の利用者ごとに保存します。初期設定はOFFです。この画面は設定の保存だけを行い、通知の送信・テスト送信は行いません</p>
+  <p id="notification-message" class="notice info" role="status" aria-live="polite"></p>
+  <p id="notification-state" class="small muted"></p>
+  <form id="notification-form">
+    <label><input id="notification-enabled" type="checkbox" disabled> 認証ブロック時の通知を希望する</label>
+    <fieldset id="notification-fields" disabled><legend>登録済みの通知先</legend><p class="small muted">ホストで許可されたEmail・Discordの宛先だけを選べます。メールアドレス、Webhook URL、トークン、秘密情報は入力しません</p><div id="notification-destinations"></div></fieldset>
+    <p id="notification-availability" class="notice info"></p>
+    <div class="button-row"><button id="notification-save" class="btn primary" type="submit" disabled>通知先設定を保存</button><button id="notification-refresh" class="outline" type="button">再読込</button><button id="notification-reset-draft" class="text-button" type="button">編集を取り消す</button></div>
+  </form>
+  <p class="small muted">完了時の画面内通知は表示設定で管理します。通知設定は実行許可やモデル利用枠を変更しません</p>
+</section>

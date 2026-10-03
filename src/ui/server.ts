@@ -5,8 +5,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openTrustedDeployment } from "../adapters/deployment-loader.js";
+import type { ResidentWorkerLifecycle } from "../adapters/resident-worker.js";
 import { ArchiveError } from "../archive/types.js";
-import { parseStrictJsonBytes } from "../contracts/task.js";
+import { parseStrictJsonBytes, sha256Bytes } from "../contracts/task.js";
 import {
   type UiAck,
   type UiBinding,
@@ -17,6 +18,19 @@ import {
   type UiImport,
   validateUiBody,
 } from "../contracts/ui.js";
+import { archiveOperationsSource, UiArchiveApi, type UiArchivePort } from "./archive-api.js";
+import { UiComposer, type UiComposerPort } from "./composer.js";
+import { buildUiOperationsSources, type UiOperationsFactory } from "./deployment-operations.js";
+import {
+  type NotificationPreferencesStore,
+  openNotificationPreferencesStore,
+} from "./notification-preferences.js";
+import { type NotificationCataloguePort, UiNotificationSettings } from "./notification-settings.js";
+import { UiOperationsService } from "./operations.js";
+import { openPresentationStore, type PresentationStore } from "./presentation.js";
+import type { ProObservationStore } from "./pro-counter.js";
+import { UiProCounterSettings } from "./pro-counter-settings.js";
+import { UiProjectSettings } from "./project-settings.js";
 import { openUiService, type TaskUiService, type UiServiceOptions } from "./service.js";
 
 export const MAX_UI_BODY_BYTES = 2 * 1024 * 1024;
@@ -24,6 +38,15 @@ export interface UiServerOptions extends UiServiceOptions {
   port?: number;
   deploymentModule?: string;
   publicDir?: string;
+  /** Trusted Electron host capability; never accepted from an HTTP body. */
+  nativeControls?: boolean;
+  /** Trusted deployment read/action ports. Never accepted from request JSON. */
+  operationsSources?: UiOperationsFactory;
+  composer?: UiComposerPort;
+  archiveOperations?: UiArchivePort;
+  proCounter?: ProObservationStore;
+  notificationPreferences?: NotificationPreferencesStore;
+  notificationCatalogue?: NotificationCataloguePort;
 }
 export interface UiServerHandle {
   server: Server;
@@ -31,12 +54,20 @@ export interface UiServerHandle {
   url: string;
   token: string;
   service: TaskUiService;
+  operations: UiOperationsService;
+  presentation: PresentationStore;
   close(): Promise<void>;
 }
 const ASSETS: Record<string, { name: string; type: string }> = {
   "/": { name: "index.html", type: "text/html; charset=utf-8" },
   "/index.html": { name: "index.html", type: "text/html; charset=utf-8" },
   "/app.js": { name: "app.js", type: "text/javascript; charset=utf-8" },
+  "/notification-view.js": { name: "notification-view.js", type: "text/javascript; charset=utf-8" },
+  "/pro-counter-view.js": { name: "pro-counter-view.js", type: "text/javascript; charset=utf-8" },
+  "/archive-view.js": { name: "archive-view.js", type: "text/javascript; charset=utf-8" },
+  "/composer-view.js": { name: "composer-view.js", type: "text/javascript; charset=utf-8" },
+  "/operations-view.js": { name: "operations-view.js", type: "text/javascript; charset=utf-8" },
+  "/presentation.js": { name: "presentation.js", type: "text/javascript; charset=utf-8" },
   "/styles.css": { name: "styles.css", type: "text/css; charset=utf-8" },
 };
 function secureHeaders(response: ServerResponse): void {
@@ -171,6 +202,14 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
   const deployment = options.deploymentModule
     ? await openTrustedDeployment<{
         uiRuntime?: import("./service.js").UiRuntime;
+        uiOperationsSources?: UiOperationsFactory;
+        uiComposer?: UiComposerPort;
+        archiveOperations?: UiArchivePort;
+        proCounter?: ProObservationStore;
+        notificationPreferences?: NotificationPreferencesStore;
+        notificationCatalogue?: NotificationCataloguePort;
+        /** Explicit trusted opt-in; no HTTP request or browser preference can enable this worker. */
+        residentWorker?: Pick<ResidentWorkerLifecycle, "start" | "close">;
         close?(): Promise<void> | void;
       }>(options.deploymentModule)
     : null;
@@ -192,9 +231,115 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     if (deployment?.close) await deployment.close();
     else service.close();
   };
+  let presentation: PresentationStore;
+  try {
+    presentation = await openPresentationStore(options.stateDir);
+  } catch (error) {
+    await closeRuntime();
+    throw error;
+  }
+  const presentationView = () => ({
+    ...service.metadata(),
+    presentation: presentation.snapshot(),
+    nativeControls: {
+      available: options.nativeControls === true,
+      reason:
+        options.nativeControls === true
+          ? "Desktop window controls are available"
+          : "Desktop window controls require the Bridge desktop app",
+    },
+  });
+
+  let operations: UiOperationsService;
+  let archiveApi: UiArchiveApi;
+  const archivePort = options.archiveOperations ?? deployment?.archiveOperations;
+  try {
+    const sourceFactory = options.operationsSources ?? deployment?.uiOperationsSources;
+    const sources =
+      typeof sourceFactory === "function" ? await sourceFactory(service) : sourceFactory;
+    operations = new UiOperationsService(
+      buildUiOperationsSources(service, {
+        ...sources,
+        ...(!sources?.archive && archivePort
+          ? {
+              archive: archiveOperationsSource(archivePort, (binding) =>
+                archiveApi.collect({ version: "bridge-operations-1", binding }),
+              ),
+            }
+          : {}),
+      }),
+    );
+    service.bindProjectRegistry(operations.sources.registry);
+  } catch (error) {
+    try {
+      await closeRuntime();
+    } finally {
+      presentation.close();
+    }
+    throw error;
+  }
+  const projectSettings = new UiProjectSettings(operations.sources.registry);
+  const composer = new UiComposer(operations, options.composer ?? deployment?.uiComposer);
+  archiveApi = new UiArchiveApi(operations, archivePort);
+  const counterStore = options.proCounter ?? deployment?.proCounter;
+  if (counterStore && counterStore.synthetic !== (service.profile === "demo")) {
+    try {
+      await closeRuntime();
+    } finally {
+      presentation.close();
+    }
+    throw new UiError("counter_profile_mismatch", "Counter and task profiles must match", 500);
+  }
+  const proCounterSettings = new UiProCounterSettings(counterStore);
+  let notificationStore = options.notificationPreferences ?? deployment?.notificationPreferences;
+  let ownNotificationStore = false;
+  let storageUnavailableReason:
+    | "notification_storage_verifier_unavailable"
+    | "notification_storage_untrusted"
+    | "notification_storage_unavailable"
+    | undefined;
+  if (!notificationStore)
+    try {
+      notificationStore = await openNotificationPreferencesStore({
+        stateDir: options.stateDir,
+        profile: service.profile,
+      });
+      ownNotificationStore = true;
+    } catch (error) {
+      storageUnavailableReason =
+        error instanceof UiError && error.code === "notification_storage_verifier_unavailable"
+          ? "notification_storage_verifier_unavailable"
+          : error instanceof UiError && error.code === "notification_storage_untrusted"
+            ? "notification_storage_untrusted"
+            : "notification_storage_unavailable";
+    }
+  const catalogue = options.notificationCatalogue ?? deployment?.notificationCatalogue;
+  let notifications: UiNotificationSettings;
+  try {
+    notifications = new UiNotificationSettings({
+      ...(notificationStore ? { store: notificationStore } : {}),
+      authenticatedActorId: service.authenticatedRequesterId,
+      profile: service.profile,
+      ...(catalogue ? { catalogue } : {}),
+      ...(storageUnavailableReason ? { storageUnavailableReason } : {}),
+    });
+  } catch (error) {
+    try {
+      await closeRuntime();
+    } finally {
+      presentation.close();
+      if (ownNotificationStore) notificationStore?.close();
+    }
+    throw error;
+  }
+  const closeCosmetics = () => {
+    presentation.close();
+    if (ownNotificationStore) notificationStore?.close();
+  };
   const token = randomBytes(32).toString("base64url");
   const expected = Buffer.from(`Bearer ${token}`);
   const publicDir = options.publicDir ?? fileURLToPath(new URL("./public/", import.meta.url));
+  let shutdownStarted = false;
   let origin = "";
   let host = "";
   const server = createServer(async (request, response) => {
@@ -223,7 +368,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       if (query !== undefined) {
         const params = new URLSearchParams(query);
         const allowed: Record<string, RegExp> = {
-          view: /^(dock|detail)$/,
+          view: /^(dock|detail|resident)$/,
           tab: /^(approval|payload|evidence|recovery)$/,
           task: /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,
         };
@@ -256,8 +401,53 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         if (method !== "GET" && method !== "POST")
           throw new UiError("method_not_allowed", "Only GET and POST are supported", 405);
         if (method === "GET") {
-          if (rawUrl === "/api/archive/settings")
-            return sendJson(response, service.archiveSettings());
+          if (rawUrl === "/api/settings/notifications")
+            return sendJson(response, {
+              ...service.metadata(),
+              notifications: await notifications.view(),
+            });
+          if (rawUrl === "/api/settings/pro-counter")
+            return sendJson(response, {
+              ...service.metadata(),
+              proCounter: proCounterSettings.view(),
+            });
+          if (rawUrl === "/api/archive")
+            return sendJson(response, {
+              ...service.metadata(),
+              capability: archiveApi.capability(),
+            });
+          if (rawUrl === "/api/composer")
+            return sendJson(response, { ...service.metadata(), capability: composer.capability() });
+          if (rawUrl === "/api/settings/projects")
+            return sendJson(response, { ...service.metadata(), settings: projectSettings.view() });
+          if (rawUrl === "/api/setup")
+            return sendJson(response, { ...service.metadata(), setup: await operations.setup() });
+          if (rawUrl === "/api/operations")
+            return sendJson(response, {
+              ...service.metadata(),
+              operations: await operations.overview(),
+            });
+          const operationMatch =
+            /^\/api\/operations\/(local_execution|hosted_delivery|fanout)\/([a-f0-9-]{36})$/.exec(
+              rawUrl,
+            );
+          if (operationMatch?.[1] && operationMatch[2])
+            return sendJson(response, {
+              ...service.metadata(),
+              operation: await operations.detail(
+                operationMatch[1] as "local_execution" | "hosted_delivery" | "fanout",
+                operationMatch[2],
+              ),
+            });
+          if (rawUrl === "/api/presentation") return sendJson(response, presentationView());
+          const bootstrapPageMatch = /^\/api\/bootstrap\/page(?:\/([a-f0-9-]{36}))?$/.exec(rawUrl);
+          if (bootstrapPageMatch)
+            return sendJson(response, service.bootstrapPage(bootstrapPageMatch[1] ?? ""));
+          const legacyArchive = /^\/api\/legacy\/archive\/([a-f0-9-]{36})$/.exec(rawUrl);
+          if (legacyArchive?.[1]) {
+            service.task(legacyArchive[1]);
+            return sendJson(response, service.inspectArchive(legacyArchive[1]));
+          }
           if (rawUrl === "/api/bootstrap") return sendJson(response, service.bootstrap());
           if (rawUrl === "/api/tasks")
             return sendJson(response, { ...service.metadata(), tasks: service.bootstrap().tasks });
@@ -267,14 +457,10 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
               diagnostics: service.diagnostics(),
             });
           const match =
-            /^\/api\/tasks\/([a-f0-9-]+)(?:\/(events|receipts|result|preflight|archive))?$/.exec(
-              rawUrl,
-            );
+            /^\/api\/tasks\/([a-f0-9-]+)(?:\/(events|receipts|result|preflight))?$/.exec(rawUrl);
           if (match?.[1]) {
             const detail = service.task(match[1]);
             switch (match[2]) {
-              case "archive":
-                return sendJson(response, service.inspectArchive(match[1]));
               case "events":
                 return sendJson(response, { ...service.metadata(), events: detail.task.events });
               case "receipts":
@@ -301,16 +487,88 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
           }
         } else {
           const input = await body(request);
-          if (rawUrl === "/api/archive/settings") {
-            validateUiBody("archive-settings", input);
-            return sendJson(
-              response,
-              service.configureArchive(input as Parameters<TaskUiService["configureArchive"]>[0]),
+          if (shutdownStarted) {
+            response.setHeader("connection", "close");
+            throw new UiError(
+              "runtime_shutting_down",
+              "New mutations are disabled during shutdown",
+              409,
             );
           }
-          if (rawUrl === "/api/archive/probe") {
-            validateUiBody("archive-probe", input);
-            return sendJson(response, service.probeArchiveRoot((input as { root: string }).root));
+          if (rawUrl === "/api/settings/notifications")
+            return sendJson(response, {
+              ...service.metadata(),
+              notifications: await notifications.update(input),
+            });
+          if (rawUrl === "/api/settings/pro-counter")
+            return sendJson(response, {
+              ...service.metadata(),
+              proCounter: proCounterSettings.update(input),
+            });
+          if (rawUrl === "/api/archive/collect")
+            return sendJson(response, {
+              ...service.metadata(),
+              archive: await archiveApi.collect(input),
+            });
+          if (rawUrl === "/api/archive/inspect")
+            return sendJson(response, {
+              ...service.metadata(),
+              archive: await archiveApi.inspect(input),
+            });
+          if (rawUrl === "/api/archive/export")
+            return sendJson(response, {
+              ...service.metadata(),
+              diagnostic: await archiveApi.export(input),
+            });
+          if (rawUrl === "/api/archive/probe")
+            return sendJson(response, {
+              ...service.metadata(),
+              probe: await archiveApi.probe(input),
+            });
+          if (rawUrl === "/api/composer/preview") {
+            const preview = await composer.preview(input);
+            return sendJson(response, {
+              ...service.metadata(),
+              preview,
+              previewSha256: sha256Bytes(Buffer.from(JSON.stringify(preview))),
+            });
+          }
+          if (rawUrl === "/api/composer/issue")
+            return sendJson(response, {
+              ...service.metadata(),
+              issued: await composer.issue(input),
+            });
+          if (rawUrl === "/api/settings/projects")
+            return sendJson(response, {
+              ...service.metadata(),
+              settings: projectSettings.update(input),
+            });
+          if (rawUrl === "/api/operations/query") {
+            if (
+              !input ||
+              typeof input !== "object" ||
+              Array.isArray(input) ||
+              Object.keys(input).some(
+                (key) => !["limit", "localAfter", "hostedAfter", "fanoutAfter"].includes(key),
+              )
+            )
+              throw new UiError(
+                "invalid_operations_query",
+                "Only bounded page parameters are accepted",
+              );
+            return sendJson(response, {
+              ...service.metadata(),
+              operations: await operations.overview(input),
+            });
+          }
+          if (rawUrl === "/api/operations/actions")
+            return sendJson(response, {
+              ...service.metadata(),
+              operation: await operations.mutate(input),
+            });
+          if (rawUrl === "/api/presentation") {
+            presentation.update(input, options.nativeControls === true);
+            return sendJson(response, presentationView());
           }
           if (rawUrl === "/api/validate" || rawUrl === "/api/tasks") {
             validateUiBody("import", input);
@@ -327,18 +585,12 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
             return sendJson(response, service.createDemo(input as UiDemoTask), 201);
           }
           const match =
-            /^\/api\/tasks\/([a-f0-9-]+)\/(approve|start|cancel|reconcile|ack|demo-observation|archive|diagnostic-export)$/.exec(
+            /^\/api\/tasks\/([a-f0-9-]+)\/(approve|start|cancel|reconcile|ack|demo-observation)$/.exec(
               rawUrl,
             );
           if (match?.[1]) {
             const id = match[1];
             switch (match[2]) {
-              case "archive":
-                validateUiBody("empty", input);
-                return sendJson(response, await service.archiveResult(id));
-              case "diagnostic-export":
-                validateUiBody("empty", input);
-                return sendJson(response, service.exportDiagnostics(id).envelope);
               case "approve":
                 validateUiBody("bound", input);
                 return sendJson(response, await service.approve(id, input as UiBinding));
@@ -408,26 +660,76 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     if (!address || typeof address === "string") throw new Error("loopback_bind_failed");
     host = `127.0.0.1:${address.port}`;
     origin = `http://${host}`;
+    deployment?.residentWorker?.start();
   } catch (error) {
     server.close();
-    await closeRuntime();
+    try {
+      await deployment?.residentWorker?.close();
+      await closeRuntime();
+    } finally {
+      closeCosmetics();
+    }
     throw error;
   }
   let closed = false;
+  let closing: Promise<void> | null = null;
+  let httpClosed: Promise<void> | null = null;
+  const stopHttp = () => {
+    httpClosed ??= new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+      server.closeIdleConnections();
+    });
+    return httpClosed;
+  };
   return {
     server,
     origin,
     url: `${origin}/#token=${token}`,
     token,
     service,
+    operations,
+    presentation,
     close: async () => {
       if (closed) return;
-      closed = true;
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-        server.closeIdleConnections();
-      });
-      await closeRuntime();
+      if (closing) return closing;
+      shutdownStarted = true;
+      service.beginShutdown();
+      operations.beginShutdown();
+      closing = (async () => {
+        const drainedHttp = stopHttp();
+        // Keep stores open if either owned worker or outstanding API handlers cannot drain.
+        // The same pending HTTP close is awaited again on an explicit shutdown retry.
+        await deployment?.residentWorker?.close();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            drainedHttp,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(
+                () =>
+                  reject(
+                    new UiError(
+                      "ui_shutdown_pending",
+                      "Outstanding requests have not finished; runtime stores remain open",
+                      409,
+                    ),
+                  ),
+                5000,
+              );
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        await closeRuntime();
+        closeCosmetics();
+        closed = true;
+      })();
+      try {
+        await closing;
+      } finally {
+        closing = null;
+      }
     },
   };
 }

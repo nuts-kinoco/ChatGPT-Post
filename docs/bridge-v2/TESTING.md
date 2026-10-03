@@ -16,6 +16,19 @@ node --version
 npm --version
 ```
 
+作業中 checkout が clean であることを確認してから、引継ぎの実際の40桁 SHAを指定する:
+
+```powershell
+git fetch origin FIXED_HEAD
+git switch --detach FIXED_HEAD
+git rev-parse HEAD
+```
+
+取得を拒否された場合は指定 PR branch を fetch して対象 SHA の存在を確認し、main や最新 tip を代用しない。
+既存変更があれば別の許可された作業コピーを使い、reset/clean/stashで隠して進めない。
+新しいcloneが必要なら `https://github.com/nuts-kinoco/ChatGPT-Post.git` のみにし、remote URLも確認する。
+WindowsのCLIは既存インストールを確認し、未検証のauthや更新のために勝手に再installしない。
+
 作業前に変更済みファイルがある場合、上書きせず報告する。今回は model CLI、login、鍵/permission
 作成、外部 task 購読、merge/deploy、課金経路切替を実行しない。必要なら別途具体的に確認する。
 
@@ -79,9 +92,9 @@ npm test -- tests/unit/github-transport.test.ts tests/unit/browser-delivery.test
 node dist/cli/main.js ui --profile demo
 ```
 
-[UI-TESTING.md](UI-TESTING.md) に沿って次を確認し、合成データだけの screenshot を残す。
+[UI-OPERATIONS-TESTING.md](UI-OPERATIONS-TESTING.md) と [UI-PRESENTATION.md](UI-PRESENTATION.md) に沿って次を確認し、合成データだけの screenshot を残す。
 
-1. Dock の情報密度、詳細画面、DPI 100/125/150/200%、複数 monitor、画面端での配置
+1. compact bar 440×46 / expanded frame 440×604、共通枠内の scroll、DPI 100/125/150/200%、複数 monitor、画面端での配置
 2. 合成タスク作成 → 承認 → 開始 → 成功/失敗/unknown → ACK
 3. 連打、開始中のキャンセル、戻る/進む、詳細閉鎖/再表示、接続断、server restart
 4. request ID、hash、結果 revision、受領済み表示が巻き戻らない
@@ -140,7 +153,7 @@ GitHub `issue` → recipient `tick` → exact hash 承認 → start → result r
 1. request JSON/MD の raw SHA-256 と固定 commit が一致し、別 host の claim が取れない
 2. receipt/start/result/ACK の UUID/hash/run/fence/payload が一致する
 3. transport retry で model start/Chat send が増えない
-4. requester が payload hash を受理する前は pending delivery のまま
+4. requester が exact payload/receipt/required artifacts を検証・耐久保存する前は pending delivery。signed manifest body / envelope / materialization proof / ACK が対応し、payload-only ACK では依存解除されない
 5. quota 読取失敗は unknown と別記され、結果再実行や result bytes の変更がない
 6. 通常 Chat は指定された同じ conversation に入り、hosted-response として戻る。別surfaceや
    APIに落とさない。認証ブロック・不明なら元の ID のまま止める
@@ -163,7 +176,7 @@ Claude を使う初回は、ユーザーが普段の許可された環境でこ�
 推奨分担は Codex が実装・修正、Claude が一度の独立監査と修正後の重点再検査。
 同じ大きな実装を両方へ何度も投げ直さず、commit と指摘 ID を固定する。
 
-## 8 ユーザーから返してほしい情報
+## 8 担当 LLM が返す情報（ユーザーは必要な本人操作のみ）
 
 - 対象 repository / exact HEAD / dirty tree の有無
 - OS build、Node/npm、Chrome/Electron、CLI version（version 確認自体の許可がある場合）
@@ -172,6 +185,8 @@ Claude を使う初回は、ユーザーが普段の許可された環境でこ�
 - 合成 request UUID、task/MD/result SHA-256、GitHub immutable commit、run/fence/receipt/ACK の対応
 - UI screenshot は合成データのみ。token fragment、私的会話、profile path 等を必要に応じて除去
 - native 試験は denied/allowed operation、actual binary hash、process creation identity、Job 全停止証拠
+- materialization receipt / signed manifest body と envelope の各 hash、required bytes の保存・readback結果
+- independent lanes、stop/drain、registry revision、archive root pin、selected source IDs の変化有無
 - 判断: pass / fail / blocked / not run を分け、次に必要な権限または不足コードを一文で
 
 送らない物: password、API/OAuth token、signing key、browser cookie/profile、個人 account 全ログ、
@@ -201,3 +216,65 @@ Claude を使う初回は、ユーザーが普段の許可された環境でこ�
 最終PRの合格には、通常ChatとCLIの **両方の実際の一往復** の一致する証拠が必要。portable/fake
 だけでは final_pr_acceptance を true にしない。ユーザー本人に手作業テストを丸投げせず、Codex/Claude
 担当が手順を実行・報告し、login/権限の承認など本人にしかできない地点だけ具体的に引き渡す。
+
+
+## 10 後続統合の受入表
+
+全体スクリプトに加え、固定 head に存在する以下を実行する。該当 file が無ければ「別枝未統合」と報告する。
+
+```sh
+npx vitest run tests/unit/resident-worker.test.ts tests/unit/task-runtime.test.ts tests/unit/github-transport.test.ts
+npx vitest run tests/unit/ui-resident-lifecycle.test.ts tests/unit/ui-operations*.test.ts tests/unit/ui-hosted*.test.ts
+npx vitest run tests/unit/delivery-materializer.test.ts tests/unit/materialization-store.test.ts tests/unit/hosted-source.test.ts tests/unit/ui-materialization-operations.test.ts
+npx vitest run tests/unit/ui-composer.test.ts tests/unit/ui-recipe-deadline.test.ts tests/unit/bus-issuer-cli.test.ts
+npx vitest run tests/unit/ui-quota-binding.test.ts tests/unit/quota-provider-review.test.ts
+npx vitest run tests/unit/ui-pro-counter*.test.ts tests/unit/ui-notification*.test.ts
+```
+
+| 検査 | 合格条件 / 必要証拠 |
+| --- | --- |
+| 読取りと起動の区別 | capabilities/help は deployment を開かない。catalogue/template は登録のみ読み、tick/モデル/worker start を起こさない |
+| LLM-first 発行 | trusted template から exact JSON/MD を生成して validator が通る。unknown model/provider/scope、古い preview、hash違いは拒否 |
+| 並行収集 | CLI/chat child IDsを分離。順不同/同時返答/片方auth block/timeoutでも健康なlaneの表示・結果収集が進む |
+| resident lifecycle | 未設定は無処理。同じlane tickは重ならず、watchdog timeout後も元のpromiseがsettleするまで所有権維持。close失敗時DBを保持 |
+| shutdown race | preflight待ちのstartをstopした後に新規intent/grant消費なし。既存intentは消去/再実行/終了推測しない |
+| 同じrecipientの複数project | repo/policy不一致laneはclaimを奪わず、正しいlaneが受け取れる |
+| 完全受領 | signature/actor/route/task/run/attempt/terminal/artifact set全一致。disk full、保存失敗、欠損、改ざん、古いpayload-only ACKでは不足状態を維持 |
+| archive / registry | 受付時pinとhistorical revisionが不変。root変更は次jobから。old messageをexact IDsで取得し、latest replyへすり替えない |
+| 出力契約 | 明示host text-only契約+正しいframe/declaration+矛盾なしのsource proofが揃う。DOM不在からゼロを推測しない。未知inventoryは停止 |
+| quota / Pro | Codex以外へCodex quotaを適用しない。manualはunknown。fallback有限。Proは観測済みとpossibleを分け、transport/ACK再試行で増えない |
+| UI / notifications | collapseでdraft/job継続。新結果で勝手に展開しない。OFFは通知停止。Email/Discord preference保存は送信せず未実装表示 |
+| 診断 | explicit exportだけがファイル作成。prompt/body/path/secret/raw error除外。確認後の共有は別判断 |
+
+ソース例の確認: USAGE.md の prepare-request.mjs を新規の一時作業用 checkout で検証し、
+local と hosted template の両方が validator を通ること、2回目は existing_request_keep_identity で停止することを確認する。
+これは認証・署名・送信を一切含まない。実登録を捏造せず、検査は fixture の template を使う。
+
+## 11 新しい担当 LLM への最短引継ぎ
+
+**共通（最初の一回）**
+
+> FIXED_HEAD の USAGE.md / TESTING.md を読み、capabilities と help を確認してください。まず offline 全検査とGUI検査を実行し、成果物を固定headへ対応付けてください。登録policy/model/authorityを推測しないでください。既存UUID/task hash/run/attemptを保持し、unknownを再実行しないでください。Result・receipt・required bytesのrequester保存前にACKを成功扱いしないでください。Codex task、実モデルCLI、Windows、login、credential/permission変更、merge、外部送信は具体的な別許可まで開始しないでください。未実装と未検証を分けて返してください。
+
+**Codex実装担当への差分**
+
+> 失敗を合成最小例で再現して修正し、影響範囲+全suiteを再検査してください。native未完成をfake capabilityや安全性の弱化で埋めないでください。変更commit、指摘ID、command/start/end/exit、pass/fail/skip/blockedとsanitizedログを返してください。
+
+**Claude独立監査への差分**
+
+> 実装者の完成主張を前提にせずdiffと境界を追い、P0–P2ごとにfile:line/条件/影響/再現を示してください。固定修正headで自分の回帰を再実行してください。別アカウントやモデル起動は許可を推測せず、監査未実施範囲を残してください。
+
+**返信生成側への短い導入**
+
+> hostから渡されたexact request/hash/attemptとoutput contractを守り、一つの完全なBEGIN/END frameを返してください。bootstrapやテンプレートのechoを結果にせず、必要artifact declarationはframe内に含めてください。成功、OS隔離、process終了、ACK、quotaを文章から捏造しないでください。
+
+新規 session、bootstrap 版変更、文脈喪失時に短く再確認する。継続を証明できない session を
+「前回読んだはず」で省略しない。現在の fresh-run launcher と初期注意事項の確認ACK（成果物受領ACKとは別）の補助実装の限界は
+[SESSION-BOOTSTRAP.md](SESSION-BOOTSTRAP.md) に従う。全規則を毎job無条件で長文再送する必要はない。
+
+## 12 最終PR判定
+
+同一固定headで実CLIと通常Chatの両方が request→claim/approval→実行/配送→result→
+requester byte保存→signed proof+ACK を完了し、各routeの許可されたnegative/recovery試験と
+独立reviewの証拠が揃うまで中間PRと呼ぶ。全portable緑、merge可能、UI表示だけでは最終判定しない。
+不足コード、必要権限、必要実機をそれぞれ明記する。環境の制約で実行できない項目をskipへ変更して隠さない。

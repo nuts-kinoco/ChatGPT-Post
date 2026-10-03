@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BridgeHost } from "../../src/adapters/bridge-host.js";
 import { GitHubFanout } from "../../src/adapters/fanout.js";
 import {
@@ -316,6 +316,81 @@ describe("signed GitHub roundtrip (fake network and executor)", () => {
       bytes,
     );
     expect(await fanout.collect(fanoutId)).toMatchObject({ total: 2, available: 1, pending: 1 });
+    expect(executor.starts).toBe(1);
+  });
+  it.each(["repo", "policy"])(
+    "a %s-mismatched lane does not steal a same-recipient claim",
+    async (mismatch) => {
+      const task = await issue();
+      const foreignStore = await openTaskStore(join(dir, "foreign-jobs.db"));
+      const foreignJournal = new TransportJournal(join(dir, "foreign-transport.db"));
+      try {
+        const policy = adapterPolicy(dir, new Date(clock));
+        if (mismatch === "repo") policy.repoId = "other-product";
+        else policy.policyHash = "d".repeat(64);
+        const foreignController = new TaskController(
+          foreignStore,
+          executor,
+          policy,
+          () => new Date(clock),
+        );
+        const foreignPump = new GitHubRecipientPump(
+          recipient,
+          foreignController,
+          foreignJournal,
+          () => clock,
+        );
+        expect((await foreignPump.tick()).received).toEqual([]);
+        expect([...git.files.keys()].some((path) => path.endsWith("/claim.json"))).toBe(false);
+        expect((await pump.tick()).received).toEqual([task.request_id]);
+        expect(foreignStore.get(task.request_id)).toBeNull();
+        expect(store.get(task.request_id)).not.toBeNull();
+      } finally {
+        foreignJournal.close();
+        foreignStore.close();
+      }
+    },
+  );
+  it("host shutdown before tick does no IO, and during preflight leaves the task approved", async () => {
+    const task = await issue();
+    await pump.tick();
+    const grant = await authority.approve(task.request_id);
+    controller.approve(task.request_id, grant);
+    const host = new BridgeHost(pump, authority, {
+      autoDispatch: true,
+      evaluateBoundedPolicy: false,
+      maxPerTick: 32,
+    });
+    const abort = new AbortController();
+    const pumpSpy = vi.spyOn(pump, "tick");
+    const before = new AbortController();
+    before.abort();
+    await host.tick(before.signal);
+    expect(pumpSpy).not.toHaveBeenCalled();
+    let release = () => {};
+    let entered = () => {};
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(executor, "checkCapabilities").mockImplementationOnce(async () => {
+      entered();
+      await gate;
+    });
+    const ticking = host.tick(abort.signal);
+    await ready;
+    await expect(host.tick()).rejects.toThrow("host_tick_in_progress");
+    abort.abort();
+    release();
+    expect((await ticking).blocked).toEqual([
+      { requestId: task.request_id, reason: "dispatch_stopped" },
+    ]);
+    expect(pumpSpy).toHaveBeenCalledTimes(1);
+    expect(executor.starts).toBe(0);
+    expect(store.get(task.request_id)?.intent).toBeNull();
+    await host.tick();
     expect(executor.starts).toBe(1);
   });
   it("host coordinator advances only approved jobs and safely reconciles subsequent ticks", async () => {

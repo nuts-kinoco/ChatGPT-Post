@@ -1,0 +1,67 @@
+{
+  "schema": "bridge-operations-verification-1",
+  "date": "2026-10-03",
+  "scope": "intermediate cumulative operations UI, API and configured lifecycle; no live completion claim",
+  "sourceLayers": {
+    "pr3": "a1ed5427379b37167db839bbc1d19d52e22afafd",
+    "acceptedPresentationPr4": "8492ebc1fb9ab1190bd5ecc8dcfa682fb4367196",
+    "archiveParent": "0f8549448230ff92d1a46fb8c883ad9578ae8646",
+    "quotaCheckpointManifest": "7c69e2cc0b1c888ec4543996c12c94e8a5a6bdf0ed5ea7f0a185f2e4930a54df",
+    "residentCheckpointManifest": "271955b520b4cbbc1df5499f2af9bd889ca3ce1ab738c93a5c37688c8d69a5a2"
+  },
+  "reviewedSourceOverlaySha256": "de1f98de75094a61fa961d785d9e3a1091ce2c9f464a33a08cd1e4bd1c3fc1e7",
+  "sourceAndHandbooksOverlaySha256": "28d37e7ba2a95fe7e89edc17d0a030ec9aad6d89b151a470a6b6a9682d0e76a7",
+  "root": {
+    "typecheck": 0,
+    "lint": 0,
+    "build": 0,
+    "test": 0,
+    "passed": 1551,
+    "failed": 0,
+    "skipped": 56,
+    "skipScope": "Inherited browser fixtures not executed; no access-denial bypass"
+  },
+  "gui": {
+    "typecheck": 0,
+    "lint": 0,
+    "build": 0,
+    "test": 0,
+    "passed": 60,
+    "failed": 0,
+    "skipped": 0
+  },
+  "independentReview": {
+    "verdict": "pass_for_reviewed_runnable_scope",
+    "extraIsolatedUiRaceAndShutdownCases": 4,
+    "coreWorkerReview": "passed including seven extra abort/drain/claim cases"
+  },
+  "missingImplementationGates": [
+    "Enforcing native OS supervisor",
+    "Windows authenticated IPC/ACL/reparse/durability providers"
+  ],
+  "profileRules": [
+    "Synthetic demo is explicit and isolated",
+    "Missing production adapter or authority fails closed",
+    "Payload ACK alone is not full artifact delivery",
+    "Unknown request/attempt is never automatically rerun"
+  ],
+  "stack": {
+    "parentMode": "single archive-parent commit; no merge commit",
+    "includesAcceptedPr4Content": true,
+    "antigravityPr5Included": false,
+    "guidance": "Inspect exact parent/head and cumulative contents; do not blindly merge sibling PRs twice"
+  },
+  "remoteVerification": "Recorded separately in the final PR body after publication; this file does not assert CI success",
+  "guides": [
+    "USAGE.md",
+    "TESTING.md",
+    "UI-OPERATIONS-USAGE.md",
+    "UI-OPERATIONS-TESTING.md"
+  ],
+  "notCoveredByThisVerification": [
+    "Rendered browser/native Electron behavior",
+    "Windows and DPI behavior",
+    "Live provider/model execution",
+    "Real GitHub to Claude Haiku round-trip"
+  ]
+}

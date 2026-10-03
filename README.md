@@ -15,9 +15,9 @@ The v2 task protocol, durable controller and fake-only tests are implemented in 
 - [Ordinary Chat / Work event-delivery research and verification limits](docs/bridge-v2/DELIVERY-ADDENDUM.md)
 - [Standalone synthetic UI mock](docs/bridge-v2/mock/bridge-v2-interface.html)
 
-## Bridge v2 product UI (PR2)
+## Bridge v2 product UI
 
-The existing Electron app now opens the approved 280×380 vertical dock and a separate task-detail window.
+The Electron app opens the accepted 440×46 resident bar and expands downward in the same renderer to a total 440×604 panel. Monitoring and results are primary; manual JSON/Markdown import is secondary.
 From the repository root run `npm run build` then `npm run ui`, or build/start the existing `gui/` package.
 The UI is backed by the durable task ledger and authenticated loopback API; accepted payloads are immutable.
 Production execution/approval remain disabled until trusted adapters are configured. `npm run ui:demo` explicitly
@@ -26,6 +26,19 @@ selects a separate persistent synthetic profile with no model/process/network ex
 - [UI usage guide](docs/bridge-v2/UI-USAGE.md)
 - [UI test procedure](docs/bridge-v2/UI-TESTING.md)
 - [UI verification and remaining checks](docs/bridge-v2/UI-VERIFICATION.md)
+
+## 常駐表示・テーマの追加
+
+起動時は小さなバーから明示的に展開します。入力を保持したまま畳む/隠す/トレイ復帰、最前面、非アクティブ時の非表示、共通ライト/ダーク、画面内完了通知OFFを追加しています。[使い方と検証](docs/bridge-v2/UI-PRESENTATION.md)。実行権限やタスクの意味は変えません。
+
+## Bridge v2 運用画面（中間実装）
+
+主な使い方は「LLM が Bridge CLI で依頼し、UI で進行・結果を確認」です。ローカル実行・通常チャット・fanout を区別し、登録先からの副次的な手動プレビュー、同じ正本を使う保存先設定、成果物検証・署名付き受領、観測した利用量と通知設定を追加しています。
+
+- [運用画面の使い方・配置設定](docs/bridge-v2/UI-OPERATIONS-USAGE.md)
+- [運用画面の試験・Windows 引継ぎ](docs/bridge-v2/UI-OPERATIONS-TESTING.md)
+
+クラウドの Node/API/疑似DOM 試験と、実機・実モデルの往復試験は別です。未設定の認証・native confinement・Windows ACL 等は fail-closed のままです。以下の既存ブラウザ経路の Live 実績は、Bridge v2 全経路の完了を意味しません。
 
 ## 現状
 

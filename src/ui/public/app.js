@@ -1,4 +1,20 @@
+import { mountArchive } from "./archive-view.js";
+import { mountComposer } from "./composer-view.js";
+import { mountNotificationPreferences } from "./notification-view.js";
+import { mountOperations } from "./operations-view.js";
+import { mountPresentation } from "./presentation.js";
+import { mountProCounter } from "./pro-counter-view.js";
+
 /* No task state is generated here. Every accepted status and receipt comes from the local API. */
+const AGENT_LABELS = {
+  claude: "Claude Code",
+  codex: "Codex",
+  antigravity: "Antigravity",
+  chatgpt: "ChatGPT",
+};
+export function agentLabel(id) {
+  return Object.hasOwn(AGENT_LABELS, id) ? AGENT_LABELS[id] : id;
+}
 const TOKEN_KEY = "bridge-v2-ui-token";
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 export const STATUS = {
@@ -65,7 +81,7 @@ export function createApiClient(token, fetcher = fetch) {
         "token_missing",
         "認証情報がありません。サーバーが表示した起動URLから開き直してください",
       );
-    if (!/^\/api\/[a-z0-9/-]+$/i.test(path))
+    if (!/^\/api\/[a-z0-9/_-]+$/i.test(path))
       throw new ApiError("invalid_path", "操作先を確認できません");
     const mutation = body !== undefined;
     const controller = new AbortController();
@@ -152,7 +168,6 @@ export function chooseSnapshot(current, incoming, selectedId) {
     current.result.status === incoming.result.status &&
     TERMINAL.has(incoming.result.status) &&
     current.handshakes?.result_ack &&
-    current.delivery?.acknowledged &&
     priorTerminal &&
     nextTerminal &&
     ["eventId", "payloadSha256", "sequence", "requestId", "taskSpecHash", "runId"].every(
@@ -163,8 +178,28 @@ export function chooseSnapshot(current, incoming, selectedId) {
     return {
       ...incoming,
       summary: chooseSummary(current.summary, incoming.summary),
-      handshakes: { ...incoming.handshakes, result_ack: current.handshakes.result_ack },
-      delivery: current.delivery,
+      handshakes: {
+        ...incoming.handshakes,
+        result_ack: incoming.delivery?.acknowledged
+          ? (incoming.handshakes.result_ack ?? current.handshakes.result_ack)
+          : current.handshakes.result_ack,
+      },
+      delivery: current.delivery?.acknowledged
+        ? current.delivery
+        : incoming.delivery?.acknowledged
+          ? incoming.delivery
+          : {
+              ...incoming.delivery,
+              acknowledged: false,
+              payloadAckObserved: true,
+              ...(current.delivery?.materialization === "verified" &&
+              current.delivery.materializationSha256
+                ? {
+                    materialization: "verified",
+                    materializationSha256: current.delivery.materializationSha256,
+                  }
+                : {}),
+            },
     };
   }
   return incoming;
@@ -198,6 +233,12 @@ export function capabilityFor(bootstrap, task, name) {
 
 function capabilityText(raw) {
   const translated = {
+    "Immutable historical project registration is missing or cannot be verified; this job is inspection-only for new execution":
+      "この依頼の保存済みプロジェクト登録を確認できません。新しい承認・開始・受領操作は無効です",
+    "Runtime shutdown has begun; new approval is disabled":
+      "終了処理中のため、新しい承認はできません",
+    "Runtime shutdown has begun; new dispatch is disabled":
+      "終了処理中のため、新しい実行はできません",
     "Production execution and approval authority are unconfigured; validation and inspection remain available":
       "実行アダプターと承認機関が未構成です。検証と記録の確認は利用できます",
     "This task belongs to another configured runtime session; read-only inspection is available":
@@ -209,6 +250,10 @@ function capabilityText(raw) {
       "開始記録は使用済みです。同じ依頼IDで記録を照合してください",
     "Terminal result is immutable": "終了した依頼の結果は変更できません",
     "No dispatch intent exists to reconcile": "まだ開始記録がないため、実行の照合は不要です",
+    "Requester-side materialization adapter is not configured":
+      "必要成果物を実体化・検証する依頼側アダプターが未構成です",
+    "Requester materialization of verified result, receipt and required artifact bytes is required":
+      "結果・終了証跡・必要成果物を依頼側で実体化して検証する必要があります",
     "A persisted terminal event and its exact payload hash are required":
       "終了結果の記録と、その内容に一致するハッシュが必要です",
     "Explicit detached approval for the inspected hashes":
@@ -258,10 +303,17 @@ function boot() {
   }
   const token = consumeToken(window.location, window.history, storage);
   const api = createApiClient(token);
+  const presentation = mountPresentation({
+    api,
+    document,
+    window,
+    statusLabel: (status) => STATUS[status]?.[0] || "未確認",
+  });
   const params = new URLSearchParams(window.location.search);
   const compact = params.get("view") === "dock";
   document.body.classList.toggle("compact", compact);
   const $ = (id) => document.getElementById(id);
+  let operations = null;
   const state = {
     bootstrap: null,
     task: null,
@@ -275,7 +327,7 @@ function boot() {
     refreshing: false,
     tab: ["approval", "payload", "evidence", "recovery"].includes(params.get("tab"))
       ? params.get("tab")
-      : "approval",
+      : "evidence",
     draft: { rawSpec: "", taskMarkdown: "", revision: 0, validatedRevision: -1, validation: null },
   };
   const text = (id, value) => {
@@ -319,13 +371,13 @@ function boot() {
     capabilityText(capabilityFor(state.bootstrap, task ? state.task : null, name).reason);
   const setButton = (id, action, reasonId) => {
     $(id).disabled =
-      !state.task || !can(action) || (action === "ack" && !!state.task.handshakes.result_ack);
+      !state.task || !can(action) || (action === "ack" && !!state.task.delivery.acknowledged);
     $(id).title =
       blockedReason(action) || capabilityFor(state.bootstrap, state.task, action).reason;
     if (reasonId)
       text(
         reasonId,
-        action === "ack" && state.task?.handshakes.result_ack
+        action === "ack" && state.task?.delivery.acknowledged
           ? "この結果は受領済みです"
           : reason(action),
       );
@@ -446,6 +498,14 @@ function boot() {
     $("capabilities").replaceChildren(...items);
   }
   function render() {
+    if ($("local-operations-context").dataset.requestId !== state.selectedId) {
+      $("local-operations-context").replaceChildren();
+      $("local-operations-context").textContent =
+        "この依頼の追加記録はまだ読み込んでいません。一覧からこの依頼を選ぶと確認できます";
+      $("local-operations-context").dataset.requestId = state.selectedId;
+    }
+    if (!operations || operations.isLocalSelected()) presentation.renderTask(state.task);
+    presentation.observeTasks(state.bootstrap?.tasks || []);
     const bootstrap = state.bootstrap,
       task = state.task;
     text("connection", state.connected ? (isBusy() ? "処理中" : "ローカル接続中") : "接続未確認");
@@ -480,6 +540,7 @@ function boot() {
     $("task-main").setAttribute("aria-busy", String(isBusy() || state.refreshing));
     $("empty-task").hidden = !!task;
     $("task-detail").hidden = !task;
+    $("task-actions").hidden = !task;
     $("empty-import").hidden = !bootstrap || !!bootstrap.tasks.length;
     if (!task) {
       text(
@@ -489,13 +550,13 @@ function boot() {
       text(
         "empty-description",
         bootstrap
-          ? "JSON と Markdown を取り込み、依頼の許可範囲・受け渡し・結果をひとつの画面で確認します。取り込みだけでは開始しません"
+          ? "LLMがBridge CLIから作った依頼が、保存後ここに表示されます。普段は進行と結果を確認し、必要なときだけ承認や設定を開きます。手動取り込みも利用できます"
           : "サーバーが表示した起動URLから開いてください。接続後、保存された記録を表示します",
       );
       text("dock-title", state.selectedId ? "依頼を確認中" : "依頼を選んでください");
       text("dock-status", "未確認");
       $("dock-status").className = "badge";
-      text("dock-reason", blockedReason() || "依頼を取り込むと、保存された状態を表示します");
+      text("dock-reason", blockedReason() || "LLMから届いた依頼の保存記録を表示します");
       text("dock-destination", isDemo() ? "デモ専用 · synthetic" : "ローカル記録");
       text("dock-mode", "");
       text("dock-time", "");
@@ -551,7 +612,7 @@ function boot() {
     text("receipt-expiry", envelope ? time(envelope.expires_at) : "未発行");
     text("scope-description", `${spec.mode} · タスクネットワーク ${spec.task_network}`);
     text("policy-repo", spec.repo);
-    text("policy-agent", `${spec.agent} / ${spec.requested_model}`);
+    text("policy-agent", `${agentLabel(spec.agent)} / ${spec.requested_model}`);
     text(
       "policy-paths",
       spec.allowed_paths.length
@@ -593,7 +654,7 @@ function boot() {
       "delivery-status",
       task.handshakes.receipt_ack ? "受信ACKを記録済み" : "受信ACKの記録なし",
     );
-    text("payload-agent", `依頼先 ${spec.agent} / ${spec.requested_model}`);
+    text("payload-agent", `依頼先 ${agentLabel(spec.agent)} / ${spec.requested_model}`);
     text("file-md", spec.task_file);
     text("task-md", task.taskMarkdown);
     text("task-json", task.rawSpec);
@@ -608,10 +669,16 @@ function boot() {
       ["result_ack", "hs-ack"],
     ]) {
       const handshake = task.handshakes[key];
-      $(id).classList.toggle("confirmed", !!handshake);
-      $(id).querySelector("small").textContent = handshake
-        ? `観測 #${handshake.sequence}`
-        : "未記録";
+      $(id).classList.toggle(
+        "confirmed",
+        !!handshake && (key !== "result_ack" || task.delivery.acknowledged),
+      );
+      $(id).querySelector("small").textContent =
+        key === "result_ack" && handshake && !task.delivery.acknowledged
+          ? "本文ACKのみ・成果物受領は未確認"
+          : handshake
+            ? `観測 #${handshake.sequence}`
+            : "未記録";
     }
     text(
       "evidence-execution",
@@ -629,17 +696,19 @@ function boot() {
     text("evidence-seq", `観測 #${result.observation_seq}`);
     text(
       "result-ack",
-      task.handshakes.result_ack
+      task.delivery.acknowledged
         ? "受領済み"
-        : task.handshakes.terminal_result
-          ? "未受領"
-          : "結果待ち",
+        : task.handshakes.result_ack
+          ? "本文ACKのみ・成果物受領は未確認"
+          : task.handshakes.terminal_result
+            ? "未受領"
+            : "結果待ち",
     );
     text("result-time", result.finished_at ? time(result.finished_at) : "終了時刻は未取得");
     text("evidence-run", result.run_id || "未発行");
     text(
       "evidence-identity",
-      `${result.actual_agent || "agent 未取得"} / ${result.actual_model || "model 未取得"}`,
+      `${agentLabel(result.actual_agent) || "agent 未取得"} / ${result.actual_model || "model 未取得"}`,
     );
     text(
       "evidence-receipt",
@@ -674,7 +743,10 @@ function boot() {
     text("recovery-fence", `${result.fencing_token} · 観測 #${result.observation_seq}`);
     text("dock-title", summary.title);
     text("dock-time", shortTime(result.observed_at));
-    text("dock-destination", result.synthetic ? `デモ · ${spec.agent}` : spec.agent);
+    text(
+      "dock-destination",
+      result.synthetic ? `デモ · ${agentLabel(spec.agent)}` : agentLabel(spec.agent),
+    );
     text(
       "dock-mode",
       { manual: "依頼ごとに確認", automatic: "受付時に条件判定", bypass: "事前許可に照合" }[
@@ -703,7 +775,7 @@ function boot() {
     );
     text(
       "dock-result-detail",
-      `${task.handshakes.result_ack ? "結果受領済み" : result.outcome_known ? "結果確認待ち" : "結果未確定"} · 観測 #${result.observation_seq}`,
+      `${task.delivery.acknowledged ? "成果物受領済み" : task.handshakes.result_ack ? "本文ACKのみ" : result.outcome_known ? "結果確認待ち" : "結果未確定"} · 観測 #${result.observation_seq}`,
     );
     text(
       "dock-footer",
@@ -735,11 +807,14 @@ function boot() {
   async function refresh(manual = false) {
     if (isBusy() || state.refreshing) return;
     const epoch = ++state.readEpoch,
-      selectedEpoch = state.selectionEpoch;
+      selectedEpoch = state.selectionEpoch,
+      presentationReadGeneration = presentation.observationGeneration();
     state.refreshing = true;
     renderControls();
     try {
-      const bootstrap = await api("/api/bootstrap");
+      const bootstrap = await api(
+        `/api/bootstrap/page${state.selectedId ? `/${state.selectedId}` : ""}`,
+      );
       if (epoch !== state.readEpoch) return;
       assertProfile(bootstrap);
       const priorSummaries = new Map(
@@ -749,6 +824,12 @@ function boot() {
         chooseSummary(priorSummaries.get(task.requestId), task),
       );
       state.bootstrap = bootstrap;
+      presentation.observeTasks(
+        bootstrap.tasks,
+        true,
+        presentationReadGeneration,
+        bootstrap.observedAt,
+      );
       state.connected = true;
       const selectedId = state.selectedId;
       if (selectedEpoch === state.selectionEpoch) {
@@ -908,12 +989,72 @@ function boot() {
       event.target.value = "";
     }
   }
-  $("refresh").addEventListener("click", () => refresh(true));
-  $("task-select").addEventListener("change", (event) => selectTask(event.target.value));
+  const notificationView = mountNotificationPreferences({
+    api,
+    document,
+    onClose: () => presentation.closeDialog("notification-dialog"),
+  });
+  $("open-notifications").addEventListener("click", () => {
+    if (!$("notification-dialog").open) $("notification-dialog").showModal();
+    void notificationView.open();
+  });
+  $("close-notification-dialog").addEventListener("click", () =>
+    presentation.closeDialog("notification-dialog"),
+  );
+  const proCounterView = mountProCounter({
+    api,
+    document,
+    onClose: () => presentation.closeDialog("pro-counter-dialog"),
+  });
+  $("open-pro-counter").addEventListener("click", () => {
+    if (!$("pro-counter-dialog").open) $("pro-counter-dialog").showModal();
+    void proCounterView.open();
+  });
+  $("close-pro-dialog").addEventListener("click", () =>
+    presentation.closeDialog("pro-counter-dialog"),
+  );
+  mountComposer({ api, document, presentation });
+  mountArchive({
+    api,
+    document,
+    presentation,
+    currentBinding: () =>
+      operations && !operations.isLocalSelected()
+        ? operations.currentBinding()
+        : state.task
+          ? {
+              kind: "local_execution",
+              requestId: state.task.summary.requestId,
+              taskSpecHash: state.task.result.task_spec_hash,
+              taskFileHash: state.task.result.task_file_hash,
+              sequence: state.task.result.observation_seq,
+            }
+          : null,
+  });
+  operations = mountOperations({
+    api,
+    document,
+    onLocal: selectTask,
+    selectedLocalId: () => state.selectedId,
+    agentLabel,
+    onOperation: presentation.renderOperation,
+    observationGeneration: presentation.observationGeneration,
+    onHostedObserved: presentation.observeHosted,
+    onImport: () => openDraft(),
+    onDemo: () => $("new-demo").click(),
+    isDemo,
+  });
+  $("refresh").addEventListener("click", () => {
+    void refresh(true);
+    void operations.refresh(true);
+  });
+  $("task-select").addEventListener("change", (event) =>
+    operations ? operations.selectLocal(event.target.value) : selectTask(event.target.value),
+  );
   $("new-task").addEventListener("click", () => openDraft());
   $("empty-import").addEventListener("click", () => openDraft());
   $("copy-draft").addEventListener("click", () => openDraft(true));
-  $("close-draft").addEventListener("click", () => $("draft-dialog").close());
+  $("close-draft").addEventListener("click", () => presentation.closeDialog("draft-dialog"));
   $("draft-dialog").addEventListener("cancel", (event) => {
     if (isBusy()) event.preventDefault();
   });
@@ -999,7 +1140,7 @@ function boot() {
         select: true,
         message: "依頼を取り込みました。実行はまだ開始していません",
         success: () => {
-          $("draft-dialog").close();
+          presentation.closeDialog("draft-dialog");
           state.draft = {
             rawSpec: "",
             taskMarkdown: "",
@@ -1065,11 +1206,11 @@ function boot() {
       $("task-md").hidden = button.dataset.file !== "md";
       $("task-json").hidden = button.dataset.file !== "json";
     });
-  $("show-diagnostics").addEventListener("click", () => {
-    $("diagnostics").open = true;
-    $("diagnostics").scrollIntoView({ block: "start" });
-    $("diagnostics").querySelector("summary").focus();
-  });
+  for (const id of ["show-diagnostics", "open-diagnostics"])
+    $(id).addEventListener("click", () => {
+      if (!$("diagnostics").open) $("diagnostics").showModal();
+    });
+  $("close-diagnostics").addEventListener("click", () => $("diagnostics").close());
   render();
   void refresh();
   // Read-only observations, never a mutation retry. Explicit refresh clears an uncertain POST.

@@ -1,3 +1,4 @@
+import type { QuotaFallback, QuotaObservation } from "./task-preflight.js";
 /** Host-side management RPC port; never ask an LLM to run /status and never infer quota
  * from token/context counters. No live provider implementation is registered in this PR. */
 export interface RateLimitWindow {
@@ -12,9 +13,27 @@ export interface AccountRateLimits {
   limits: { limitId: string; primary: RateLimitWindow | null; secondary: RateLimitWindow | null }[];
 }
 export interface AccountQuotaPort {
+  /** Codex-only management protocol; never infer identity from executor/model names. */
+  readonly providerId: "codex";
   readRateLimits(): Promise<AccountRateLimits>;
 }
+export interface TaskQuotaGuard {
+  readonly providerId?: "codex" | null;
+  observation: QuotaObservation;
+  fallback: QuotaFallback | null;
+  strictMoneyBudget: boolean;
+}
+export interface BoundQuotaSnapshot {
+  version: "bridge-quota-snapshot-1";
+  providerId: "codex" | null;
+  observation: QuotaObservation;
+  fallback: QuotaFallback | null;
+  strictMoneyBudget: boolean;
+}
 export interface TaskQuotaSnapshot {
+  /** Missing historical identity stays unknown, never inferred retrospectively. */
+  providerId?: "codex" | null;
+  requestedAgent?: string;
   requestId: string;
   phase: "pre_dispatch" | "post_result_ack";
   requestStartedAt: string;

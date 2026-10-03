@@ -103,9 +103,10 @@ describe("archive integration: explicit local actions, synthetic execution only"
       x.source.close();
     }
   });
-  it("explicit authenticated archive and export endpoints preserve task identity", async () => {
+  it("keeps legacy inspection explicit and denies the old settings and collection writers", async () => {
     const x = await setup();
     const view = await terminal(x.service);
+    await x.service.archiveResult(view.task.result.request_id);
     const server = await startUiServer({
       stateDir: x.state,
       profile: "demo",
@@ -117,36 +118,33 @@ describe("archive integration: explicit local actions, synthetic execution only"
         Authorization: `Bearer ${server.token}`,
         "Content-Type": "application/json",
       };
-      const denied = await fetch(`${server.origin}/api/archive/settings`);
-      expect(denied.status).toBe(401);
-      const archived = await fetch(`${server.origin}/api/tasks/${id}/archive`, {
-        method: "POST",
-        headers,
-        body: "{}",
-      });
-      expect(archived.status).toBe(200);
-      expect(((await archived.json()) as { state: string }).state).toBe("complete");
-      const inspection = await fetch(`${server.origin}/api/tasks/${id}/archive`, { headers });
+      expect((await fetch(`${server.origin}/api/legacy/archive/${id}`)).status).toBe(401);
+      const inspection = await fetch(`${server.origin}/api/legacy/archive/${id}`, { headers });
       expect(inspection.status).toBe(200);
-      const exported = await fetch(`${server.origin}/api/tasks/${id}/diagnostic-export`, {
-        method: "POST",
+      expect(((await inspection.json()) as { state: string }).state).toBe("complete");
+      for (const path of [
+        "/api/archive/settings",
+        `/api/tasks/${id}/archive`,
+        `/api/tasks/${id}/diagnostic-export`,
+      ]) {
+        expect(
+          (await fetch(`${server.origin}${path}`, { headers, method: "POST", body: "{}" })).status,
+        ).toBe(404);
+      }
+      expect((await fetch(`${server.origin}/api/archive/settings`, { headers })).status).toBe(404);
+      // The legacy registry is not accidentally selected by the canonical endpoint.
+      const current = await fetch(`${server.origin}/api/settings/projects`, { headers });
+      expect(((await current.json()) as { settings: { state: string } }).settings.state).toBe(
+        "unavailable",
+      );
+      const probe = await fetch(`${server.origin}/api/archive/probe`, {
         headers,
-        body: "{}",
-      });
-      expect(exported.status).toBe(200);
-      const text = await exported.text();
-      expect(text).not.toContain("PRIVATE user prompt");
-      const bad = await fetch(`${server.origin}/api/archive/settings`, {
         method: "POST",
-        headers,
-        body: JSON.stringify({
-          expectedRevision: 1,
-          defaultOutputRoot: x.output,
-          unknown: "must reject",
-        }),
+        body: JSON.stringify({ root: x.output }),
       });
-      expect(bad.status).toBe(400);
+      expect(probe.status).toBe(409);
       expect(x.executor.starts).toBe(1);
+      expect(x.archive.settings().revision).toBe(1);
     } finally {
       await server.close();
       x.archive.close();

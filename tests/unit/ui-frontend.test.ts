@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { demoTask } from "../../src/ui/demo.js";
+import { buildUiOperationsSources } from "../../src/ui/deployment-operations.js";
+import { UiOperationsService } from "../../src/ui/operations.js";
 import {
   actionBinding,
   chooseSnapshot,
@@ -19,6 +21,30 @@ import { openUiService, type TaskUiService } from "../../src/ui/service.js";
 
 const html = readFileSync(new URL("../../src/ui/public/index.html", import.meta.url), "utf8");
 const script = readFileSync(new URL("../../src/ui/public/app.js", import.meta.url), "utf8");
+const presentationScript = readFileSync(
+  new URL("../../src/ui/public/presentation.js", import.meta.url),
+  "utf8",
+);
+const notificationScript = readFileSync(
+  new URL("../../src/ui/public/notification-view.js", import.meta.url),
+  "utf8",
+);
+const counterScript = readFileSync(
+  new URL("../../src/ui/public/pro-counter-view.js", import.meta.url),
+  "utf8",
+);
+const archiveScript = readFileSync(
+  new URL("../../src/ui/public/archive-view.js", import.meta.url),
+  "utf8",
+);
+const composerScript = readFileSync(
+  new URL("../../src/ui/public/composer-view.js", import.meta.url),
+  "utf8",
+);
+const operationsScript = readFileSync(
+  new URL("../../src/ui/public/operations-view.js", import.meta.url),
+  "utf8",
+);
 const css = readFileSync(new URL("../../src/ui/public/styles.css", import.meta.url), "utf8");
 type Listener = (event: Record<string, unknown>) => unknown;
 class Element {
@@ -62,7 +88,10 @@ class Element {
     list.push(listener);
     this.listeners.set(type, list);
   }
-  focus() {}
+  focused = false;
+  focus() {
+    this.focused = true;
+  }
   scrollIntoView() {}
   showModal() {
     this.open = true;
@@ -86,6 +115,7 @@ function dom() {
       element.attributes[key] = value;
       if (key === "id") {
         element.id = value;
+        if (byId.has(value)) throw new Error(`Duplicate HTML id ${value}`);
         byId.set(value, element);
       }
       if (key === "class") element.className = value;
@@ -96,6 +126,7 @@ function dom() {
   const document = {
     hidden: false,
     body: new Element(),
+    documentElement: new Element(),
     createElement: () => new Element(),
     getElementById: (id: string) => {
       const element = byId.get(id);
@@ -103,9 +134,14 @@ function dom() {
       return element;
     },
     querySelectorAll: (selector: string) =>
-      selector.startsWith("[data-")
-        ? nodes.filter((node) => node.dataset[selector.slice(6, -1)] !== undefined)
-        : nodes.filter((node) => node.className.split(" ").includes(selector.slice(1))),
+      selector === "dialog[open]"
+        ? nodes.filter(
+            (node) =>
+              ["draft-dialog", "presentation-dialog", "diagnostics"].includes(node.id) && node.open,
+          )
+        : selector.startsWith("[data-")
+          ? nodes.filter((node) => node.dataset[selector.slice(6, -1)] !== undefined)
+          : nodes.filter((node) => node.className.split(" ").includes(selector.slice(1))),
   };
   return { document, node: document.getElementById, nodes };
 }
@@ -139,18 +175,52 @@ async function harness(
     search?: string;
     hook?: (path: string, method: string) => Promise<void>;
     after?: (path: string, result: unknown) => Promise<void>;
+    extra?: (path: string, body: Record<string, unknown>) => Promise<unknown> | unknown;
   } = {},
 ) {
   const view = dom(),
     calls: { path: string; method: string; body: Record<string, unknown> }[] = [];
+  let preferences = {
+    version: "bridge-presentation-1",
+    revision: 1,
+    values: {
+      theme: "light",
+      alwaysOnTop: false,
+      hideWhenInactive: false,
+      minimizeToTray: false,
+      completionNotifications: true,
+    },
+  };
+  const intervals: (() => void)[] = [];
+  const operations = new UiOperationsService(buildUiOperationsSources(service));
   const fetcher = async (path: string, init: RequestInit) => {
     const method = init.method || "GET",
       body = JSON.parse((init.body as string) || "{}");
     calls.push({ path, method, body });
     await options.hook?.(path, method);
     try {
-      let result: unknown;
-      if (path === "/api/bootstrap") result = service.bootstrap();
+      let result: unknown = await options.extra?.(path, body);
+      if (result !== undefined) {
+      } else if (path === "/api/setup")
+        result = { ...service.metadata(), setup: await operations.setup() };
+      else if (["/api/operations/query", "/api/operations"].includes(path))
+        result = { ...service.metadata(), operations: await operations.overview(body) };
+      else if (path === "/api/presentation") {
+        if (method === "POST") {
+          if (body.expectedRevision !== preferences.revision) throw new Error("stale_presentation");
+          preferences = {
+            ...preferences,
+            revision: preferences.revision + 1,
+            values: { ...preferences.values, ...body.patch },
+          };
+        }
+        result = {
+          ...service.metadata(),
+          presentation: preferences,
+          nativeControls: { available: false },
+        };
+      } else if (path.startsWith("/api/bootstrap/page"))
+        result = service.bootstrapPage(path.split("/")[4] ?? "");
       else if (path === "/api/demo/tasks") result = service.createDemo(body);
       else if (path === "/api/validate") result = service.validate(body);
       else if (path === "/api/tasks") result = service.import(body);
@@ -177,6 +247,7 @@ async function harness(
     }
   };
   const values = new Map<string, string>();
+  const themeValues = new Map<string, string>();
   const location = {
     hash: "#token=test-local-capability",
     pathname: "/",
@@ -189,35 +260,55 @@ async function harness(
       location.hash = "";
     }),
   };
-  runInNewContext(script.replace(/\bexport /g, ""), {
-    window: {
-      location,
-      history,
-      sessionStorage: {
-        getItem: (key: string) => values.get(key),
-        setItem: (key: string, value: string) => values.set(key, value),
+  runInNewContext(
+    `${presentationScript}\n${operationsScript}\n${composerScript}\n${archiveScript}\n${counterScript}\n${notificationScript}\n${script.replace(/^import .*?;$/gm, "")}`.replace(
+      /\bexport /g,
+      "",
+    ),
+    {
+      window: {
+        location,
+        history,
+        sessionStorage: {
+          getItem: (key: string) => values.get(key),
+          setItem: (key: string, value: string) => values.set(key, value),
+        },
+        localStorage: {
+          getItem: (key: string) => themeValues.get(key),
+          setItem: (key: string, value: string) => {
+            themeValues.set(key, value);
+          },
+        },
+        confirm: () => true,
       },
-      confirm: () => true,
+      document: view.document,
+      fetch: fetcher,
+      crypto: webcrypto,
+      URL,
+      URLSearchParams,
+      TextEncoder,
+      TextDecoder,
+      AbortController,
+      setTimeout,
+      clearTimeout,
+      setInterval: (callback: () => void) => {
+        intervals.push(callback);
+        return intervals.length;
+      },
+      console,
     },
-    document: view.document,
-    fetch: fetcher,
-    crypto: webcrypto,
-    URL,
-    URLSearchParams,
-    TextEncoder,
-    TextDecoder,
-    AbortController,
-    setTimeout,
-    clearTimeout,
-    setInterval: () => 1,
-    console,
-  });
+  );
   await settle();
   return {
     ...view,
     calls,
     location,
     history,
+    themeValues,
+    poll: async () => {
+      for (const callback of intervals) callback();
+      await settle();
+    },
     click: async (id: string) => {
       await view.node(id).emit("click");
       await settle();
@@ -226,6 +317,286 @@ async function harness(
 }
 
 describe("API-driven product frontend", () => {
+  it("has unique IDs across every same-frame page and dialog", () => {
+    const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+  it("starts collapsed and preserves unsent input through expand/collapse", async () => {
+    const runtime = await service("demo"),
+      app = await harness(runtime);
+    expect(app.document.body.className).toContain("resident-view");
+    await app.click("resident-expand");
+    expect(app.document.body.className).not.toContain("resident-view");
+    expect(app.node("show-presentation").focused).toBe(true);
+    await app.click("new-task");
+    app.node("draft-md").value = "unsent private draft";
+    await app.node("draft-md").emit("input");
+    await app.click("close-draft");
+    await app.click("collapse-product");
+    expect(app.node("resident-expand").focused).toBe(true);
+    expect(app.document.body.className).toContain("resident-view");
+    await app.click("resident-expand");
+    await app.click("new-task");
+    expect(app.node("draft-md").value).toBe("unsent private draft");
+    expect(app.calls.filter((call) => call.method === "POST")).toHaveLength(0);
+  });
+  it("persists only a theme cache in the browser and saves all preferences through the API", async () => {
+    const runtime = await service("demo"),
+      app = await harness(runtime);
+    await app.click("resident-settings");
+    await app.click("theme-dark");
+    expect(app.document.documentElement.attributes["data-theme"]).toBe("dark");
+    expect([...app.themeValues.entries()]).toEqual([["bridge.product.theme", "dark"]]);
+    expect(
+      app.calls.find((call) => call.path === "/api/presentation" && call.method === "POST")?.body,
+    ).toEqual({ expectedRevision: 1, patch: { theme: "dark" } });
+    expect(app.node("pref-alwaysOnTop").disabled).toBe(true);
+    expect(app.node("pref-hideWhenInactive").disabled).toBe(true);
+    await app.click("pref-completionNotifications");
+    expect(app.node("pref-completionNotifications").attributes["aria-checked"]).toBe("false");
+  });
+  it("keeps option A geometry for all pages and suspends an open draft through collapse", async () => {
+    const core = await service("demo"),
+      app = await harness(core);
+    await app.click("resident-expand");
+    await app.click("new-task");
+    app.node("draft-spec").value = "unsent exact draft";
+    expect(app.node("draft-dialog").open).toBe(true);
+    await app.click("collapse-draft-dialog");
+    expect(app.document.body.className).toContain("resident-view");
+    expect(app.node("draft-dialog").open).toBe(false);
+    await app.click("resident-expand");
+    expect(app.node("draft-dialog").open).toBe(true);
+    expect(app.node("draft-spec").value).toBe("unsent exact draft");
+    expect(css).toContain("--product-width: min(440px, 100vw)");
+    expect(css).toContain("--product-height: min(604px, 100dvh)");
+    expect(css).toMatch(/\.option-a \.shell,\s*\.option-a \.dialog/);
+    expect(app.node("tab-evidence").attributes["aria-selected"]).toBe("true");
+  });
+
+  it("keeps manual composer secondary and unavailable recipes fail closed", async () => {
+    const core = await service("demo"),
+      app = await harness(core);
+    expect(app.document.body.className).toContain("operations-home");
+    expect(app.node("composer-dialog").open).toBe(false);
+    await app.click("open-composer");
+    expect(app.node("composer-dialog").open).toBe(true);
+    expect(app.node("composer-preview").disabled).toBe(true);
+    expect(app.node("composer-issue").disabled).toBe(true);
+    expect(app.node("composer-message").textContent).toContain("信頼済みテンプレート");
+    expect(app.calls.filter((call) => call.path === "/api/composer/issue")).toHaveLength(0);
+  });
+  it("manual edits invalidate exact previews and explicit issue sends only the fixed preview binding", async () => {
+    const core = await service("demo");
+    const task = demoTask({});
+    const id = JSON.parse(task.rawSpec).request_id;
+    const preview = {
+      previewId: "synthetic-preview",
+      children: [
+        {
+          destinationId: "synthetic",
+          requestId: id,
+          rawSpec: task.rawSpec,
+          taskMarkdown: task.taskMarkdown,
+          taskSpecHash: "a".repeat(64),
+          taskFileHash: "b".repeat(64),
+        },
+      ],
+    };
+    const app = await harness(core, {
+      extra: (path) =>
+        path === "/api/setup"
+          ? {
+              ...core.metadata(),
+              setup: {
+                registry: {
+                  state: "available",
+                  value: {
+                    revision: 1,
+                    projects: [
+                      { projectId: "project", repoId: "synthetic-demo", displayName: "Synthetic" },
+                    ],
+                  },
+                },
+                destinations: {
+                  state: "available",
+                  value: [
+                    {
+                      destinationId: "synthetic",
+                      route: "cli",
+                      modelIds: ["synthetic-model"],
+                      unavailableReason: null,
+                    },
+                  ],
+                },
+                quotas: { state: "available", value: [] },
+              },
+            }
+          : path === "/api/composer"
+            ? { ...core.metadata(), capability: { enabled: true } }
+            : path === "/api/composer/preview"
+              ? { ...core.metadata(), preview, previewSha256: "c".repeat(64) }
+              : path === "/api/composer/issue"
+                ? { ...core.metadata(), issued: { commit: "d".repeat(40), requestIds: [id] } }
+                : undefined,
+    });
+    await app.click("open-composer");
+    app.node("composer-project").value = "project";
+    app.node("composer-title").value = "Synthetic title";
+    app.node("composer-instruction").value = "Synthetic only";
+    const target = app.node("composer-targets").children[0];
+    if (!target) throw new Error("Expected target controls");
+    target.children[0]!.value = "synthetic";
+    await target.children[0]!.emit("change");
+    target.children[1]!.value = "synthetic-model";
+    await app.click("composer-preview");
+    expect(app.node("composer-issue").disabled).toBe(false);
+    expect(app.calls.filter((call) => call.path === "/api/composer/issue")).toHaveLength(0);
+    app.node("composer-instruction").value = "changed";
+    await app.node("composer-instruction").emit("input");
+    expect(app.node("composer-issue").disabled).toBe(true);
+    await app.click("composer-preview");
+    await app.click("composer-issue");
+    expect(app.calls.find((call) => call.path === "/api/composer/issue")?.body).toEqual({
+      previewId: "synthetic-preview",
+      previewSha256: "c".repeat(64),
+    });
+  });
+
+  it("does not present a historical payload-only ACK as full artifact delivery or block proof completion", async () => {
+    const runtime = await service("demo");
+    const app = await harness(runtime, {
+      after: async (path, response) => {
+        if (path.endsWith("/ack")) {
+          const view = response as import("../../src/contracts/ui.js").UiTaskResponse;
+          // Synthetic API-view fixture for a historical receipt; this does not alter the ledger.
+          view.task.delivery = {
+            ...view.task.delivery,
+            acknowledged: false,
+            payloadAckObserved: true,
+            materialization: "pending",
+          };
+          view.task.summary.deliveryAcknowledged = false;
+          view.task.capabilities.ack = {
+            enabled: true,
+            reason: "fixture requester materializer is available",
+          };
+        }
+      },
+    });
+    await app.click("new-demo");
+    await app.click("approve");
+    await app.click("start");
+    const id = runtime.bootstrap().tasks[0]!.requestId;
+    await runtime.demoObservation(id, "succeeded");
+    await app.click("refresh");
+    await app.click("ack-result");
+    expect(app.node("result-ack").textContent).toContain("本文ACKのみ");
+    expect(app.node("hs-ack").className).not.toContain("confirmed");
+    expect(app.node("ack-result").disabled).toBe(false);
+  });
+
+  it("never auto-expands when a task completes and allows notification OFF without changing results", async () => {
+    const runtime = await service("demo"),
+      app = await harness(runtime);
+    await app.click("resident-expand");
+    await app.click("new-demo");
+    await app.click("approve");
+    await app.click("start");
+    const id = runtime.bootstrap().tasks[0]!.requestId;
+    await app.click("collapse-product");
+    await runtime.demoObservation(id, "succeeded");
+    await app.poll();
+    expect(app.document.body.className).toContain("resident-view");
+    expect(app.node("resident-status").textContent).toBe("完了");
+    await app.click("disable-completion-toast");
+    expect(app.node("completion-toast").hidden).toBe(true);
+    expect(runtime.task(id).task.result.status).toBe("succeeded");
+  });
+  it("shows a bounded resident indicator when a different task completes without expanding", async () => {
+    const runtime = await service("demo");
+    const first = runtime.createDemo({ title: "Selected unfinished task" });
+    let other = runtime.createDemo({ title: "Other completed task" });
+    const app = await harness(runtime);
+    app.node("task-select").value = first.task.summary.requestId;
+    await app.node("task-select").emit("change");
+    await settle();
+    const id = other.task.summary.requestId;
+    const binding = (view: typeof other) => ({
+      taskSpecHash: view.task.result.task_spec_hash,
+      taskFileHash: view.task.result.task_file_hash,
+      sequence: view.task.result.observation_seq,
+    });
+    other = await runtime.approve(id, binding(other));
+    other = await runtime.start(id, binding(other));
+    await runtime.demoObservation(id, "succeeded");
+    await app.poll();
+    expect(app.document.body.className).toContain("resident-view");
+    expect(app.node("resident-title").textContent).toBe("Selected unfinished task");
+    expect(app.node("resident-notice").hidden).toBe(false);
+    expect(app.node("resident-notice").textContent).toBe("結果 1");
+    expect(app.node("resident-notice").title).toContain("Other completed task");
+    await app.poll();
+    expect(app.node("resident-notice").textContent).toBe("結果 1");
+  });
+  it("establishes a fresh non-notifying baseline when re-enabled after a hidden OFF interval", async () => {
+    const runtime = await service("demo"),
+      app = await harness(runtime);
+    await app.click("resident-expand");
+    await app.click("new-demo");
+    await app.click("approve");
+    await app.click("start");
+    const id = runtime.bootstrap().tasks[0]!.requestId;
+    await app.click("pref-completionNotifications");
+    app.document.hidden = true;
+    await runtime.demoObservation(id, "succeeded");
+    await app.poll();
+    app.document.hidden = false;
+    await app.click("pref-completionNotifications");
+    await app.poll();
+    expect(app.node("completion-toast").hidden).toBe(true);
+    expect(app.node("resident-notice").hidden).toBe(true);
+    expect(runtime.task(id).task.result.status).toBe("succeeded");
+    await app.click("new-demo");
+    await app.click("approve");
+    await app.click("start");
+    const next = runtime.bootstrap().tasks.find((task) => task.requestId !== id)!;
+    await runtime.demoObservation(next.requestId, "succeeded");
+    await app.poll();
+    expect(app.node("resident-notice").textContent).toBe("結果 1");
+    expect(app.node("resident-notice").hidden).toBe(false);
+  });
+  it("does not establish a notification baseline from a task read started before re-enable", async () => {
+    const runtime = await service("demo"),
+      initial = await harness(runtime);
+    await initial.click("new-demo");
+    await initial.click("approve");
+    await initial.click("start");
+    const id = runtime.bootstrap().tasks[0]!.requestId;
+    const gate = deferred<void>();
+    let hold = false,
+      captured = false;
+    const app = await harness(runtime, {
+      after: async (path) => {
+        if (hold && path.startsWith("/api/bootstrap/page")) {
+          hold = false;
+          captured = true;
+          await gate.promise;
+        }
+      },
+    });
+    await app.click("pref-completionNotifications");
+    hold = true;
+    void app.click("refresh");
+    await vi.waitFor(() => expect(captured).toBe(true));
+    await runtime.demoObservation(id, "succeeded");
+    await app.click("pref-completionNotifications");
+    gate.resolve();
+    await settle();
+    await app.poll();
+    expect(app.node("resident-notice").hidden).toBe(true);
+    expect(app.node("completion-toast").hidden).toBe(true);
+  });
   it("uses local external assets, inert accepted raw text, and fixed compact dock", () => {
     expect(html).not.toMatch(/<script(?![^>]*src=)[^>]*>/);
     expect(html).not.toMatch(/\sstyle=|https?:\/\/|\son\w+=/);
@@ -521,7 +892,7 @@ describe("API-driven product frontend", () => {
     let stale = false;
     const app = await harness(runtime, {
       after: async (path, result) => {
-        if (stale && path === "/api/bootstrap")
+        if (stale && path.startsWith("/api/bootstrap/page"))
           Object.assign(result as object, structuredClone(staleBootstrap));
         if (stale && path === `/api/tasks/${id}`)
           Object.assign(result as object, structuredClone(preAck));
@@ -541,8 +912,19 @@ describe("API-driven product frontend", () => {
     await app.click("refresh");
     expect(app.node("result-ack").textContent).toBe("受領済み");
     expect(app.node("ack-result").disabled).toBe(true);
-    expect(app.node("dock-result-detail").textContent).toContain("結果受領済み");
+    expect(app.node("dock-result-detail").textContent).toContain("成果物受領済み");
     expect(app.calls.filter((call) => call.path.endsWith("/ack"))).toHaveLength(1);
+    const payloadOnly = structuredClone(postAck.task);
+    payloadOnly.delivery.acknowledged = false;
+    payloadOnly.delivery.materialization = "pending";
+    payloadOnly.delivery.payloadAckObserved = true;
+    payloadOnly.summary.deliveryAcknowledged = false;
+    const rawAck = chooseSnapshot(payloadOnly, preAck.task, id);
+    expect(rawAck.handshakes.result_ack).toEqual(payloadOnly.handshakes.result_ack);
+    expect(rawAck.delivery.acknowledged).toBe(false);
+    expect(rawAck.delivery.payloadAckObserved).toBe(true);
+    expect(rawAck.delivery.materialization).not.toBe("verified");
+    expect(chooseSnapshot(rawAck, postAck.task, id).delivery.acknowledged).toBe(true);
     const otherPayload = structuredClone(preAck.task);
     otherPayload.handshakes.terminal_result!.payloadSha256 = "different-payload";
     expect(chooseSnapshot(postAck.task, otherPayload, id).handshakes.result_ack).toBeNull();

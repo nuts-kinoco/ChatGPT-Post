@@ -48,6 +48,7 @@ export interface UiRuntime {
   store: TaskStore;
   archive?: ArtifactArchive;
   controller: TaskController;
+  projectRegistry?: import("../contracts/project-registry.js").ProjectRegistryPort;
   materialize?(
     requestId: string,
   ): Promise<import("../contracts/materialization.js").MaterializationReceiptV1>;
@@ -75,11 +76,55 @@ export class TaskUiService {
   readonly authenticatedRequesterId: string;
   private readonly authorityTimeoutMs: number;
   private readonly mutations = new Map<string, Promise<unknown>>();
+  private readonly shutdown = new AbortController();
+  private projectRegistry:
+    | Pick<
+        import("../contracts/project-registry.js").ProjectRegistryPort,
+        "resolve" | "snapshotHash"
+      >
+    | undefined;
+  beginShutdown(): void {
+    this.shutdown.abort();
+  }
+  /** Trusted startup composition only; there is no HTTP setter and old records are never repinned. */
+  bindProjectRegistry(
+    registry:
+      | Pick<
+          import("../contracts/project-registry.js").ProjectRegistryPort,
+          "resolve" | "snapshotHash"
+        >
+      | undefined,
+  ): void {
+    if (!registry) return;
+    if (this.projectRegistry && this.projectRegistry !== registry)
+      throw new UiError(
+        "registry_instance_mismatch",
+        "Task actions and operations must share one canonical registry",
+        500,
+      );
+    this.projectRegistry = registry;
+  }
+  private projectPinned(record: TaskRecord): boolean {
+    if (record.result.synthetic) return true;
+    const reference = record.projectRegistration,
+      registry = this.projectRegistry;
+    if (!reference || !registry) return false;
+    try {
+      const spec = JSON.parse(record.rawSpec) as TaskSpec;
+      return (
+        registry.snapshotHash(reference.registryRevision) === reference.snapshotSha256 &&
+        registry.resolve(reference.registryRevision, spec.repo).projectId === reference.projectId
+      );
+    } catch {
+      return false;
+    }
+  }
   constructor(
     readonly runtime: UiRuntime,
     options: { profile?: UiProfile } = {},
   ) {
     this.profile = options.profile ?? "production";
+    this.projectRegistry = runtime.projectRegistry;
     this.authenticatedRequesterId = runtime.authenticatedRequesterId ?? "local-ui-requester";
     this.authorityTimeoutMs = runtime.authorityTimeoutMs ?? 5000;
     if (
@@ -185,10 +230,24 @@ export class TaskUiService {
         (record.result.synthetic || !!this.runtime.materialize) &&
           record.requesterId === this.authenticatedRequesterId &&
           !!this.runtime.store.handshake(record.result.request_id, "terminal_result"),
-        record.requesterId === this.authenticatedRequesterId
-          ? "A persisted terminal event and its exact payload hash are required"
-          : "This delivery belongs to another authenticated requester; its recipient adapter must acknowledge it",
+        record.requesterId !== this.authenticatedRequesterId
+          ? "This delivery belongs to another authenticated requester; its recipient adapter must acknowledge it"
+          : !record.result.synthetic && !this.runtime.materialize
+            ? "Requester-side materialization adapter is not configured"
+            : "A persisted terminal event and its exact payload hash are required",
       );
+    }
+    if (record && !this.projectPinned(record)) {
+      for (const action of ["approve", "start", "ack"] as const)
+        if (action === "ack" || (configured && sameSession))
+          answer[action] = cap(
+            false,
+            "Immutable historical project registration is missing or cannot be verified; this job is inspection-only for new execution",
+          );
+    }
+    if (this.shutdown.signal.aborted) {
+      answer.approve = cap(false, "Runtime shutdown has begun; new approval is disabled");
+      answer.start = cap(false, "Runtime shutdown has begun; new dispatch is disabled");
     }
     return answer;
   }
@@ -296,6 +355,24 @@ export class TaskUiService {
         .listAll()
         .map((record) => this.summary(this.required(record.result.request_id))),
       diagnostics: this.diagnostics(),
+    };
+  }
+  /** Bounded product bootstrap plus the user's explicit selection, never a full-ledger poll. */
+  bootstrapPage(selectedId = ""): UiBootstrap & { observedAt: string; next: string | null } {
+    if (selectedId && !UUID.test(selectedId))
+      throw new UiError("invalid_request_id", "Selected request identity is invalid");
+    const observedAt = new Date().toISOString();
+    const page = this.runtime.store.recentPage("", 64),
+      ids = [...page.requestIds];
+    if (selectedId && !ids.includes(selectedId) && this.runtime.store.get(selectedId))
+      ids.push(selectedId);
+    return {
+      ...this.metadata(),
+      capabilities: this.capabilities(),
+      tasks: ids.map((id) => this.summary(this.required(id))),
+      diagnostics: this.diagnostics(),
+      observedAt,
+      next: page.next,
     };
   }
   task(requestId: string): UiTaskResponse {
@@ -459,7 +536,9 @@ export class TaskUiService {
         if (timer) clearTimeout(timer);
       }
       // Cancel and reconcile bypass the mutation queue. Never apply a late grant to a changed task.
-      this.checkBinding(this.required(requestId), binding);
+      const current = this.required(requestId);
+      this.checkBinding(current, binding);
+      this.requireCapability("approve", current);
       this.runtime.controller.approve(requestId, grant);
       return this.task(requestId);
     });
@@ -489,7 +568,7 @@ export class TaskUiService {
       const approvalId = grant?.envelope.approval_id;
       if (!approvalId)
         throw new UiError("approval_required", "A detached unconsumed approval is required", 409);
-      await this.runtime.controller.start(requestId, approvalId);
+      await this.runtime.controller.start(requestId, approvalId, this.shutdown.signal);
       return this.task(requestId);
     });
   }
@@ -578,15 +657,6 @@ export class TaskUiService {
         409,
       );
     return this.runtime.archive;
-  }
-  archiveSettings() {
-    return this.archiveManager().settings();
-  }
-  configureArchive(input: Parameters<ArtifactArchive["configure"]>[0]) {
-    return this.archiveManager().configure(input);
-  }
-  probeArchiveRoot(root: string) {
-    return this.archiveManager().probe(root, "probe_output_root");
   }
   inspectArchive(requestId: string) {
     this.required(requestId);

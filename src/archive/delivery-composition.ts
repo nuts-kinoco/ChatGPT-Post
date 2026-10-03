@@ -107,7 +107,7 @@ export interface RequesterMaterializationOptions {
 /** Pass this callback to bus.acceptResult/acceptHosted. It re-reads authenticated immutable context,
  * fetches real content bytes, checks route evidence, persists, and only then returns a proof. */
 export function createRequesterMaterialization(options: RequesterMaterializationOptions) {
-  return async (_event: unknown, _payload: Uint8Array, initial: DeliveryAcceptanceContext) => {
+  return (async (_payload: Uint8Array, _event: unknown, initial: DeliveryAcceptanceContext) => {
     const context = await options.bus.deliveryContext(
       await options.bus.git.snapshot(),
       initial.issued.requestId,
@@ -212,7 +212,8 @@ export function createRequesterMaterialization(options: RequesterMaterialization
     const result = await materializer.materialize({ expected: binding, signedManifest: source });
     if (result.state !== "complete") throw new ArchiveError(result.issue, true);
     return result.receipt;
-  };
+  }) satisfies Parameters<GitHubTaskBus["acceptResult"]>[1] &
+    Parameters<GitHubTaskBus["acceptHosted"]>[1];
 }
 
 /** Resolve historical requester-known policy/config rather than trusting a result's destination. */

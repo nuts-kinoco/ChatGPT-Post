@@ -1187,6 +1187,15 @@ export class GitHubRecipientPump {
         if (issued.recipientId !== this.bus.codec.signer.actorId) continue;
         if (issued.route !== "cli")
           throw new Error("ordinary_chat_requires_browser_delivery_adapter");
+        // One controller owns one registered repo/policy/session. Another lane with the same
+        // recipient signer must remain free to claim its own project instead of being hijacked.
+        const task = loadTaskSpec(raw);
+        if (!task.valid) throw new Error("transport_task_invalid");
+        if (
+          issued.repoId !== this.controller.policy.repoId ||
+          task.task.policy_snapshot_sha256 !== this.controller.policy.policyHash
+        )
+          continue;
         await this.bus.claim(issued, this.journal.claimantId);
         this.controller.receive(raw, taskBytes, `${snapshot.commit}:${path}`, issued.requesterId, {
           projectRegistration: issued.projectRegistration,

@@ -3,8 +3,11 @@
 ## 0 先に確認すること
 
 対象は `nuts-kinoco/ChatGPT-Post`。必ず引継ぎで指定された **固定コミット**を checkout する。
-PR1 はコア、PR2 は実 UI、PR3 は GitHub/承認/配送/利用量/CLI broker の接続コード。
-同じ checkout 内の [ADAPTERS.md](ADAPTERS.md) が現在の能力の正本。
+PR1 はコア、PR2 は初期 UI、PR3 は配送アダプター。後続には compact A UI、archive/materializer、operations/lifecycle と、別枝の Antigravity があります。
+PR 番号順に無条件で merge せず、対象 PR 本文の exact parent/head と依存順を確認する。
+同じ checkout の capabilities、[UI-OPERATIONS-USAGE.md](UI-OPERATIONS-USAGE.md)、
+[ARCHIVE-USAGE.md](ARCHIVE-USAGE.md)、[PLATFORM-GAPS.md](PLATFORM-GAPS.md) を合わせて確認する。
+古い PR の実装説明を、後続の配線まで検証済みという意味で使わない。
 
 現段階では、通常 Chat のブラウザ配送コードと GitHub の一往復コードは存在する。
 Claude/Codex の **安全な OS 実行 supervisor は未完成**。マージだけで安全な CLI 実行が
@@ -34,9 +37,10 @@ UI の安全な体験:
 node dist/cli/main.js ui --profile demo
 ```
 
-表示された本人用 URL を自分のブラウザで開く。合成タスク作成 → 内容確認 → 承認 → 開始 →
+表示された localhost URL は本人用 capability を含む。許可されたローカルブラウザで開き、共有しない。合成タスク作成 → 内容確認 → 承認 → 開始 →
 合成成功/失敗/不明 → 受領 ACK を試す。実プロセスやモデルは起動しない。
-終了は Ctrl+C。詳しいボタンと再開手順は [UI-USAGE.md](UI-USAGE.md)。
+終了は Ctrl+C。現在の画面・再開手順は [UI-OPERATIONS-USAGE.md](UI-OPERATIONS-USAGE.md)。
+旧 [UI-USAGE.md](UI-USAGE.md) は PR2 の履歴資料として読む。
 
 通常の台帳確認は `--profile production`。未設定の実行/承認は無効のまま。
 デスクトップ GUI は同じ product UI を使い、従来のブラウザチャットはトレイの専用項目に残る。
@@ -49,7 +53,7 @@ node dist/cli/main.js ui --profile demo
 
 必要な設定:
 
-1. 既存 GitHub repository/branch と専用 namespace。必要な読取り/書込み権限の範囲。登録 repo ID → product slug の対応（例 PixivVault / EMAKINOCO-Windows）。保存先は projects/<product>/requests/<UUID>/。global request index で製品を跨ぐ UUID 再利用を拒否
+1. 既存 GitHub repository/branch と専用 namespace。必要な読取り/書込み権限の範囲。登録 repo ID → product slug の対応（公開用の例: product-a / product-b）。保存先は projects/<product>/requests/<UUID>/。global request index で製品を跨ぐ UUID 再利用を拒否
 2. requester/recipient の登録 ID、役割、Ed25519 公開鍵、および既存のホスト署名 provider
 3. ホストローカルの TaskStore と TransportJournal。別ホストで SQLite を共有しない
 4. exact base commit、登録モデル、path/command、session/timeout/budget、認証済み承認 session
@@ -62,6 +66,9 @@ node dist/cli/main.js ui --profile demo
 `BusDeployment`。UI 用には `createBridgeDeployment(...).uiRuntime` を含める。
 同じホスト設定から bus/host/browser/uiRuntime を構築する。`close()` を返す場合、起動した
 observer/worker と DB の終了処理をその関数が所有する。UI は二重に DB を閉じない。
+residentWorker は明示 opt-in で、UI が listen 成功後に start し、終了時は先に drain する。
+openDeployment 自体で start しない。catalogue/template も同じ module をロードするためである。
+drain 失敗時は DB を保持し、明示 retry する。hide/collapse/tray は終了ではない。
 
 `.mjs` は任意コードを実行できる **信頼済みホスト設定**。入力 JSON から path を取らない。
 ファイルと全親 directory を本人/管理者所有・group/other 書込不可にし、import 先も同じ信頼境界に
@@ -78,7 +85,72 @@ GUI では同じ絶対 path を `CHATGPT_BRIDGE_DEPLOYMENT_MODULE` に設定し�
 設定を作るためにアプリ本体の source を変更する必要はない。demo と deployment の併用は拒否する。
 configured UI も core の capability/approval/quota/sandbox gate を通る。
 
-## 3 GitHub 一往復の操作
+## 3 LLM が準備・発行し、人は監視する
+
+通常は LLM が CLI を操作し、UI は進捗・結果・設定の確認に使う。手動 composer は補助経路。
+新しいモデルセッションでは [LLM-QUICKSTART.md](LLM-QUICKSTART.md) の短い導入を読み、
+版・capabilities・登録先を確認する。インストール済み CLI/skill は認証・文脈保持の証明ではない。
+Claude/Codex/Antigravity の実体や model ID を推測せず、次の読取りから始める:
+
+```sh
+node dist/cli/bus.js --deployment /trusted/requester.mjs catalogue
+node dist/cli/bus.js --deployment /trusted/requester.mjs template PROJECT_UUID DESTINATION_ID MODEL_ID
+node dist/cli/main.js task schema task
+```
+
+モデルが複数なら MODEL_ID は必須。template は `templateOnly:true` / `executable:false`。
+request_id と task_file_hash は未設定で、モデル/コマンド権限の追加許可ではない。
+出力をローカル template.json に保存し、task.md を UTF-8 で作る。次の例を checkout の
+prepare-request.mjs として保存すれば、既存 schema/validator を使って新規 JSON を生成できる。
+これは新規一件用であり、既存 ID の retry では再実行しない。scope は template のまま維持する。
+
+```js
+import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { loadTaskSpec, sha256Bytes } from './dist/contracts/task.js';
+import { parseOutputContractV1, validateOutputContractPolicy } from './dist/contracts/output-contract.js';
+if (existsSync('task.json') || existsSync('output-contract.json')) throw new Error('existing_request_keep_identity');
+const template = JSON.parse(readFileSync('template.json', 'utf8'));
+if (template.version !== 'bridge-issuer-template-1' || !template.templateOnly || template.executable !== false) throw new Error('template_required');
+const md = readFileSync('task.md');
+const task = { ...template.taskSpecTemplate, request_id: randomUUID(), task_file_hash: sha256Bytes(md) };
+const raw = Buffer.from(JSON.stringify(task));
+if (!loadTaskSpec(raw).valid) throw new Error('task_schema_invalid');
+let contractBytes;
+if (task.agent === 'chatgpt-browser') {
+  if (template.outputPolicy.state !== 'available') throw new Error('output_policy_required');
+  const p = template.outputPolicy.value;
+  const binding = {
+    requestId: task.request_id, taskSpecHash: sha256Bytes(raw), taskFileHash: task.task_file_hash,
+    route: 'hosted_delivery', requesterActorId: p.requesterActorId, recipientActorId: p.recipientActorId,
+    policySnapshotSha256: task.policy_snapshot_sha256,
+    registryRevision: template.registryRevision, registrySnapshotSha256: template.registrySha256,
+    projectId: template.projectId, repoId: p.repoId, storageSlug: p.storageSlug, destination: p.destination,
+  };
+  const contract = { ...binding, schema: 'output-contract-1', mode: p.mode,
+    requiredOutputs: p.requiredOutputs, allowAdditionalArtifacts: false,
+    maxArtifacts: p.maxArtifacts, maxTotalBytes: p.maxTotalBytes,
+    declarationFormat: 'bridge-artifact-declaration-1' };
+  contractBytes = Buffer.from(JSON.stringify(contract));
+  validateOutputContractPolicy(parseOutputContractV1(contractBytes), p, binding);
+}
+writeFileSync('task.json', raw, { flag: 'wx', mode: 0o600 });
+if (contractBytes) writeFileSync('output-contract.json', contractBytes, { flag: 'wx', mode: 0o600 });
+console.log(JSON.stringify({ requestId: task.request_id, taskSpecHash: sha256Bytes(raw), taskFileHash: task.task_file_hash }));
+```
+
+```sh
+node prepare-request.mjs
+node dist/cli/main.js task validate --request task.json --task-file task.md
+```
+
+生成例は認可設定を増やさない。受信側は独立した trusted policy を再検証する。
+登録や宛先が変わったら、発行前に catalogue/template を読み直し、意図した current revision と
+一致するか確認する。UI の pinned preview 発行は保存済み revision/hash の変化も拒否する。
+一度発行した後は JSON/MD の改行も変更しない。BEGIN/END と artifact declaration は host が
+exact request/hash/attempt/output-contract に基づいて指示する。frame は成功や ACK の代用ではない。
+
+### GitHub 一往復の操作
 
 以下は必要な既存 provider とホスト設定が承認・準備済みの場合だけ実行する。
 
@@ -102,7 +174,9 @@ node dist/cli/bus.js --deployment /trusted/recipient.mjs tick
 `ack` は `BusDeployment.materialize` が必須。これは result/receipt/source/必須 artifact byte を検証し、requester 側に耐久保存してから proof を返す。payload hash の目視だけでは ACK されない。署名付き manifest/proof の不足は delivery_pending として同じ ID を保持する。
 
 CLI 開始は supervisor 未完成の間、拒否が正しい結果。`tick` は一回の bounded reconciliation。
-継続 polling は認可された host service 側で繰返す。エラー後は同じ UUID/hash/run を照合する。
+継続 polling は [RESIDENT-WORKER.md](RESIDENT-WORKER.md) の明示設定で有効にする。
+CLI と通常 Chat は独立 lane で進み、遅い lane を待って他方の収集を止めない。
+未設定なら tick の一回実行だけで、画面を開いたことから自動配送を推測しない。エラー後は同じ UUID/hash/run を照合する。
 新 UUID、違うモデル、別課金経路、job 再実行で配送エラーをごまかさない。
 
 ## 4 通常 Chat を使う場合
@@ -112,7 +186,9 @@ TaskSpec は `agent:chatgpt-browser`、configured model と同じ requested_mode
 allowed_commands 空、run_seconds >=10、configured policy hash。fixture は送信できない。
 会話 URL/model/preset はホスト側固定で、タスク本文から変更できない。
 
-新規の通常 Chat 発行には `output-contract-1` の exact JSON body が必須。登録 project UUID/revision/hash、送信者/受信者、会話、task/MD/policy hash、必要な出力範囲を結び付ける。`bridge-issued-2` と同じ atomic commit に保存する。text_only でも明示契約と返信中の artifact declaration が必要で、DOM にリンクがないことからゼロ件を推測しない。[OUTPUT-CONTRACT-AMENDMENT](OUTPUT-CONTRACT-AMENDMENT.md) を参照。受信側の trusted expected-output policy/source proof の接続がない段階は実配送を有効にしない。
+新規の通常 Chat 発行には `output-contract-1` の exact JSON body が必須。登録 project UUID/revision/hash、送信者/受信者、会話、task/MD/policy hash、必要な出力範囲を結び付ける。`bridge-issued-2` と同じ atomic commit に保存する。text_only でも明示契約と返信中の artifact declaration が必要で、DOM にリンクがないことからゼロ件を推測しない。[OUTPUT-CONTRACT-AMENDMENT](OUTPUT-CONTRACT-AMENDMENT.md) を参照。具体的な policy/source-proof2/materializer 配線は後続 archive/operations 実装に含まれる。
+設定欠落、artifact の安定 ID/byte 取得未対応、required inventory 不明なら delivery_pending を維持する。
+実 DOM の取得成功はまだ実機検証が必要。
 
 ```sh
 node dist/cli/bus.js --deployment /trusted/requester.mjs issue task.json task.md recipient ordinary_chat_browser output-contract.json
@@ -190,3 +266,35 @@ node dist/cli/main.js daemon status
 profileは通常のcontext閉鎖でも削除されないため、「毎回閉じるからcookieが消える」とは断定しない。
 保持すればCloudflareが出ないという保証もしない。認証/challengeは本人操作へ引き渡し、元の
 UUID/attemptを照合して戻る。periodic refreshを防止策として有効化しない。
+
+
+## 9 監視・保存先・使用量・通知
+
+- compact A は小さな resident bar で開始。明示 click だけで開き、完了で勝手に前面表示しない。Light/Dark、always-on-top、hide/tray、draft 保持は [UI-OPERATIONS-USAGE](UI-OPERATIONS-USAGE.md) を参照
+- GitHub 配送 repo、実作業 repo、ローカル output root、browser profile、通知先は別。projectId / repoId / storageSlug / 表示名も混同しない
+- default/per-project root は共通 registry の新しい revision に保存。受付時の pin は不変。後から保存先を変えても古い成果物を移動・削除しない
+- sender archive 完成と requester 完全受領は別。manifest、receipt、必要 artifact bytes の検証と durable save 後だけ signed proof+ACK を返す
+- Codex quota は provider-bound / dated な観測。Claude/Antigravity/通常 Chat の残量にはしない。manual/unknown は検証済みにせず、明示した bounded fallback だけを適用する
+- Pro counter は Bridge 経由の観測のみ。確認済み/送信した可能性を分け、transport retry や ACK で加算しない。上限/期間/timezone は明示設定で、40 等を固定上限としない
+- Email/Discord は利用者ごとの宛先 preference が既定 OFF。現段階は sendingImplemented:false、送信 adapter は未完成。Save で送らず、実送信先/秘密情報をコードへ埋め込まない
+
+```sh
+node dist/cli/main.js archive help
+node dist/cli/main.js archive settings --state-dir /private/runtime
+node dist/cli/main.js archive inspect REQUEST_UUID --state-dir /private/runtime
+node dist/cli/main.js archive save REQUEST_UUID --deployment /trusted/recipient.mjs
+node dist/cli/main.js archive export REQUEST_UUID --deployment /trusted/recipient.mjs --out /private/export/new-diagnostic.json
+```
+
+save は既存結果を保存するだけ。export は新しい sanitized JSON 一個を書き、送信しない。
+read/probe/configure の差と requester materialization 設定は [ARCHIVE-USAGE.md](ARCHIVE-USAGE.md)。
+
+## 10 現時点で残る作業
+
+この手順書は実装/合成検証済みの操作と未完成 gate を分ける。最終状況は exact head の試験報告で更新する。
+
+- **未実装:** enforcing native supervisor、Windows authenticated IPC/ACL/reparse/durability providers。guard を true に変えて進めない
+- **別枝/統合確認:** Antigravity adapter は draft PR5。対象累積 head に含むか capability とソースを確認する。既存インストールを重複してやり直さない
+- **共通の未完成部分:** 任意 issuer agent 向け authenticated tool/capability integration、bootstrap ACK extraction/context-continuity の完全配線、Email/Discord 実送信。短い bootstrap と現実の authority を混同しない
+- **実機未検証:** 同じ会話/同じ model の通常 Chat、実 CLI、GitHub 実 roundtrip、描画/DPI/Windows/実 IPC。外部購読や dot/Codex task に置き換えない
+- **権限が必要:** 本人 identity、既存 account/route、credential/permission setup、実モデル一回試験、外部共有。コードを読んだだけでは許可されない
