@@ -1,7 +1,7 @@
 /** Bounded, portable output evidence. Parsed bytes and responder claims never grant authority. */
 import type { GitHubProjectDestination } from "./project-registry.js";
+import { parseStrictJsonBytes, sha256Bytes } from "./raw-bytes.js";
 import { parseResponseFrame, type ResponseFrameIdentity } from "./response-frame.js";
-import { parseStrictJsonBytes, sha256Bytes } from "./task.js";
 
 export const MAX_OUTPUT_CONTRACT_BYTES = 64 * 1024;
 export const MAX_ARTIFACT_DECLARATION_BYTES = 64 * 1024;
@@ -262,6 +262,13 @@ function sameDestination(a: OutputContractDestinationV1, b: OutputContractDestin
     a.namespace === b.namespace &&
     a.conversationId === b.conversationId
   );
+}
+/** Structure only: parsed policy bytes never authenticate authority. */
+export function validateHostedExpectedOutputPolicy(value: unknown): HostedExpectedOutputPolicy {
+  const checked = object(value, [...SCOPE_KEYS, ...OUTPUT_KEYS], "output_policy_invalid");
+  scope(checked, "output_policy_invalid");
+  outputs(checked, "output_policy_invalid");
+  return value as HostedExpectedOutputPolicy;
 }
 /** Call only with a recipient-owned trusted policy and independently obtained task/registry binding.
  * Signature verification must precede this call; a valid signature alone cannot authorize the scope.

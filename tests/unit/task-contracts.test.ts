@@ -640,3 +640,35 @@ describe("Bridge v2 result semantic checks (not evidence authentication)", () =>
     );
   });
 });
+
+describe("additive exact browser model-ID validation", () => {
+  it.each(["gpt-5.6-sol", "gpt-5.5"])(
+    "accepts only the browser route for %s",
+    (requested_model) => {
+      const value = { ...task(), agent: "chatgpt-browser", requested_model };
+      const raw = Buffer.from(JSON.stringify(value));
+      const parsed = loadTaskSpec(raw);
+      expect(parsed.valid).toBe(true);
+      if (parsed.valid) expect(parsed.taskSpecHash).toBe(sha256Bytes(raw));
+      expect(validateTaskSpec({ ...value, agent: "claude" }).valid).toBe(false);
+      expect(validateTaskSpec({ ...value, agent: "codex" }).valid).toBe(false);
+    },
+  );
+  it.each(["gpt-5.7", "gpt-5.6-sol\n", "gpt-5.5 ", ["gpt-5.5"], { model: "gpt-5.5" }])(
+    "rejects arbitrary/coerced dotted model %j",
+    (requested_model) => {
+      expect(validateTaskSpec({ ...task(), agent: "chatgpt-browser", requested_model }).valid).toBe(
+        false,
+      );
+    },
+  );
+  it.each(["current", "latest", "fake-model"])(
+    "preserves existing generic model %s",
+    (requested_model) => {
+      expect(validateTaskSpec({ ...task(), agent: "chatgpt-browser", requested_model }).valid).toBe(
+        true,
+      );
+      expect(validateTaskSpec({ ...task(), agent: "claude", requested_model }).valid).toBe(true);
+    },
+  );
+});

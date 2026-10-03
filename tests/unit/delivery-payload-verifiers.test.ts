@@ -149,6 +149,7 @@ async function hosted() {
     taskFileBytes: adapterTaskBytes,
     terminalEvent: event,
     claimedArtifacts: proof.artifacts,
+    promptRendering: { mode: "legacy" as const },
     expectedConversationId: "fixture",
     synthetic: true,
     allowSynthetic: true,

@@ -11,7 +11,7 @@
     "chatgpt-bridge": "./dist/cli/main.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/write-stealth-extension.mjs && node scripts/copy-ui-assets.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/write-stealth-extension.mjs && node scripts/copy-ui-assets.mjs && node scripts/write-hosted-renderer-manifest.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check .",
     "format": "biome format --write .",
@@ -22,7 +22,8 @@
     "bridge": "node ./dist/cli/main.js",
     "login:manual": "node ./scripts/manual-login.mjs",
     "ui": "node ./dist/cli/main.js ui",
-    "ui:demo": "node ./dist/cli/main.js ui --profile demo"
+    "ui:demo": "node ./dist/cli/main.js ui --profile demo",
+    "pretest": "npm run build"
   },
   "dependencies": {
     "ajv": "^8.20.0",

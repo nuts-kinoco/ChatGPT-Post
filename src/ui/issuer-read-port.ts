@@ -4,6 +4,7 @@ import type { HostedExpectedOutputPolicy } from "../contracts/output-contract.js
 
 import type { TaskSpec } from "../contracts/task-types.js";
 import { UiError } from "../contracts/ui.js";
+import { encodeTaskBrief } from "../prompt-rendering/brief.js";
 import {
   destinationFingerprint,
   prepareTaskRecipe,
@@ -11,8 +12,9 @@ import {
   validatePreparedRecipe,
 } from "./composer.js";
 import type { UiOperationsService } from "./operations.js";
-export interface IssuerTemplate {
-  version: "bridge-issuer-template-1";
+import { type ComposerPromptFormat, readComposerPromptFormat } from "./prompt-format.js";
+
+interface IssuerTemplateFields {
   templateOnly: true;
   executable: false;
   projectId: string;
@@ -26,6 +28,11 @@ export interface IssuerTemplate {
     | { state: "available"; value: HostedExpectedOutputPolicy }
     | { state: "unavailable"; reason: string };
 }
+export type IssuerTemplate = IssuerTemplateFields &
+  (
+    | { version: "bridge-issuer-template-1" }
+    | { version: "bridge-issuer-template-2"; promptFormat: ComposerPromptFormat }
+  );
 export interface IssuerReadPort {
   catalogue(): Promise<OperationsSetup>;
   template(projectId: string, destinationId: string, modelId?: string): Promise<IssuerTemplate>;
@@ -77,6 +84,20 @@ export function issuerReadPort(
           "Model is not registered for this destination",
           400,
         );
+      const format = readComposerPromptFormat(recipe.promptFormat, destination, selected);
+      const taskMarkdown = format.renderer
+        ? Buffer.from(
+            encodeTaskBrief({
+              taskKind: "answer",
+              objective:
+                "TEMPLATE ONLY: replace with the explicit common brief before calculating its digest",
+              constraints: [],
+              deliverables: [],
+              acceptance: [],
+              context: [],
+            }),
+          ).toString("utf8")
+        : undefined;
       // Reserved template marker is stripped; it is never registered, persisted, signed or issued.
       const requestId = "00000000-0000-4000-8000-000000000000";
       const prepared = await prepareTaskRecipe(recipe, {
@@ -86,6 +107,7 @@ export function issuerReadPort(
         modelId: selected,
         title: "TEMPLATE ONLY",
         instruction: "Replace with the explicit task Markdown before calculating its digest",
+        ...(taskMarkdown === undefined ? {} : { taskMarkdown }),
       });
       const task = validatePreparedRecipe(prepared, {
         requestId,
@@ -94,6 +116,7 @@ export function issuerReadPort(
         modelId: selected,
         title: "TEMPLATE ONLY",
         instruction: "Replace with the explicit task Markdown before calculating its digest",
+        ...(taskMarkdown === undefined ? {} : { taskMarkdown }),
       });
       const after = await operations.setup();
       const current =
@@ -116,9 +139,20 @@ export function issuerReadPort(
           "Registry changed while reading the template",
           409,
         );
+      if (
+        readComposerPromptFormat(recipe.promptFormat, current, selected).fingerprint !==
+        format.fingerprint
+      )
+        throw new UiError(
+          "issuer_prompt_format_stale",
+          "Prompt registration changed while reading the template",
+          409,
+        );
       const { request_id: _id, task_file_hash: _hash, ...taskSpecTemplate } = task;
       return {
-        version: "bridge-issuer-template-1",
+        ...(recipe.promptFormat
+          ? { version: "bridge-issuer-template-2" as const, promptFormat: format.metadata }
+          : { version: "bridge-issuer-template-1" as const }),
         templateOnly: true,
         executable: false,
         projectId,

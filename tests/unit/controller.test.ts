@@ -1207,3 +1207,35 @@ describe("RunController", () => {
     expect(checkResultInvariants(out.result as BridgeResult)).toEqual([]);
   });
 });
+
+describe("trusted hosted prompt binding gate", () => {
+  it.each([1, 2, 3])(
+    "blocks at exact check %s before dispatch and does not retry",
+    async (denyAt) => {
+      let checks = 0,
+        entered = 0,
+        sent = 0;
+      const f = fake({
+        enterPrompt: async () => {
+          entered++;
+          return { kind: "ok" };
+        },
+        dispatchSubmit: async () => {
+          sent++;
+          return { kind: "dispatched", url: "https://chatgpt.com/c/fixture" };
+        },
+      });
+      const out = await run(f, {
+        assertPromptBinding: (_request, prompt) => {
+          expect(prompt).toBe("hi");
+          if (++checks === denyAt) throw new Error("hosted_prompt_send_bytes_mismatch");
+        },
+      });
+      expect(out.result?.status).not.toBe("completed");
+      expect(sent).toBe(0);
+      expect(checks).toBe(denyAt);
+      expect(entered).toBe(denyAt === 3 ? 1 : 0);
+      if (denyAt === 1) expect(f.calls).not.toContain("launch");
+    },
+  );
+});

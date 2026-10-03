@@ -11,6 +11,7 @@ export function mountComposer({ api, document, presentation }) {
     revision = 0,
     pending = false,
     uncertain = false;
+  let promptFormats = [];
   const targets = [];
   const message = (text) => {
     node("composer-message").textContent = text;
@@ -20,9 +21,38 @@ export function mountComposer({ api, document, presentation }) {
     preview = null;
     node("composer-issue").disabled = true;
     node("composer-preview-bytes").replaceChildren();
+    controls();
+  };
+  const modeState = () => {
+    const bound = targets.map((target) =>
+      promptFormats.some(
+        (entry) =>
+          entry.destinationId === target.destination.value &&
+          entry.modelId === target.model.value &&
+          entry.promptFormat?.readiness === "registered-pre-approval" &&
+          entry.promptFormat?.codec === "bridge-task-brief-1",
+      ),
+    );
+    return { anyBound: bound.some(Boolean), allBound: bound.length > 0 && bound.every(Boolean) };
+  };
+  const updateModes = () => {
+    const { anyBound, allBound } = modeState();
+    const select = node("composer-mode");
+    for (const option of select.children)
+      option.disabled = option.value === "legacy-verbatim" ? anyBound : !allBound;
+    if (!anyBound) select.value = "legacy-verbatim";
+    node("composer-brief-fields").hidden = select.value === "legacy-verbatim";
+    node("composer-format-note").textContent = allBound
+      ? "登録された形式です。回答・レビュー・変更を明示的に選んでください。承認・試行・出力契約はプレビューでは未確定です"
+      : anyBound
+        ? "共通形式と従来形式の宛先は同じ下書きに混在できません"
+        : "従来の自由記述をそのまま使います。依頼の種類は推測しません";
   };
   const controls = () => {
-    node("composer-preview").disabled = pending || uncertain || !setup;
+    updateModes();
+    const { anyBound, allBound } = modeState();
+    const modeReady = node("composer-mode").value === "legacy-verbatim" ? !anyBound : allBound;
+    node("composer-preview").disabled = pending || uncertain || !setup || !!preview || !modeReady;
     node("composer-add-target").disabled = pending || targets.length >= 4 || !setup;
     node("composer-issue").disabled = pending || uncertain || !preview;
   };
@@ -86,6 +116,10 @@ export function mountComposer({ api, document, presentation }) {
       )
         throw new Error(capability.capability.reason);
       setup = catalogue.setup;
+      promptFormats =
+        capability.promptFormats?.version === "bridge-composer-prompt-formats-1"
+          ? capability.promptFormats.formats
+          : [];
       node("composer-project").replaceChildren(
         ...setup.registry.value.projects.map((project) => {
           const option = el("option", `${project.displayName} · ${project.repoId}`);
@@ -108,10 +142,21 @@ export function mountComposer({ api, document, presentation }) {
     presentation.closeDialog("composer-dialog"),
   );
   node("composer-add-target").addEventListener("click", addTarget);
-  for (const id of ["composer-project", "composer-title", "composer-instruction"])
-    node(id).addEventListener(id === "composer-project" ? "change" : "input", changed);
+  for (const id of [
+    "composer-project",
+    "composer-title",
+    "composer-instruction",
+    "composer-mode",
+    "composer-constraints",
+    "composer-deliverables",
+    "composer-acceptance",
+  ])
+    node(id).addEventListener(
+      id === "composer-project" || id === "composer-mode" ? "change" : "input",
+      changed,
+    );
   node("composer-preview").addEventListener("click", async () => {
-    if (pending || uncertain || !setup) return;
+    if (pending || uncertain || !setup || preview || node("composer-preview").disabled) return;
     const captured = revision;
     pending = true;
     controls();
@@ -125,6 +170,21 @@ export function mountComposer({ api, document, presentation }) {
         })),
         title: node("composer-title").value,
         instruction: node("composer-instruction").value,
+        ...(node("composer-mode").value === "legacy-verbatim"
+          ? { mode: "legacy-verbatim" }
+          : {
+              mode: "bridge-task-brief-1",
+              taskKind: node("composer-mode").value,
+              constraints: node("composer-constraints")
+                .value.split("\n")
+                .filter((line) => line.trim()),
+              deliverables: node("composer-deliverables")
+                .value.split("\n")
+                .filter((line) => line.trim()),
+              acceptance: node("composer-acceptance")
+                .value.split("\n")
+                .filter((line) => line.trim()),
+            }),
       });
       if (captured !== revision) return;
       preview = response;
@@ -138,6 +198,17 @@ export function mountComposer({ api, document, presentation }) {
         hash.className = "mono";
         json.className = md.className = "editor source-pre";
         section.append(title, hash, json, md);
+        if (child.promptPreview) {
+          const label = el(
+              "p",
+              "承認前の表示用プレビュー（non-dispatch-preview）。送信の証明ではありません。承認・試行・出力契約は未確定、セッションとbootstrapはこのブラウザー経路では対象外です",
+            ),
+            metadata = el("pre", JSON.stringify(child.promptFormat, null, 2)),
+            formatted = el("pre", child.promptPreview.preview.text);
+          label.className = "notice info";
+          metadata.className = formatted.className = "editor source-pre";
+          section.append(label, metadata, formatted);
+        }
         node("composer-preview-bytes").append(section);
       }
       message(
@@ -164,11 +235,32 @@ export function mountComposer({ api, document, presentation }) {
         `送信記録 ${response.issued.commit}。依頼ID: ${response.issued.requestIds.join(", ")}。受信・開始・成果物受領は一覧から別途確認してください`,
       );
       preview = null;
-    } catch {
-      uncertain = true;
-      message(
-        `送信結果が未確認です。自動再送しません。元の依頼ID ${fixed.preview.children.map((child) => child.requestId).join(", ")} を一覧またはCLIで確認してください。入力を変えて再依頼する前に元の記録を確認してください`,
-      );
+    } catch (error) {
+      if (
+        error.uncertain === false &&
+        [
+          "composer_registry_stale",
+          "composer_destination_stale",
+          "composer_prompt_format_stale",
+          "composer_prompt_format_unavailable",
+          "composer_prompt_format_binding_invalid",
+          "composer_preview_expired",
+        ].includes(error.code)
+      ) {
+        setup = null;
+        promptFormats = [];
+        targets.splice(0);
+        node("composer-targets").replaceChildren();
+        changed();
+        message(
+          "登録またはプレビューが変わったため発行しませんでした。入力は保持しています。閉じてから開き直し、新しい登録とプレビューを確認してください",
+        );
+      } else {
+        uncertain = true;
+        message(
+          `送信結果が未確認です。自動再送しません。元の依頼ID ${fixed.preview.children.map((child) => child.requestId).join(", ")} を一覧またはCLIで確認してください。入力を変えて再依頼する前に元の記録を確認してください`,
+        );
+      }
     } finally {
       pending = false;
       controls();
