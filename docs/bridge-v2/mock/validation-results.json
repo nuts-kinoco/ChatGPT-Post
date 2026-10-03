@@ -1,0 +1,26 @@
+{
+  "passed": 20,
+  "checks": [
+    "SHA-256 matches Node for empty, ASCII and Japanese UTF-8",
+    "Initial design is received, bypass selected, no authority receipt",
+    "Default JSON is design_fixture with empty executable permissions",
+    "Bound receipt hashes exact TaskSpec, then starts only once",
+    "Stop requested is distinct from stop confirmed",
+    "Editing invalidates approval and changes both hashes",
+    "Manual tier requires a separate approval after checking",
+    "Duplicate receipt does not start another run",
+    "Conflicting receive leaves original accepted state unchanged",
+    "Unknown recovery inspects but never starts or infers success",
+    "Expiry and revocation prevent new starts",
+    "Emergency stop prevents another start",
+    "Result ACK changes acknowledgement only, not outcome",
+    "Chat auth problem remains delivery-specific, does not invent CLI availability",
+    "Unknown fence survives edits, new IDs and modes until explicit demo reset",
+    "Expiry retains running and revocation retains a stopping run",
+    "Chat auth blocks only selected chat start",
+    "Policy restrictions preserve terminal outcomes and result ACK",
+    "Terminal jobs are read-only until a distinct new ID is prepared",
+    "All nine status views render"
+  ],
+  "rendering": "Not verified: Chromium blocked by socket permissions; cloud browser file protocol denied."
+}
