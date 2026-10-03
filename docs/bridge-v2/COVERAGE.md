@@ -1,7 +1,7 @@
-# Requirement coverage at the issuer/bootstrap checkpoint
+# Requirement coverage at the notification-provider checkpoint
 
-Code baseline: draft PR15 `275f7d5c25e69b6fa00305d4dba3c801e9514eb4`, cumulative on PR14 final `27aec64dc3200fe404bb96fdb4d8252cadd6ecd9`.
-This candidate adds bounded R04/I1 configured issuer methods and R09/B1 fresh-run advisory extraction.
+Code baseline: draft PR16 `2fb094088e5c31ff4b164903e1b560a1ed689572`, cumulative on PR15.
+This candidate adds the concrete portable notification credential provider/GUI composition and corrected handoff verification.
 This matrix supersedes earlier stage descriptions in this file. It does not change the approved
 [consolidated design](CONSOLIDATED-DESIGN.md), protocol bytes, permissions or acceptance conditions.
 A final milestone still requires actual ordinary-Chat and actual CLI roundtrip evidence at a fixed
@@ -25,12 +25,20 @@ reviewed head. A merged source tree or a fake test pass cannot supply that evide
 | R12 / presentation | Compact A bar, explicit expansion, theme and window controls | Product UI/native-shell changes, draft/state preservation, no auto-expansion, graceful shutdown; root/GUI tests | Actual rendering, Windows/DPI/multi-monitor/native-window checks |
 | R13 / quota | Pre-dispatch/post-ACK Codex observations | Public app-server narrow port, provider attribution, freshness/generation fences, unknown/manual-as-unverified and bounded explicit fallback | Actual authenticated RPC/schema/account/billing-route verification. No money guarantee and no reuse as Chat/Claude/AGY quota |
 | R14 / operations | Bridge-only ordinary Chat Pro counter | Shared scoped direct/hosted durable submission identity and replay, real CLI/UI wiring, confirmed versus possible, coverage-gap suppression and configurable reference-window/red-warning UI | Actual observed model/site behavior and Windows storage verification remain live/native gates; never account-global quota |
-| R15 / notifications | Optional per-user Email/Discord human-check alerts | Default-off registered destinations, durable source/outbox dedupe, atomic revision/generation/rate claim, bounded controlled transports, secure native interaction port, masked UI and separate Test Send/status | Actual native secret provider, recipient/recurring authority and configured sender binding are required; fake tests are not live-delivery proof. See [usage and alerts](USAGE-ALERTS.md) |
+| R15 / notifications | Optional per-user Email/Discord human-check alerts | Default-off runtime/outbox and controlled transports; concrete encrypted registry, first Discord target consent, pinned rotation, v2 async credential receipts, explicit Lock/lease expiry, separate trusted dialog and GUI composition; fake-verified | Windows notification private-state/ACL verifier remains missing code. Actual OS storage/dialog behavior, user credential/target/recurring authority and live delivery remain unverified. Email needs a separately configured prebound sender; retarget/migration is not implemented. See [credential provider](NOTIFICATION-CREDENTIAL-PROVIDER.md) and [usage/alerts](USAGE-ALERTS.md) |
 | R16 / browser | Reuse browser/profile, auth recovery without bypass | Existing dedicated browser/daemon preserved; reviewed selector ambiguity fixes and read-only visible-model catalogue; registered prompt policy/renderer receipts on PR13 | Actual DOM/login/challenge behavior; unknown model fails closed without downgrade. Keeping a browser open is not proof of avoiding Cloudflare |
 | R17 / integration docs | LLM instructions, commands, role-specific test handoff | USAGE/TESTING, UI/ARCHIVE/SDK guides, capabilities/help, scripts and structured result reports | Actual Codex/Claude tasks only when individually authorized; task launcher is distinct from Bridge Codex CLI |
 | R18 / integration acceptance | Final two-route milestone | Offline negative/recovery evidence and independent reviews | Actual Git→claim/approval→ordinary Chat→result/artifacts→save→ACK **and** actual CLI counterpart. Neither is established by this checkpoint |
 | R19 / SDK trial owner | Small own-cloud Haiku text handshake | PR14 separate SDK schemas, official SDK composition, signed bus, private bounded evidence, immutable requester bundle/ACK, one-shot entrypoint; lifecycle/startup races fixed | Same-context cloud auth, billing/extra-usage confirmation, terms and temporary-key/trial approval, private connector destination, then one real call. Linux trusted-host/SDK controls, no native confinement/OS-exit proof |
 | R20 / prompt/browser | Maintainable shared prompt and cache-aware formatting | PR12/13 deterministic shared brief, registered renderer/build/profile, final dispatch guard and historical collector validation | Live cache savings unmeasured; no API-cache control claim. SDK dependency changes require explicit new renderer build registration, never silent old-policy replacement |
+
+## Notification-provider and reporting extension
+
+The provider is concrete code, not a claim of native activation. Its fake verification covers atomic encrypted-record/action receipts, same-target rotation, exact dialog identity, cancellation/Lock/late completion, post-await send authority and actual product/server factory composition. Packages, lockfiles and the cosmetic product preload remain unchanged. The final author aggregate passes root **2,572 tests with 56 explicit inherited browser skips**, GUI **77**, parser **10**, compiled issuer **12** and SDK lifecycle **6**; root/GUI typecheck/lint/build pass. Independent review reproduces 154 focused checks, seven additional atomic/recovery cases and all 77 GUI checks. The seven atomic/recovery cases are retained in the root suite; independent reruns are not counted twice. Real OS/native behavior is a separate gate.
+
+The offline verifier now emits `bridge-verification-2`, counts only named test summaries, includes compiled issuer/SDK checks, fixes BRIDGE_LIVE=0 in child processes, and reports unknown or parent-repository source identity without calling it clean. Missing/truncated summaries block rather than becoming zero skips. Historical v1 evidence is preserved; use its raw Tests lines when comparing skips. This does not change the independently reproduced PR16 totals below.
+
+Windows notification settings remain gracefully unavailable without their private-state verifier; this alone does not stop the whole monitor GUI. General execution and trusted deployment-file ACL gates remain separate.
 
 ## Issuer/bootstrap extension evidence
 

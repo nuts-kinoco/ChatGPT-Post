@@ -153,3 +153,9 @@ SDK依存とpackage.jsonの追加は、既存browser rendererのビルド指紋�
 旧pinを黙って置換しません。古い既受理ジョブは元のrenderer/policy証拠を保持し、
 対応する旧buildがないときは既存のunsupported/no-resend動作を維持します。
 SDK追加はTaskSpec、普通Chatのmodel選択、renderer policyの意味を変更しません。
+
+## 生成・一回試験・回復の注意
+
+生成した試験 request の有効期限は 5 分です。設定・必要な許可・認証の確認を先に終えてから generate し、未確定 dispatch を別 ID で隠さないでください。
+
+同梱 `sdk-text-one-shot.mjs` は一回の trial 専用で、終了後に同じ module を使って status/reconcile/collect はできません。後続コマンド用の再利用可能な host とは別です。終了後は元の証拠・UUID/hash を保存し、元の署名権限が利用できなければ ACK は pending/blocked のままにします。マーカー削除、鍵再生成、新規 request、追加 query を回復手順にしないでください。通常の再利用可能な認可済み host なら、既存レコードの読取り・再検証・配送だけを行えます。

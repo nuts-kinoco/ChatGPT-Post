@@ -8,14 +8,28 @@ export interface ProductUiServer {
   origin: string;
   token: string;
   close(): Promise<void>;
+  lockNotificationCredentials?(): void | Promise<void>;
   presentation?: { snapshot(): { values: ProductPreferences }; subscribe(callback: (snapshot: {values:ProductPreferences}) => void): () => void };
 }
+export interface ProductNotificationProviderFactoryInput {
+  preferences: unknown;
+  actorId: string;
+  profile: ProductUiProfile;
+  configuration?: unknown;
+}
+export interface ProductNotificationProviderHost {
+  runtime: unknown;
+  close(): void | Promise<void>;
+  lock(): void | Promise<void>;
+}
+export type ProductNotificationProviderFactory = (input: ProductNotificationProviderFactoryInput) => ProductNotificationProviderHost | Promise<ProductNotificationProviderHost>;
 export interface ProductUiOptions {
   stateDir: string;
   profile: ProductUiProfile;
   port: number;
   nativeControls: true;
   deploymentModule?: string;
+  notificationProviderFactory?: ProductNotificationProviderFactory;
 }
 export interface ProductUiModule {
   startUiServer(options: ProductUiOptions): Promise<ProductUiServer>;
@@ -32,6 +46,7 @@ export async function startProductUi(
   root: string,
   env: NodeJS.ProcessEnv,
   load: (url: string) => Promise<ProductUiModule> = (url) => import(url),
+  notificationProviderFactory?: ProductNotificationProviderFactory,
 ): Promise<ProductUiServer> {
   const profile = productUiProfile(env.CHATGPT_BRIDGE_UI_PROFILE);
   const moduleUrl = pathToFileURL(path.join(root, "dist", "ui", "server.js")).href;
@@ -42,6 +57,7 @@ export async function startProductUi(
     stateDir: path.resolve(env.CHATGPT_BRIDGE_RUNTIME_DIR ?? path.join(root, "runtime")),
     port: 0,
     nativeControls: true,
+    ...(profile === "production" && notificationProviderFactory ? { notificationProviderFactory } : {}),
     ...(env.CHATGPT_BRIDGE_DEPLOYMENT_MODULE ? { deploymentModule: env.CHATGPT_BRIDGE_DEPLOYMENT_MODULE } : {}),
   });
 }

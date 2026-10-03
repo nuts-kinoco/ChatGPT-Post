@@ -71,8 +71,9 @@ openDeployment 自体で start しない。catalogue/template も同じ module �
 drain 失敗時は DB を保持し、明示 retry する。hide/collapse/tray は終了ではない。
 
 `.mjs` は任意コードを実行できる **信頼済みホスト設定**。入力 JSON から path を取らない。
-ファイルと全親 directory を本人/管理者所有・group/other 書込不可にし、import 先も同じ信頼境界に
-置く。POSIX loader はこれを検査する。Windows の native ACL verifier は未実装なので
+deployment ファイルは実行ユーザー所有、全親 directory は実行ユーザーまたは root 所有とし、
+いずれも group/other 書込不可にする。通常の /tmp 配下や別ユーザー/root 所有のファイルは
+拒否され得る。検査を通すために権限を弱めず、import 先も同じ信頼境界に置く。POSIX loader はこれを検査する。Windows の native ACL verifier は未実装なので
 `deployment_windows_acl_verifier_unavailable` で止まる。フラグで迂回しない。
 
 設定済みの production UI を実際に起動する入口:
@@ -282,7 +283,7 @@ UUID/attemptを照合して戻る。periodic refreshを防止策として有効�
 - sender archive 完成と requester 完全受領は別。manifest、receipt、必要 artifact bytes の検証と durable save 後だけ signed proof+ACK を返す
 - Codex quota は provider-bound / dated な観測。Claude/Antigravity/通常 Chat の残量にはしない。manual/unknown は検証済みにせず、明示した bounded fallback だけを適用する
 - Pro counter は Bridge 経由の観測のみ。確認済み/送信した可能性を分け、transport retry や ACK で加算しない。上限/期間/timezone は明示設定で、40 等を固定上限としない
-- Email/Discord は利用者ごとの宛先 preference が既定 OFF。現段階は sendingImplemented:false、送信 adapter は未完成。Save で送らず、実送信先/秘密情報をコードへ埋め込まない
+- Email/Discord の宛先 preference は既定 OFF。configured NotificationRuntime と controlled transport は実装済み。runtime 未設定では sendingImplemented:false となり、送信・秘密情報設定・Test Send は無効。資格情報 Save は通知を有効化せず、preference Save は送信を実行しない。自動通知には明示的な ON と保存、Test Send には別操作が必要。native provider / sender / 宛先権限と実配送の状態は [USAGE-ALERTS.md](USAGE-ALERTS.md) と exact head の [COVERAGE.md](COVERAGE.md) で確認する。実宛先や秘密情報をコードへ埋め込まない
 
 ```sh
 node dist/cli/main.js archive help
@@ -301,9 +302,15 @@ read/probe/configure の差と requester materialization 設定は [ARCHIVE-USAG
 
 - **未実装:** enforcing native supervisor、Windows authenticated IPC/ACL/reparse/durability providers。guard を true に変えて進めない
 - **別枝/統合確認:** Antigravity adapter は draft PR5。対象累積 head に含むか capability とソースを確認する。既存インストールを重複してやり直さない
-- **共通の未完成部分:** 任意 issuer agent 向け authenticated tool/capability integration、bootstrap ACK extraction/context-continuity の完全配線、Email/Discord 実送信。短い bootstrap と現実の authority を混同しない
+- **残る接続/実装:** provider 向け issuer tool 接続と呼出元 identity 確認、実 context-loss/resume 検出、通知の native provider / 認可済み sender binding の可用性。configured issuer facade と fresh-run bootstrap advisory ACK extraction は実装・合成検証済み。実 provider・通知配送・context 継続の検証は別 gate。短い bootstrap と実行 authority を混同しない
 - **実機未検証:** 同じ会話/同じ model の通常 Chat、実 CLI、GitHub 実 roundtrip、描画/DPI/Windows/実 IPC。外部購読や dot/Codex task に置き換えない
 - **権限が必要:** 本人 identity、既存 account/route、credential/permission setup、実モデル一回試験、外部共有。コードを読んだだけでは許可されない
+
+## ローカル通知の初回設定と解除
+
+通常の production GUI は、最初は宛先未登録の Discord slot を表示できる。秘密情報は普通の画面に入力せず、明示操作で開く別の信頼済みローカル window で target と保存範囲を確認する。保存だけでは通知を ON にせず、Test Send も別操作。解除期間は画面に表示され、Lock / 期限 / restart で解除状態を失う。自動で OS 秘密ストアを開かない。
+
+操作・制約は [NOTIFICATION-CREDENTIAL-PROVIDER.md](NOTIFICATION-CREDENTIAL-PROVIDER.md)。実際の credential 入力・OS prompt・保存/継続アクセス・実配送には利用者の明示操作/承認が必要。合成検査では一切行わない。Windows は通知保存先 verifier が未実装なので notification-unavailable のまま扱い、暗号化を弱めたり guard を変えたりして進めない。通常 monitor の起動可否とは別である。
 
 ## Usage reference and human-check alerts
 
