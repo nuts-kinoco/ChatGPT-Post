@@ -61,6 +61,13 @@ function decodeStrictUtf8(bytes: Uint8Array, label: string): string {
 
 /** Parse exactly the supplied UTF-8 bytes. No BOM stripping or normalization occurs. */
 export function parseStrictJsonBytes(bytes: Uint8Array): unknown {
+  return parseCheckedJsonBytes(bytes, false);
+}
+/** External provider telemetry may contain fractional durations. Never use this for Bridge wire records. */
+export function parseStrictProviderJsonBytes(bytes: Uint8Array): unknown {
+  return parseCheckedJsonBytes(bytes, true);
+}
+function parseCheckedJsonBytes(bytes: Uint8Array, allowFractions: boolean): unknown {
   const source = decodeStrictUtf8(bytes, "JSON");
   // JSON.parse checks grammar; the second pass rejects duplicate decoded member names.
   const parsed: unknown = JSON.parse(source);
@@ -121,12 +128,12 @@ export function parseStrictJsonBytes(bytes: Uint8Array): unknown {
     }
   };
   value(0);
-  const numberErrors = safeNumbers(parsed);
+  const numberErrors = safeNumbers(parsed, allowFractions);
   if (numberErrors.length) throw new Error(numberErrors.join("; "));
   return parsed;
 }
 
-function safeNumbers(data: unknown): string[] {
+function safeNumbers(data: unknown, allowFractions = false): string[] {
   const errors: string[] = [];
   const pending: { value: unknown; path: string }[] = [{ value: data, path: "" }];
   const seen = new Set<object>();
@@ -134,7 +141,12 @@ function safeNumbers(data: unknown): string[] {
     const current = pending.pop();
     if (!current) break;
     const { value, path } = current;
-    if (typeof value === "number" && (!Number.isFinite(value) || !Number.isSafeInteger(value))) {
+    if (
+      typeof value === "number" &&
+      (!Number.isFinite(value) ||
+        Math.abs(value) > Number.MAX_SAFE_INTEGER ||
+        (!allowFractions && !Number.isSafeInteger(value)))
+    ) {
       errors.push(`${path || "/"} must be a safe integer`);
     } else if (typeof value === "string" && /[\uD800-\uDFFF]/u.test(value)) {
       errors.push(`${path || "/"} contains an unpaired Unicode surrogate`);

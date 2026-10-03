@@ -1,7 +1,9 @@
 /** Explicit host deployment entry point. Merely building/importing this module performs no IO. */
+
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { ANTIGRAVITY_ADAPTER_CAPABILITIES } from "../adapters/antigravity.js";
 import type { BridgeHost } from "../adapters/bridge-host.js";
 import type { BrowserDeliveryService } from "../adapters/browser-delivery.js";
 import { openTrustedDeployment } from "../adapters/deployment-loader.js";
@@ -43,6 +45,7 @@ export async function runBusCli(args: string[]): Promise<unknown> {
           cli: "broker_implemented_os_supervisor_required",
           ordinaryChat: "browser_delivery_implemented_live_unverified",
           quota: "public_app_server_management_only",
+          antigravity: ANTIGRAVITY_ADAPTER_CAPABILITIES,
           liveActivated: false,
         };
   if (args[0] !== "--deployment" || !args[1] || !isAbsolute(args[1]))

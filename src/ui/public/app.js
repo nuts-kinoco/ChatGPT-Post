@@ -1,4 +1,14 @@
 /* No task state is generated here. Every accepted status and receipt comes from the local API. */
+/** Labels are presentation only. TaskPolicy and the host installation registry authorize IDs. */
+export function agentLabel(id) {
+  const labels = {
+    claude: "Claude Code",
+    codex: "Codex",
+    antigravity: "Antigravity",
+    chatgpt: "ChatGPT",
+  };
+  return Object.hasOwn(labels, id) ? labels[id] : id;
+}
 const TOKEN_KEY = "bridge-v2-ui-token";
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 export const STATUS = {
@@ -551,7 +561,7 @@ function boot() {
     text("receipt-expiry", envelope ? time(envelope.expires_at) : "未発行");
     text("scope-description", `${spec.mode} · タスクネットワーク ${spec.task_network}`);
     text("policy-repo", spec.repo);
-    text("policy-agent", `${spec.agent} / ${spec.requested_model}`);
+    text("policy-agent", `${agentLabel(spec.agent)} / ${spec.requested_model}`);
     text(
       "policy-paths",
       spec.allowed_paths.length
@@ -593,7 +603,7 @@ function boot() {
       "delivery-status",
       task.handshakes.receipt_ack ? "受信ACKを記録済み" : "受信ACKの記録なし",
     );
-    text("payload-agent", `依頼先 ${spec.agent} / ${spec.requested_model}`);
+    text("payload-agent", `依頼先 ${agentLabel(spec.agent)} / ${spec.requested_model}`);
     text("file-md", spec.task_file);
     text("task-md", task.taskMarkdown);
     text("task-json", task.rawSpec);
@@ -639,7 +649,7 @@ function boot() {
     text("evidence-run", result.run_id || "未発行");
     text(
       "evidence-identity",
-      `${result.actual_agent || "agent 未取得"} / ${result.actual_model || "model 未取得"}`,
+      `${agentLabel(result.actual_agent) || "agent 未取得"} / ${result.actual_model || "model 未取得"}`,
     );
     text(
       "evidence-receipt",
@@ -674,7 +684,10 @@ function boot() {
     text("recovery-fence", `${result.fencing_token} · 観測 #${result.observation_seq}`);
     text("dock-title", summary.title);
     text("dock-time", shortTime(result.observed_at));
-    text("dock-destination", result.synthetic ? `デモ · ${spec.agent}` : spec.agent);
+    text(
+      "dock-destination",
+      result.synthetic ? `デモ · ${agentLabel(spec.agent)}` : agentLabel(spec.agent),
+    );
     text(
       "dock-mode",
       { manual: "依頼ごとに確認", automatic: "受付時に条件判定", bypass: "事前許可に照合" }[
