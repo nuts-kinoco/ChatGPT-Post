@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openTrustedDeployment } from "../adapters/deployment-loader.js";
+import { ArchiveError } from "../archive/types.js";
 import { parseStrictJsonBytes } from "../contracts/task.js";
 import {
   type UiAck,
@@ -58,6 +59,12 @@ function sendJson(response: ServerResponse, value: unknown, status = 200): void 
 }
 function safeError(error: unknown): UiError {
   if (error instanceof UiError) return error;
+  if (error instanceof ArchiveError)
+    return new UiError(
+      error.code,
+      "Archive operation stopped safely; preserve the request and inspect storage",
+      409,
+    );
   const code = error instanceof Error ? error.message.split(":")[0] : "";
   const known = new Set([
     "request_id_conflict",
@@ -249,6 +256,8 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         if (method !== "GET" && method !== "POST")
           throw new UiError("method_not_allowed", "Only GET and POST are supported", 405);
         if (method === "GET") {
+          if (rawUrl === "/api/archive/settings")
+            return sendJson(response, service.archiveSettings());
           if (rawUrl === "/api/bootstrap") return sendJson(response, service.bootstrap());
           if (rawUrl === "/api/tasks")
             return sendJson(response, { ...service.metadata(), tasks: service.bootstrap().tasks });
@@ -258,10 +267,14 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
               diagnostics: service.diagnostics(),
             });
           const match =
-            /^\/api\/tasks\/([a-f0-9-]+)(?:\/(events|receipts|result|preflight))?$/.exec(rawUrl);
+            /^\/api\/tasks\/([a-f0-9-]+)(?:\/(events|receipts|result|preflight|archive))?$/.exec(
+              rawUrl,
+            );
           if (match?.[1]) {
             const detail = service.task(match[1]);
             switch (match[2]) {
+              case "archive":
+                return sendJson(response, service.inspectArchive(match[1]));
               case "events":
                 return sendJson(response, { ...service.metadata(), events: detail.task.events });
               case "receipts":
@@ -288,6 +301,17 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
           }
         } else {
           const input = await body(request);
+          if (rawUrl === "/api/archive/settings") {
+            validateUiBody("archive-settings", input);
+            return sendJson(
+              response,
+              service.configureArchive(input as Parameters<TaskUiService["configureArchive"]>[0]),
+            );
+          }
+          if (rawUrl === "/api/archive/probe") {
+            validateUiBody("archive-probe", input);
+            return sendJson(response, service.probeArchiveRoot((input as { root: string }).root));
+          }
           if (rawUrl === "/api/validate" || rawUrl === "/api/tasks") {
             validateUiBody("import", input);
             return sendJson(
@@ -303,12 +327,18 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
             return sendJson(response, service.createDemo(input as UiDemoTask), 201);
           }
           const match =
-            /^\/api\/tasks\/([a-f0-9-]+)\/(approve|start|cancel|reconcile|ack|demo-observation)$/.exec(
+            /^\/api\/tasks\/([a-f0-9-]+)\/(approve|start|cancel|reconcile|ack|demo-observation|archive|diagnostic-export)$/.exec(
               rawUrl,
             );
           if (match?.[1]) {
             const id = match[1];
             switch (match[2]) {
+              case "archive":
+                validateUiBody("empty", input);
+                return sendJson(response, await service.archiveResult(id));
+              case "diagnostic-export":
+                validateUiBody("empty", input);
+                return sendJson(response, service.exportDiagnostics(id).envelope);
               case "approve":
                 validateUiBody("bound", input);
                 return sendJson(response, await service.approve(id, input as UiBinding));

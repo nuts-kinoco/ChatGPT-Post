@@ -46,6 +46,7 @@ Request target: chat (default) or dot; dot uses the PO persistent thread, one re
 
 commands:
   ui [--profile production|demo] [--port <n>]  Bridge v2 local product UI
+  archive <subcommand>       Local artifact archive and sanitized diagnostics; archive help
   task <subcommand>          Bridge v2 validation, schemas and read-only ledger snapshots; task help
   login                      専用ブラウザを開き、人間がログインする
   doctor [--json] [--no-login] 環境・プロファイル・ロック・ログイン状態を診断する
@@ -1028,6 +1029,10 @@ async function cmdStealthSignals(cfg: BridgeConfig): Promise<number> {
 }
 
 export async function main(argv: string[]): Promise<number> {
+  if (argv[0] === "archive") {
+    const { runArchiveCli } = await import("./archive.js");
+    return runArchiveCli(argv.slice(1));
+  }
   // Keep v2 options and SQLite imports isolated from the unchanged legacy browser routes.
   if (argv[0] === "ui") {
     const { runUiCli } = await import("./ui.js");

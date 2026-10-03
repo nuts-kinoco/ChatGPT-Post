@@ -1,0 +1,66 @@
+{
+  "schema": "bridge-independent-review-1",
+  "date": "2026-10-03",
+  "scope": "intermediate archive and requester materialization",
+  "verdict": "passed",
+  "reviewedSourceManifestSha256": "db1c044f8289a4db9cb9288b72192d6e40812c0e7f9e1f2c3cd2a3001fde4158",
+  "baseCommit": "a1ed5427379b37167db839bbc1d19d52e22afafd",
+  "independentAdversarialRegressions": {
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0
+  },
+  "root": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "testsPassed": 1301,
+    "testsSkipped": 56,
+    "skipScope": "inherited browser environmental gates"
+  },
+  "gui": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "testsPassed": 51,
+    "testsSkipped": 0
+  },
+  "pr5AddedTests": {
+    "passed": 300,
+    "skipped": 0
+  },
+  "compatibility": "TaskSpec and ResultSpec schemas unchanged",
+  "fixedFindings": [
+    "historical root pin redirection and unvalidated replay",
+    "allocated no-launch receipt evidence compatibility",
+    "raw hosted source versus published body substitution",
+    "ancestor fsync recovery barrier",
+    "concurrent incomplete collection regressing complete manifest",
+    "admitted hosted contract persistence mismatch",
+    "unmapped images omitted from requester inventory",
+    "arbitrary CLI error text disclosure",
+    "known-no-send contract evidence compatibility"
+  ],
+  "evidenceBoundary": {
+    "real": [
+      "Ed25519 signatures",
+      "SQLite WAL/FULL",
+      "private temporary filesystem",
+      "file and directory fsync",
+      "exact bytes and hashes",
+      "requester durable readback"
+    ],
+    "synthetic": [
+      "browser/provider/Git store",
+      "injected permission/disk failures"
+    ],
+    "notVerified": [
+      "Windows native storage, ACL and reparse support",
+      "user computer and drives",
+      "live model CLI",
+      "live ordinary Chat",
+      "live artifact sharing"
+    ]
+  },
+  "note": "ARCHIVE-VERIFICATION.json records the command run before this independent recheck. This report records the subsequent passing review of the exact immutable source manifest."
+}

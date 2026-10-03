@@ -119,7 +119,15 @@ ajv.addSchema(
 );
 const validators = new Map<string, ValidateFunction>();
 export function validateUiBody(
-  kind: "import" | "empty" | "bound" | "ack" | "demo" | "observation",
+  kind:
+    | "import"
+    | "empty"
+    | "bound"
+    | "ack"
+    | "demo"
+    | "observation"
+    | "archive-settings"
+    | "archive-probe",
   value: unknown,
 ): void {
   let validator = validators.get(kind);

@@ -1,0 +1,62 @@
+{
+  "schema": "archive-verification-1",
+  "date": "2026-10-03",
+  "baseCheckpoint": "PR3 published head a1ed5427379b37167db839bbc1d19d52e22afafd",
+  "baseManifestSha256": "dba90387979d2c38dd0fc2a406f56eaf0702c5788e5b5653dc3269b9ad921ea2",
+  "root": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "testFilesPassed": 75,
+    "testsPassed": 1301,
+    "testsSkipped": 56,
+    "skipScope": "pre-existing browser fixture/live environmental gates"
+  },
+  "gui": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "build": "passed",
+    "testsPassed": 51,
+    "testsSkipped": 0
+  },
+  "pr5AdditionalTests": {
+    "passed": 300,
+    "skipped": 0,
+    "outputContractDependencyTestsAlreadyInPR3": 144
+  },
+  "realEvidence": [
+    "private temporary filesystem",
+    "SQLite WAL/FULL",
+    "SHA-256 byte validation",
+    "Ed25519 signing and verification",
+    "file and directory fsync",
+    "requester durable readback",
+    "CLI command function and built help entrypoint",
+    "authenticated loopback API"
+  ],
+  "syntheticEvidence": [
+    "Git object-store transport",
+    "provider/model execution",
+    "rendered DOM/Page fixtures",
+    "permission/disk/timeout fault injection"
+  ],
+  "notRun": [
+    "Windows native ACL/reparse/storage durability",
+    "user computer or S:/M: drives",
+    "live normal Chat roundtrip",
+    "live model CLI roundtrip",
+    "real GitHub artifact publication",
+    "notifications/authentication changes"
+  ],
+  "publicationAtVerification": "not_published",
+  "independentReview": "eight_findings_independently_passed_no_send_fix_pending_frozen_recheck",
+  "fullUserMilestone": "not_established",
+  "reviewRegression": {
+    "independentFindings": 9,
+    "targetedFilesPassed": 5,
+    "targetedTestsPassed": 44,
+    "syntheticFaultInjection": true,
+    "knownNoSendRoundtripTestsPassed": 3,
+    "contradictionTestsPassed": 6
+  }
+}

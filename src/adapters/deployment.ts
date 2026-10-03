@@ -1,3 +1,4 @@
+import type { TaskArchivePort } from "../archive/types.js";
 /** Composition root shared by an authenticated UI host and the GitHub recipient worker.
  * Configuration is trusted host code, never a TaskSpec, transport message or imported JSON.
  */
@@ -17,6 +18,7 @@ import {
 import { type AuthoritySession, LocalTaskAuthority } from "./local-authority.js";
 export interface DeploymentOptions {
   store: TaskStore;
+  artifactArchive?: TaskArchivePort;
   executor: TaskExecutor;
   policy: TaskPolicy;
   bus: GitHubTaskBus;
@@ -108,6 +110,7 @@ export function createBridgeDeployment(options: DeploymentOptions) {
     quotaGuard,
     5000,
     quota,
+    options.artifactArchive,
   );
   const authority = new LocalTaskAuthority(controller, options.authoritySession, now);
   const pump = new GitHubRecipientPump(options.bus, controller, options.journal, () =>
