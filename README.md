@@ -15,6 +15,18 @@ The v2 task protocol, durable controller and fake-only tests are implemented in 
 - [Ordinary Chat / Work event-delivery research and verification limits](docs/bridge-v2/DELIVERY-ADDENDUM.md)
 - [Standalone synthetic UI mock](docs/bridge-v2/mock/bridge-v2-interface.html)
 
+## Bridge v2 product UI (PR2)
+
+The existing Electron app now opens the approved 280×380 vertical dock and a separate task-detail window.
+From the repository root run `npm run build` then `npm run ui`, or build/start the existing `gui/` package.
+The UI is backed by the durable task ledger and authenticated loopback API; accepted payloads are immutable.
+Production execution/approval remain disabled until trusted adapters are configured. `npm run ui:demo` explicitly
+selects a separate persistent synthetic profile with no model/process/network execution.
+
+- [UI usage guide](docs/bridge-v2/UI-USAGE.md)
+- [UI test procedure](docs/bridge-v2/UI-TESTING.md)
+- [UI verification and remaining checks](docs/bridge-v2/UI-VERIFICATION.md)
+
 ## 現状
 
 **Phase 7（運用手順・最終レビュー）実施中。契約 1.2。** 実ブラウザで次が動いています（すべて 2026-09-15 の Live で確認、[docs/live-results/](docs/live-results/)）:

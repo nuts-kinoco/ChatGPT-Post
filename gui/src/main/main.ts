@@ -14,6 +14,7 @@ import { startPollLoop } from "./poll-loop.js";
 import { RENDERER_SCHEME, rendererFilePath, resolveRendererUrl } from "./renderer-protocol.js";
 import { bottomRightPosition, clampToWorkArea, isSavedPositionValid, popupBoundsForAnchor, type WindowBounds, type WindowPosition } from "./bar-position.js";
 import * as fs from "node:fs/promises";
+import { productNavigation, productStartupError, productUrl, revealExistingProductDetail, startProductUi, type ProductUiServer } from "./product-ui.js";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: RENDERER_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
@@ -57,6 +58,95 @@ let barAnchorPosition: WindowPosition | undefined;
 let loadingBarPosition: Promise<void> | undefined;
 let saveBarPositionTimeout: NodeJS.Timeout | undefined;
 let lastProgrammaticBounds: WindowBounds | undefined;
+
+let productServer: ProductUiServer | undefined;
+let productStarting: Promise<ProductUiServer> | undefined;
+let productDock: BrowserWindow | undefined;
+let productDetail: BrowserWindow | undefined;
+
+async function ensureProductServer(): Promise<ProductUiServer> {
+  if (productServer) return productServer;
+  if (!bridgePaths.ok) throw new Error(bridgePaths.error);
+  productStarting ??= startProductUi(bridgePaths.root, process.env);
+  try {
+    productServer = await productStarting;
+    return productServer;
+  } finally { productStarting = undefined; }
+}
+
+function secureProductWindow(window: BrowserWindow, server: ProductUiServer) {
+  // This content has no Electron preload or Node access. All authority stays in the
+  // authenticated loopback API, and every navigation is inspected by the main process.
+  window.webContents.on("will-navigate", (event, target) => {
+    event.preventDefault();
+    const navigation = productNavigation(target, server.origin);
+    if (navigation?.view === "detail") void showProductDetail(navigation);
+  });
+  window.webContents.on("will-redirect", (event) => event.preventDefault());
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  window.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    window.hide();
+  });
+}
+
+async function showProductDetail(navigation?: { tab?: string; task?: string }) {
+  // The detail window owns its selected task, pending action and unsent draft. Repeated
+  // dock/tray navigation focuses it; changing selection happens inside that existing UI.
+  if (revealExistingProductDetail(productDetail)) return;
+  try {
+    const server = await ensureProductServer();
+    if (!productDetail) {
+      productDetail = new BrowserWindow({
+        width: 1280, height: 900, minWidth: 440, minHeight: 600, show: false,
+        title: "Bridge v2 · 依頼の確認",
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, partition: "bridge-v2-ui" },
+      });
+      secureProductWindow(productDetail, server);
+    }
+    await productDetail.loadURL(productUrl(server, "detail", navigation));
+    productDetail.show();
+    productDetail.focus();
+  } catch (error) {
+    if (productDetail && !productDetail.isDestroyed()) productDetail.destroy();
+    productDetail = undefined;
+    showProductError(error);
+  }
+}
+
+function showProductError(error: unknown) {
+  // Never include the capability URL in errors or diagnostics.
+  const message = productStartupError(error);
+  dialog.showErrorBox("Bridge v2 UI を起動できません", `${message}\nBridgeのルートで npm run build を実行してから再起動してください。`);
+}
+
+async function showProductDock() {
+  try {
+    const server = await ensureProductServer();
+    if (!productDock) {
+      const workArea = screen.getPrimaryDisplay().workArea;
+      const position = bottomRightPosition(workArea, 280, 380, WINDOW_MARGIN);
+      productDock = new BrowserWindow({
+        width: 280, height: 380, ...position, useContentSize: true, frame: false,
+        resizable: false, skipTaskbar: true, alwaysOnTop: true, show: false,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, partition: "bridge-v2-ui" },
+      });
+      secureProductWindow(productDock, server);
+      await productDock.loadURL(productUrl(server, "dock"));
+    }
+    if (productDock.isMinimized()) productDock.restore();
+    ensureWindowIsOnOneDisplay();
+    productDock.show();
+    productDock.focus();
+  } catch (error) {
+    if (productDock && !productDock.isDestroyed()) productDock.destroy();
+    productDock = undefined;
+    showProductError(error);
+  }
+}
+function toggleProductDock() { if (productDock?.isVisible()) productDock.hide(); else void showProductDock(); }
 
 function rendererUrl(): string { return resolveRendererUrl(app.isPackaged, process.env.ELECTRON_RENDERER_URL); }
 function registerRendererProtocol() {
@@ -137,6 +227,12 @@ function positionWindow(): WindowBounds | undefined {
   return bounds;
 }
 function ensureWindowIsOnOneDisplay() {
+  if (productDock) {
+    const bounds = productDock.getBounds();
+    const area = screen.getDisplayMatching(bounds).workArea;
+    const clamped = clampToWorkArea(bounds, area);
+    if (!sameBounds(bounds, clamped)) productDock.setBounds(clamped);
+  }
   if (!barWindow) return;
   positionWindow();
 }
@@ -155,7 +251,13 @@ function onBarMoved() {
   rememberBarPosition({ x: clampedAnchor.x, y: clampedAnchor.y });
   positionWindow();
 }
+let legacyPollingStarted = false;
 async function showBar() {
+  if (!legacyPollingStarted) {
+    legacyPollingStarted = true;
+    startPollLoop(pollDoctor, DOCTOR_POLL_INTERVAL_MS);
+    startPollLoop(pollRequests, REQUESTS_POLL_INTERVAL_MS);
+  }
   if (!barWindow) {
     await loadBarPosition();
     if (!barWindow) {
@@ -377,8 +479,8 @@ async function pollDoctor(): Promise<void> {
 async function pollRequests() { scannedRequests = await scanRequests(REQUESTS_PATH); publishState(); }
 
 if (hasSingleInstanceLock) {
-  app.on("before-quit", () => { isQuitting = true; });
-  app.on("second-instance", () => { if (bridgePaths.ok) void app.whenReady().then(showBar); });
+  app.on("before-quit", () => { isQuitting = true; void productServer?.close(); });
+  app.on("second-instance", () => { if (bridgePaths.ok) void app.whenReady().then(showProductDock); });
 
   app.whenReady().then(() => {
     registerRendererProtocol();
@@ -389,8 +491,14 @@ if (hasSingleInstanceLock) {
     }
     tray = new Tray(createTrayIcon());
     tray.setToolTip("ChatGPT Bridge Control");
-    tray.setContextMenu(Menu.buildFromTemplate([{ label: "Show", click: () => void showBar() }, { type: "separator" }, { label: "Quit", click: () => app.quit() }]));
-    tray.on("click", () => void showBar());
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: "Bridge v2 を表示", click: () => void showProductDock() },
+      { label: "依頼の詳細", click: () => void showProductDetail() },
+      { label: "従来のブラウザチャット", click: () => void showBar() },
+      { type: "separator" }, { label: "終了", click: () => app.quit() },
+    ]));
+    tray.on("click", () => void showProductDock());
+    void showProductDock();
     ipcMain.on("bridge-gui:subscribe", (event) => event.sender.send("bridge-gui:state", bridgeState));
     ipcMain.on("bridge-gui:toggle-popup", () => { popupOpen = !popupOpen; positionWindow(); });
     ipcMain.handle("bridge-gui:window-controls", (): WindowControlState => windowControls);
@@ -466,10 +574,9 @@ if (hasSingleInstanceLock) {
       }
       return requestSubmit(path.join(requestDirectory, "request.json"));
     });
-    const hotkeyRegistered = globalShortcut.register("CommandOrControl+Shift+C", toggleBar);
+    const hotkeyRegistered = globalShortcut.register("CommandOrControl+Shift+C", toggleProductDock);
     if (!hotkeyRegistered) console.warn("Bridge GUI: global hotkey CommandOrControl+Shift+C is already in use; continuing without it");
-    startPollLoop(pollDoctor, DOCTOR_POLL_INTERVAL_MS);
-    startPollLoop(pollRequests, REQUESTS_POLL_INTERVAL_MS);
+
     screen.on("display-metrics-changed", ensureWindowIsOnOneDisplay);
     screen.on("display-added", ensureWindowIsOnOneDisplay);
     screen.on("display-removed", ensureWindowIsOnOneDisplay);

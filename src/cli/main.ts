@@ -45,6 +45,7 @@ const USAGE = `chatgpt-bridge <command> [options]
 Request target: chat (default) or dot; dot uses the PO persistent thread, one request at a time.
 
 commands:
+  ui [--profile production|demo] [--port <n>]  Bridge v2 local product UI
   task <subcommand>          Bridge v2 validation, schemas and read-only ledger snapshots; task help
   login                      専用ブラウザを開き、人間がログインする
   doctor [--json] [--no-login] 環境・プロファイル・ロック・ログイン状態を診断する
@@ -1028,6 +1029,10 @@ async function cmdStealthSignals(cfg: BridgeConfig): Promise<number> {
 
 export async function main(argv: string[]): Promise<number> {
   // Keep v2 options and SQLite imports isolated from the unchanged legacy browser routes.
+  if (argv[0] === "ui") {
+    const { runUiCli } = await import("./ui.js");
+    return runUiCli(argv.slice(1));
+  }
   if (argv[0] === "task") {
     const { runTaskCli } = await import("./task.js");
     return runTaskCli(argv.slice(1));

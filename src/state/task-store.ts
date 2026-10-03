@@ -129,6 +129,28 @@ export class TaskStore {
       | undefined;
     return row ? (JSON.parse(row.snapshot) as TaskRecord) : null;
   }
+  /** Read-only product projections; snapshots remain immutable controller authority. */
+  listAll(): TaskRecord[] {
+    const rows = this.db.prepare("SELECT snapshot FROM task_jobs ORDER BY rowid DESC").all() as {
+      snapshot: string;
+    }[];
+    return rows.map((row) => JSON.parse(row.snapshot) as TaskRecord);
+  }
+  events(requestId: string): TaskRecord[] {
+    const rows = this.db
+      .prepare("SELECT snapshot FROM task_events WHERE request_id=? ORDER BY sequence")
+      .all(requestId) as { snapshot: string }[];
+    return rows.map((row) => JSON.parse(row.snapshot) as TaskRecord);
+  }
+  approvalsForRequest(requestId: string): { envelope: ApprovalEnvelope; consumed: boolean }[] {
+    const rows = this.db
+      .prepare("SELECT envelope, consumed FROM task_approvals WHERE request_id=? ORDER BY rowid")
+      .all(requestId) as { envelope: string; consumed: number }[];
+    return rows.map((row) => ({
+      envelope: JSON.parse(row.envelope) as ApprovalEnvelope,
+      consumed: row.consumed === 1,
+    }));
+  }
   receive(record: TaskRecord): { record: TaskRecord; duplicate: boolean } {
     return this.transaction(() => {
       const prior = this.get(record.result.request_id);

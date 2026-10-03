@@ -1,43 +1,53 @@
 # Bridge Control GUI
 
-## Packaged Windows build
+The existing Electron package now opens the Bridge v2 product UI: a 280×380 vertical status dock,
+with a separate detail window. It loads the same authenticated loopback service used by `chatgpt-bridge ui`.
+This is a wired application entrypoint, not the standalone design mock.
 
-From `gui/`, create the portable Windows executable with:
+## Build and launch
+
+From the repository root:
 
 ```powershell
-npm install
+npm ci
+npm run build
+$env:CHATGPT_BRIDGE_ROOT = (Get-Location).Path
+$env:CHATGPT_BRIDGE_RUNTIME_DIR = Join-Path $env:LOCALAPPDATA 'ChatGPTBridge\runtime'
+cd gui
+npm ci
+npm start
+```
+
+Default profile is `production`; unconfigured executor/approval actions are disabled with reasons.
+To exercise persistent synthetic lifecycle flows without models/processes/network, explicitly set
+`$env:CHATGPT_BRIDGE_UI_PROFILE = 'demo'` before starting. Demo uses `runtime/ui-demo/jobs.db`;
+production uses `runtime/jobs.db`. Never treat synthetic results as real execution evidence.
+
+Tray click or Ctrl+Shift+C shows the v2 dock. The tray includes v2 details, the existing browser-chat
+UI, and Quit. Legacy `run/submit/status/wait/result` routes remain available. The old GUI's doctor
+polling starts only when the user opens that legacy view.
+
+The v2 renderer uses a sandbox without the legacy privileged preload. Its private per-launch
+capability URL is not a share link and must not appear in logs, messages or screenshots.
+
+## Packaged Windows build
+
+```powershell
 npm run package
 ```
 
-The executable is written to `gui/release/`. Run it directly; it is a portable build and does not
-require an installer. Each launch unpacks into its own temporary directory (`portable.unpackDirName: true`);
-with electron-builder's default fixed directory, launching the exe again (e.g. to show the bar) wiped the
-running instance's files, and every CLI call then crashed with `Invalid file descriptor to ICU data received`.
+The portable executable is written to `gui/release/`. Rebuild after updating source; an old exe
+will not update itself. Set `CHATGPT_BRIDGE_ROOT` to the updated, built repository before launch.
+Each launch uses its own extraction directory (`portable.unpackDirName: true`) to avoid removing
+files used by an existing instance.
 
-This independent Electron package is the tray-resident, read-only Bridge Control monitor. It polls
-`node ../dist/cli/main.js doctor --json` and scans `../runtime/requests/`; it never invokes a
-mutating CLI command or writes under `runtime/`.
+## Checks and handoff
 
-## Optional request display metadata
+`npm run build`, `npm run typecheck`, `npm run lint`, and `npm test` verify this package.
+Cloud checks do not establish Windows rendering, process-tree/NTFS behavior, or production model execution.
 
-Callers may add `runtime/requests/<requestId>/meta.json` beside `request.json` for GUI display
-only. It is not part of the bridge request contract and the bridge neither reads nor writes it:
+- [Usage guide](../docs/bridge-v2/UI-USAGE.md)
+- [Test procedure](../docs/bridge-v2/UI-TESTING.md)
 
-```json
-{ "caller": "Codex", "project": "Bridge", "title": "Short display title" }
-```
-
-All fields are optional. Missing `caller` and `project` render as `—`; a missing `title` falls
-back to the first non-empty `prompt.md` line, then the request ID.
-
-## Development
-
-```powershell
-cd gui
-npm install
-npm run dev
-```
-
-Right-click the tray icon and choose **Show**, or click the icon, to open the 380×40 L1 Bar.
-Click the Bar to expand/collapse its 380×520 read-only L2 Popup. Choose **Quit** from the tray
-menu to exit. `npm run build`, `npm run typecheck`, and `npm run lint` operate only on this package.
+Legacy request metadata remains optional and display-only: `runtime/requests/<requestId>/meta.json`
+may contain `caller`, `project`, and `title`. Missing values retain the existing fallbacks.

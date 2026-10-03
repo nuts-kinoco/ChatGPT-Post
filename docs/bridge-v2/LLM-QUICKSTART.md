@@ -85,3 +85,11 @@ All CLI errors include `retryable:false`, `reexecute:false`, and an actionable `
 ## Minimal handoff to another LLM
 
 > Use repository nuts-kinoco/ChatGPT-Post at the published revision supplied by its owner. Read docs/bridge-v2/LLM-QUICKSTART.md first, run task capabilities, and inspect task schema task/result. Validate only unless a trusted production integration and exact authority are actually configured. Preserve request UUID/raw bytes, request the exact registered agent/model, do not invent effort support or delivery targets, and never reexecute an unknown outcome. Report synthetic evidence as synthetic.
+
+## Product UI entrypoint (PR2)
+
+`npm run build` then `npm run ui` starts the authenticated loopback product UI.
+The existing Electron GUI opens the same UI as a 280×380 dock with progressive details.
+Use [UI-USAGE.md](UI-USAGE.md) for exact launch/profile/button steps and [UI-TESTING.md](UI-TESTING.md)
+for the fixed-commit test procedure. `npm run ui:demo` is an explicitly synthetic isolated profile,
+not a production executor. Legacy browser commands and the offline `task` CLI remain separate.
