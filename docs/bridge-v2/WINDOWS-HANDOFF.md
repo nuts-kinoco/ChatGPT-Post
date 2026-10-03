@@ -1,5 +1,7 @@
 # Windows / Claude implementation and review handoff
 
+Current combined instructions: [USAGE.md](USAGE.md), [TESTING.md](TESTING.md), [PLATFORM-GAPS.md](PLATFORM-GAPS.md). The original checklist below is historical PR1. Codex should implement/repair; Claude should independently audit and retest the exact fixed head. Production OS supervisor code remains missing, separate from Windows verification.
+
 ## Fixed source and safe starting point
 
 Use the exact draft PR head commit recorded in `VERIFICATION.md` / the PR, not a moving main branch. Read `LLM-QUICKSTART.md`, `IMPLEMENTATION.md`, then the relevant protocol sections. This handoff is a plan, not permission to invoke Claude/Codex, connect a PC, install credentials, activate autoapproval, merge or run a live model. Obtain the user's currently required authorization before those actions.

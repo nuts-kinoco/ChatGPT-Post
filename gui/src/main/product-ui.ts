@@ -12,6 +12,7 @@ export interface ProductUiOptions {
   stateDir: string;
   profile: ProductUiProfile;
   port: number;
+  deploymentModule?: string;
 }
 export interface ProductUiModule {
   startUiServer(options: ProductUiOptions): Promise<ProductUiServer>;
@@ -37,6 +38,7 @@ export async function startProductUi(
     profile,
     stateDir: path.resolve(env.CHATGPT_BRIDGE_RUNTIME_DIR ?? path.join(root, "runtime")),
     port: 0,
+    ...(env.CHATGPT_BRIDGE_DEPLOYMENT_MODULE ? { deploymentModule: env.CHATGPT_BRIDGE_DEPLOYMENT_MODULE } : {}),
   });
 }
 

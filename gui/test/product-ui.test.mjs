@@ -75,3 +75,10 @@ test("native load failures never disclose the launch capability URL", () => {
   assert.doesNotMatch(productStartupError(error), /PRIVATE_TEST_CAPABILITY|#token|127\.0\.0\.1/u);
   assert.doesNotMatch(productStartupError({ code: "ERR_MODULE_NOT_FOUND", message: error.message }), /PRIVATE_TEST_CAPABILITY/u);
 });
+
+test("explicit production deployment module reaches the shared product server", async () => {
+  let options;
+  await startProductUi(path.resolve("checkout"), { CHATGPT_BRIDGE_DEPLOYMENT_MODULE: "/trusted/deployment.mjs" }, async () => ({ startUiServer: async value => { options = value; return server; } }));
+  assert.equal(options.deploymentModule, "/trusted/deployment.mjs");
+  assert.equal(options.profile, "production");
+});

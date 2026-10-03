@@ -6,7 +6,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { serializeTaskResult } from "../contracts/task.js";
+import { isDeepStrictEqual } from "node:util";
+import { assertDeliveryBinding } from "../contracts/delivery-proof.js";
+import {
+  type MaterializationReceiptV1,
+  parseMaterializationReceiptV1,
+  serializeMaterializationReceiptV1,
+} from "../contracts/materialization.js";
+import { serializeTaskResult, taskResultArtifactRefs } from "../contracts/task.js";
 import type {
   ApprovalEnvelope,
   ArtifactRef,
@@ -34,6 +41,9 @@ export interface RunIntent {
   cancelReason: "user" | "timeout" | null;
 }
 export interface TaskRecord {
+  projectRegistration?:
+    | import("../contracts/project-registry.js").ProjectRegistrationReference
+    | null;
   rawSpec: string;
   taskBytesBase64: string;
   result: ResultSpec;
@@ -70,6 +80,7 @@ export class TaskStore {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;");
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS task_materialization (request_id TEXT PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_quota_observations (observation_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, snapshot TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_jobs (
         request_id TEXT PRIMARY KEY, spec_hash TEXT NOT NULL,
@@ -156,6 +167,8 @@ export class TaskStore {
       const prior = this.get(record.result.request_id);
       if (prior) {
         if (
+          JSON.stringify(prior.projectRegistration ?? null) !==
+            JSON.stringify(record.projectRegistration ?? null) ||
           prior.rawSpec !== record.rawSpec ||
           prior.taskBytesBase64 !== record.taskBytesBase64 ||
           prior.bridgeId !== record.bridgeId ||
@@ -444,7 +457,7 @@ export class TaskStore {
           job.result.task_spec_hash !== dependency.taskSpecHash ||
           (dependency.expectedCommit !== null &&
             job.result.resulting_commit !== dependency.expectedCommit) ||
-          (dependency.requireAck && !this.handshake(dependency.requestId, "result_ack")) ||
+          (dependency.requireAck && !this.deliveryVerified(dependency.requestId)) ||
           (!record.result.synthetic && job.result.synthetic)
         )
           throw new Error("dependency_not_succeeded");
@@ -660,6 +673,9 @@ export class TaskStore {
           .run(id, JSON.stringify({ workflowHash, dependencies }));
     });
   }
+  dependencies(requestId: string) {
+    return this.dependencyRecord(requestId);
+  }
   private dependencyRecord(requestId: string): {
     workflowHash: string;
     workflowId?: string;
@@ -742,16 +758,72 @@ export class TaskStore {
       .get(sessionId) as { stopped: number } | undefined;
     return row?.stopped === 1;
   }
+  listPage(after = "", limit = 32): { requestIds: string[]; next: string | null } {
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 256 ||
+      (after !== "" && !/^[a-f0-9-]{36}$/.test(after))
+    )
+      throw new Error("task_page_invalid");
+    const rows = this.db
+      .prepare("SELECT request_id FROM task_jobs WHERE request_id>? ORDER BY request_id LIMIT ?")
+      .all(after, limit + 1) as { request_id: string }[];
+    return {
+      requestIds: rows.slice(0, limit).map((row) => row.request_id),
+      next: rows.length > limit ? (rows[limit - 1]?.request_id ?? null) : null,
+    };
+  }
   listSession(sessionId: string): TaskRecord[] {
     const rows = this.db.prepare("SELECT snapshot FROM task_jobs").all() as { snapshot: string }[];
     return rows
       .map((row) => JSON.parse(row.snapshot) as TaskRecord)
       .filter((row) => row.sessionId === sessionId);
   }
+  /** Read-only projection of durable counters. Limits come separately from the trusted policy. */
+  sessionSnapshot(sessionId: string): {
+    sessionId: string;
+    stopped: boolean;
+    paused: boolean;
+    starts: number;
+    reserved: number;
+    reservedSeconds: number;
+  } {
+    const row = this.db.prepare("SELECT * FROM task_sessions WHERE session_id=?").get(sessionId) as
+      | {
+          stopped: number;
+          paused: number;
+          starts: number;
+          reserved: number;
+          reserved_seconds: number;
+        }
+      | undefined;
+    return {
+      sessionId,
+      stopped: row?.stopped === 1,
+      paused: row?.paused === 1,
+      starts: row?.starts ?? 0,
+      reserved: row?.reserved ?? 0,
+      reservedSeconds: row?.reserved_seconds ?? 0,
+    };
+  }
+  /** Opaque registered resource keys, not filesystem paths; no PID-only lock release. */
+  activeLocks(sessionId: string): { resourceKey: string; requestId: string }[] {
+    const ids = new Set(this.listSession(sessionId).map((row) => row.result.request_id));
+    return (
+      this.db
+        .prepare(
+          "SELECT lock_key AS resourceKey,request_id AS requestId FROM task_write_locks ORDER BY lock_key",
+        )
+        .all() as unknown as { resourceKey: string; requestId: string }[]
+    ).filter((row) => ids.has(row.requestId));
+  }
   pendingDeliveries(): { requestId: string; sequence: number }[] {
-    return this.db
-      .prepare("SELECT request_id AS requestId, sequence FROM task_deliveries WHERE acknowledged=0")
-      .all() as unknown as { requestId: string; sequence: number }[];
+    return (
+      this.db
+        .prepare("SELECT request_id AS requestId, sequence FROM task_deliveries")
+        .all() as unknown as { requestId: string; sequence: number }[]
+    ).filter((row) => !this.deliveryVerified(row.requestId));
   }
   private handshakeInside(record: TaskRecord, stage: TaskHandshake["stage"]): TaskHandshake {
     const event: TaskHandshake = {
@@ -802,7 +874,7 @@ export class TaskStore {
   }
   /** Authenticated requester ACK of one immutable terminal event. This is delivery acceptance,
    * not execution, review approval or a Git merge. Redelivery uses the same eventId. */
-  acknowledgeDelivery(ack: TaskHandshake): void {
+  acknowledgeDelivery(ack: TaskHandshake, proof?: MaterializationReceiptV1): void {
     this.transaction(() => {
       const record = this.get(ack.requestId);
       const terminal = this.handshake(ack.requestId, "terminal_result");
@@ -818,21 +890,72 @@ export class TaskStore {
         ack.payloadSha256 !== terminal.payloadSha256 ||
         ack.fencingToken !== terminal.fencingToken ||
         ack.startIntentSequence !== terminal.startIntentSequence ||
-        JSON.stringify(ack.processIdentity) !== JSON.stringify(terminal.processIdentity)
+        !isDeepStrictEqual(ack.processIdentity, terminal.processIdentity)
       )
         throw new Error("delivery_identity_mismatch");
+      if (proof) {
+        this.validateMaterialization(record, terminal, proof);
+        const body = serializeMaterializationReceiptV1(proof);
+        const previous = this.materialization(ack.requestId);
+        if (previous && serializeMaterializationReceiptV1(previous) !== body)
+          throw new Error("delivery_proof_conflict");
+        this.db
+          .prepare("INSERT OR IGNORE INTO task_materialization VALUES (?,?)")
+          .run(ack.requestId, body);
+      } else if (!record.result.synthetic) throw new Error("delivery_materialization_required");
+      // Synthetic demo ACK is labelled simulation and can never unlock a non-synthetic dependent.
       const prior = this.handshake(ack.requestId, "result_ack");
-      if (prior) {
-        if (JSON.stringify(prior) !== JSON.stringify(ack)) throw new Error("ack_conflict");
-        return;
-      }
-      this.db
-        .prepare("INSERT INTO task_handshakes VALUES (?,?,?)")
-        .run(ack.requestId, ack.stage, JSON.stringify(ack));
+      if (prior && !isDeepStrictEqual(prior, ack)) throw new Error("ack_conflict");
+      if (!prior)
+        this.db
+          .prepare("INSERT INTO task_handshakes VALUES (?,?,?)")
+          .run(ack.requestId, ack.stage, JSON.stringify(ack));
       this.db
         .prepare("UPDATE task_deliveries SET acknowledged=1 WHERE request_id=? AND sequence=?")
         .run(ack.requestId, ack.sequence);
     });
+  }
+  materialization(requestId: string): MaterializationReceiptV1 | null {
+    const row = this.db
+      .prepare("SELECT body FROM task_materialization WHERE request_id=?")
+      .get(requestId) as { body: string } | undefined;
+    return row ? parseMaterializationReceiptV1(Buffer.from(row.body)) : null;
+  }
+  private validateMaterialization(
+    record: TaskRecord,
+    terminal: TaskHandshake,
+    proof: MaterializationReceiptV1,
+  ): void {
+    serializeMaterializationReceiptV1(proof);
+    assertDeliveryBinding(proof, {
+      requesterActorId: record.requesterId,
+      recipientActorId: record.bridgeId,
+      requestId: terminal.requestId,
+      taskSpecHash: terminal.taskSpecHash,
+      execution: { kind: "local_execution", runId: terminal.runId },
+      terminalEventId: terminal.eventId,
+      payloadSha256: terminal.payloadSha256,
+    });
+    if (
+      proof.synthetic !== record.result.synthetic ||
+      proof.payloadVerification !== "local_result_and_receipt"
+    )
+      throw new Error("delivery_proof_scope_mismatch");
+    for (const ref of taskResultArtifactRefs(record.result)) {
+      const row = proof.verifiedArtifacts.find((row) => row.artifactId === ref.artifact_id);
+      if (!row?.required || row.contentSha256 !== ref.sha256 || row.sizeBytes !== ref.size_bytes)
+        throw new Error("delivery_proof_artifact_missing");
+    }
+  }
+  /** Historical payload-only ACKs are visible but insufficient for real delivery/dependencies. */
+  deliveryVerified(requestId: string): boolean {
+    const record = this.get(requestId),
+      terminal = this.handshake(requestId, "terminal_result");
+    if (!record || !terminal || !this.handshake(requestId, "result_ack")) return false;
+    const proof = this.materialization(requestId);
+    if (!proof) return record.result.synthetic;
+    this.validateMaterialization(record, terminal, proof);
+    return true;
   }
   close(): void {
     this.db.close();

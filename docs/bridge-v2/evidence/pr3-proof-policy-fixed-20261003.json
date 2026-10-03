@@ -1,0 +1,119 @@
+{
+  "schema": "bridge-verification-1",
+  "startedAt": "2026-10-03T08:23:05.194Z",
+  "finishedAt": "2026-10-03T08:23:25.840Z",
+  "environment": {
+    "platform": "linux",
+    "node": "v24.19.0"
+  },
+  "sourceHead": "4768ef9d7a404598614d6f2d21e02c82b055e1a7",
+  "dirty": true,
+  "result": "passed_with_skips",
+  "liveModelRun": false,
+  "results": [
+    {
+      "scope": "root",
+      "command": "typecheck",
+      "startedAt": "2026-10-03T08:23:05.194Z",
+      "finishedAt": "2026-10-03T08:23:07.860Z",
+      "exitCode": 0,
+      "signal": null,
+      "state": "passed",
+      "passed": null,
+      "skipped": 0,
+      "error": null,
+      "log": "root-typecheck.log"
+    },
+    {
+      "scope": "gui",
+      "command": "typecheck",
+      "startedAt": "2026-10-03T08:23:07.860Z",
+      "finishedAt": "2026-10-03T08:23:09.434Z",
+      "exitCode": 0,
+      "signal": null,
+      "state": "passed",
+      "passed": null,
+      "skipped": 0,
+      "error": null,
+      "log": "gui-typecheck.log"
+    },
+    {
+      "scope": "root",
+      "command": "lint",
+      "startedAt": "2026-10-03T08:23:09.434Z",
+      "finishedAt": "2026-10-03T08:23:09.781Z",
+      "exitCode": 0,
+      "signal": null,
+      "state": "passed",
+      "passed": null,
+      "skipped": 0,
+      "error": null,
+      "log": "root-lint.log"
+    },
+    {
+      "scope": "gui",
+      "command": "lint",
+      "startedAt": "2026-10-03T08:23:09.781Z",
+      "finishedAt": "2026-10-03T08:23:11.359Z",
+      "exitCode": 0,
+      "signal": null,
+      "state": "passed",
+      "passed": null,
+      "skipped": 0,
+      "error": null,
+      "log": "gui-lint.log"
+    },
+    {
+      "scope": "root",
+      "command": "build",
+      "startedAt": "2026-10-03T08:23:11.359Z",
+      "finishedAt": "2026-10-03T08:23:14.616Z",
+      "exitCode": 0,
+      "signal": null,
+      "state": "passed",
+      "passed": null,
+      "skipped": 0,
+      "error": null,
+      "log": "root-build.log"
+    },
+    {
+      "scope": "gui",
+      "command": "build",
+      "startedAt": "2026-10-03T08:23:14.616Z",
+      "finishedAt": "2026-10-03T08:23:17.377Z",
+      "exitCode": 0,
+      "signal": null,
+      "state": "passed",
+      "passed": null,
+      "skipped": 0,
+      "error": null,
+      "log": "gui-build.log"
+    },
+    {
+      "scope": "root",
+      "command": "test",
+      "startedAt": "2026-10-03T08:23:17.377Z",
+      "finishedAt": "2026-10-03T08:23:23.714Z",
+      "exitCode": 0,
+      "signal": null,
+      "state": "passed_with_skips",
+      "passed": 995,
+      "skipped": 56,
+      "error": null,
+      "log": "root-test.log"
+    },
+    {
+      "scope": "gui",
+      "command": "test",
+      "startedAt": "2026-10-03T08:23:23.714Z",
+      "finishedAt": "2026-10-03T08:23:25.840Z",
+      "exitCode": 0,
+      "signal": null,
+      "state": "passed",
+      "passed": 51,
+      "skipped": 0,
+      "error": null,
+      "log": "gui-test.log"
+    }
+  ]
+}

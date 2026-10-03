@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { REPO_ROOT } from "../contracts/schema.js";
 import { startUiServer } from "../ui/server.js";
 
-export const UI_HELP = `chatgpt-bridge ui [--profile production|demo] [--port 0..65535]
+export const UI_HELP = `chatgpt-bridge ui [--profile production|demo] [--port 0..65535] [--deployment /trusted/deployment.mjs]
 
 Starts the local Bridge product UI on 127.0.0.1 only. Open the printed URL in your browser.
 production (default): local ledger, validation and configured capabilities only.
@@ -50,6 +50,7 @@ export async function runUiCli(
       options: {
         profile: { type: "string", default: "production" },
         port: { type: "string", default: "0" },
+        deployment: { type: "string" },
         help: { type: "boolean", default: false },
       },
     });
@@ -63,10 +64,12 @@ export async function runUiCli(
     if (!/^\d{1,5}$/.test(values.port ?? "")) throw new Error("--port must be 0..65535");
     const port = Number(values.port);
     if (port > 65535) throw new Error("--port must be 0..65535");
+    const deploymentModule = values.deployment ?? env.CHATGPT_BRIDGE_DEPLOYMENT_MODULE;
     const instance = await (dependencies.start ?? startUiServer)({
       profile: values.profile,
       stateDir: resolve(env.CHATGPT_BRIDGE_RUNTIME_DIR ?? join(REPO_ROOT, "runtime")),
       port,
+      ...(deploymentModule ? { deploymentModule } : {}),
     });
     try {
       stdout(`Bridge v2 UI · ${values.profile}\n${instance.url}\n`);
@@ -77,7 +80,14 @@ export async function runUiCli(
     }
     return 0;
   } catch (error) {
-    stderr(`UI_START_FAILED: ${error instanceof Error ? error.message : String(error)}\n`);
+    const configured =
+      argv.includes("--deployment") || Boolean(env.CHATGPT_BRIDGE_DEPLOYMENT_MODULE);
+    const message = error instanceof Error ? error.message : String(error);
+    const safe =
+      configured && !/^deployment_[a-z0-9_]{1,80}$/.test(message)
+        ? "configured_deployment_start_failed"
+        : message;
+    stderr(`UI_START_FAILED: ${safe}\n`);
     return 2;
   }
 }

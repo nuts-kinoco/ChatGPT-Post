@@ -1,6 +1,8 @@
 /** Product operations compose the v2 controller and persistent ledger, never spawn a CLI. */
+
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { serializeMaterializationReceiptV1 } from "../contracts/materialization.js";
 import {
   loadTaskSpec,
   serializeTaskResult,
@@ -43,6 +45,9 @@ import { DEMO_LABEL, DemoAuthority, DemoTaskExecutor, demoPolicy, demoTask } fro
 export interface UiRuntime {
   store: TaskStore;
   controller: TaskController;
+  materialize?(
+    requestId: string,
+  ): Promise<import("../contracts/materialization.js").MaterializationReceiptV1>;
   authority?: { approve(requestId: string): Promise<ApprovalEnvelope> };
   /** Authenticated local caller identity, fixed by trusted host wiring, never by request JSON. */
   authenticatedRequesterId?: string;
@@ -149,8 +154,8 @@ export class TaskUiService {
           : reason("reconcile"),
       ),
       ack: cap(
-        true,
-        "Acknowledge the exact immutable terminal delivery; this is not execution or review approval",
+        this.profile === "demo" || !!this.runtime.materialize,
+        "Requester materialization of verified result, receipt and required artifact bytes is required",
       ),
       demo: cap(
         this.profile === "demo",
@@ -174,7 +179,8 @@ export class TaskUiService {
       if (answer.reconcile.enabled && !record.intent)
         answer.reconcile = cap(false, "No dispatch intent exists to reconcile");
       answer.ack = cap(
-        record.requesterId === this.authenticatedRequesterId &&
+        (record.result.synthetic || !!this.runtime.materialize) &&
+          record.requesterId === this.authenticatedRequesterId &&
           !!this.runtime.store.handshake(record.result.request_id, "terminal_result"),
         record.requesterId === this.authenticatedRequesterId
           ? "A persisted terminal event and its exact payload hash are required"
@@ -276,7 +282,7 @@ export class TaskUiService {
       updatedAt: record.result.observed_at,
       runId: record.result.run_id,
       outcomeKnown: record.result.outcome_known,
-      deliveryAcknowledged: !!this.runtime.store.handshake(record.result.request_id, "result_ack"),
+      deliveryAcknowledged: this.runtime.store.deliveryVerified(record.result.request_id),
     };
   }
   bootstrap(): UiBootstrap {
@@ -319,6 +325,7 @@ export class TaskUiService {
       now,
     );
     const store = this.runtime.store;
+    const materialization = store.materialization(requestId);
     const handshakes = {
       receipt_ack: store.handshake(requestId, "receipt_ack"),
       start_receipt: store.handshake(requestId, "start_receipt"),
@@ -338,7 +345,16 @@ export class TaskUiService {
         approvals: store.approvalsForRequest(requestId),
         handshakes,
         delivery: {
-          acknowledged: !!handshakes.result_ack,
+          acknowledged: store.deliveryVerified(requestId),
+          materialization: record.result.synthetic
+            ? "synthetic_demo"
+            : materialization
+              ? "verified"
+              : "pending",
+          materializationSha256: materialization
+            ? sha256Bytes(Buffer.from(serializeMaterializationReceiptV1(materialization)))
+            : null,
+          payloadAckObserved: !!handshakes.result_ack,
           payloadSha256: handshakes.terminal_result?.payloadSha256 ?? null,
         },
         preflight,
@@ -505,11 +521,20 @@ export class TaskUiService {
           409,
         );
       this.runtime.store.deliveryPayload(requestId); // Recheck immutable bytes before accepting delivery.
-      this.runtime.store.acknowledgeDelivery({
+      const ack = {
         ...terminal,
-        stage: "result_ack",
+        stage: "result_ack" as const,
         actorId: this.authenticatedRequesterId,
-      });
+      };
+      const proof = this.runtime.materialize
+        ? await this.runtime.materialize(requestId)
+        : undefined;
+      if (
+        record.sessionId === this.runtime.controller.policy.sessionId &&
+        record.bridgeId === this.runtime.controller.policy.bridgeId
+      )
+        await this.runtime.controller.acknowledgeResult(ack, proof);
+      else this.runtime.store.acknowledgeDelivery(ack, proof);
       return this.task(requestId);
     });
   }

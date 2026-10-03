@@ -87,10 +87,14 @@ export class DemoAuthority {
   constructor(
     private readonly store: TaskStore,
     private readonly policy: TaskPolicy,
+    private readonly now: () => Date = () => new Date(),
   ) {}
   async approve(requestId: string): Promise<ApprovalEnvelope> {
     const record = this.store.get(requestId);
     if (!record?.result.synthetic) throw new Error("demo_task_required");
+    const issuedAt = this.now();
+    const task = JSON.parse(record.rawSpec) as TaskSpec;
+    const lifetimeMs = Math.min(900_000, task.approval.max_age_seconds * 1000);
     return {
       protocol_version: "2.0",
       approval_id: randomUUID(),
@@ -102,8 +106,8 @@ export class DemoAuthority {
       bridge_id: this.policy.bridgeId,
       executor_id: this.policy.executorId,
       approver_id: "synthetic-demo-authority",
-      issued_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 900_000).toISOString(),
+      issued_at: issuedAt.toISOString(),
+      expires_at: new Date(issuedAt.getTime() + lifetimeMs).toISOString(),
       nonce: randomUUID(),
       max_starts: 1,
       tier: "manual",

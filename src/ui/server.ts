@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { openTrustedDeployment } from "../adapters/deployment-loader.js";
 import { parseStrictJsonBytes } from "../contracts/task.js";
 import {
   type UiAck,
@@ -20,6 +21,7 @@ import { openUiService, type TaskUiService, type UiServiceOptions } from "./serv
 export const MAX_UI_BODY_BYTES = 2 * 1024 * 1024;
 export interface UiServerOptions extends UiServiceOptions {
   port?: number;
+  deploymentModule?: string;
   publicDir?: string;
 }
 export interface UiServerHandle {
@@ -157,7 +159,32 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
   const port = options.port ?? 0;
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new UiError("invalid_port", "Port must be an integer between 0 and 65535");
-  const service = await openUiService(options);
+  if (options.deploymentModule && (options.runtime || options.profile === "demo"))
+    throw new Error("deployment_profile_conflict");
+  const deployment = options.deploymentModule
+    ? await openTrustedDeployment<{
+        uiRuntime?: import("./service.js").UiRuntime;
+        close?(): Promise<void> | void;
+      }>(options.deploymentModule)
+    : null;
+  if (deployment && !deployment.uiRuntime) {
+    await deployment.close?.();
+    throw new Error("deployment_ui_runtime_missing");
+  }
+  let service: TaskUiService;
+  try {
+    service = await openUiService(
+      deployment?.uiRuntime ? { ...options, runtime: deployment.uiRuntime } : options,
+    );
+  } catch (error) {
+    if (deployment?.close) await deployment.close();
+    else deployment?.uiRuntime?.store.close();
+    throw error;
+  }
+  const closeRuntime = async () => {
+    if (deployment?.close) await deployment.close();
+    else service.close();
+  };
   const token = randomBytes(32).toString("base64url");
   const expected = Buffer.from(`Bearer ${token}`);
   const publicDir = options.publicDir ?? fileURLToPath(new URL("./public/", import.meta.url));
@@ -353,7 +380,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     origin = `http://${host}`;
   } catch (error) {
     server.close();
-    service.close();
+    await closeRuntime();
     throw error;
   }
   let closed = false;
@@ -370,7 +397,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeIdleConnections();
       });
-      service.close();
+      await closeRuntime();
     },
   };
 }
