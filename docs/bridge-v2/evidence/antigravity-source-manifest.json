@@ -1,0 +1,59 @@
+{
+  "schema": "bridge-antigravity-source-manifest-1",
+  "baseCommit": "a1ed5427379b37167db839bbc1d19d52e22afafd",
+  "baseTree": "ca0416f3be4f77b665eae769ab8eb3571fb7f1e7",
+  "reviewedLocalCheckpoint": "88c8ca31f7d95c68245eecf33fd942d200f06c9f",
+  "independentReview": {
+    "passed": true,
+    "adversarialTestsPassed": 16,
+    "stateCoercionFinding": "fixed with strict string check"
+  },
+  "liveExecutionVerified": false,
+  "windowsValidated": false,
+  "files": [
+    {
+      "path": "docs/bridge-v2/ANTIGRAVITY.md",
+      "sha256": "eb1463fa76341ec64c0572a1fdba0d0c7c7ac562e8a6ad8684302b44df9ff27b"
+    },
+    {
+      "path": "src/adapters/antigravity.ts",
+      "sha256": "502081e58fd48135ee4febc20f1d91a2b0b2dadfec4eb7d7dd9a16dd309cd35a"
+    },
+    {
+      "path": "src/adapters/cli-launch.ts",
+      "sha256": "3321df86952cb826d2f1a06921198ca5836fcb2a2a79ae10304944685f0978b9"
+    },
+    {
+      "path": "src/adapters/session-bootstrap.ts",
+      "sha256": "609b0abcbea458c97fd0e2548296ab67d001f9799f2df9b6fefed5b8a60dfd36"
+    },
+    {
+      "path": "src/cli/bus.ts",
+      "sha256": "b9ca7cc92674e49f244fbe2b52b3f6358c3532f2d012236ac248f07aa8569135"
+    },
+    {
+      "path": "src/contracts/task.ts",
+      "sha256": "525b5a7b790231efd65ae0cd6165500eb4bd84df2a4c4222ecce13fd5c09f878"
+    },
+    {
+      "path": "src/ui/public/app.js",
+      "sha256": "95b464fd99ef73696d06c1cb0dcd98897025367359ffb504cc42289e884022c7"
+    },
+    {
+      "path": "tests/fixtures/antigravity/help-1.2.15.txt",
+      "sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976"
+    },
+    {
+      "path": "tests/unit/antigravity.test.ts",
+      "sha256": "c8025fdf94b0ad4bc559e7491cd85f6a51a625e50a7150a789afcc1a2d62943a"
+    },
+    {
+      "path": "tests/unit/cli-broker.test.ts",
+      "sha256": "96c3398582a7e5896b1ab425dfc4f39ed30b915d4c7d8ab87cc0ef31d7b486b6"
+    },
+    {
+      "path": "docs/bridge-v2/evidence/antigravity-publication-checks-20261003.json",
+      "sha256": "5150b744594a2ade9bbfd4796da7fca16af77dd2bdc4511f9116fd15742ae041"
+    }
+  ]
+}

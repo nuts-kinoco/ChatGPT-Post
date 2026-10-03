@@ -35,7 +35,7 @@ const ROLE = {
 export interface SessionBootstrapIdentity {
   /** Host-generated model-session UUID, not a machine installation or approval-session ID. */
   sessionId: string;
-  provider: "claude" | "codex" | "chatgpt";
+  provider: "claude" | "codex" | "chatgpt" | "antigravity";
   role: "issuer" | "response_producer";
   repoId: string;
   /** Trusted launcher increments this before reuse after possible context loss. */
@@ -74,7 +74,7 @@ function checkedIdentity(session: SessionBootstrapIdentity): void {
     !session ||
     typeof session.sessionId !== "string" ||
     !UUID.test(session.sessionId) ||
-    !["claude", "codex", "chatgpt"].includes(session.provider) ||
+    !["claude", "codex", "chatgpt", "antigravity"].includes(session.provider) ||
     !["issuer", "response_producer"].includes(session.role) ||
     (session.provider === "chatgpt" && session.role !== "response_producer") ||
     typeof session.repoId !== "string" ||
@@ -100,9 +100,9 @@ export function createSessionBootstrap(
   const challengeId = options.challengeId ?? randomUUID();
   if (!UUID.test(challengeId)) throw new Error("bootstrap_challenge_invalid");
   const instructions = [...COMMON, ROLE[session.role]];
-  const bootstrapSha256 = sha256Bytes(
-    Buffer.from(JSON.stringify({ version, instructions, docs: DOCS })),
-  );
+  const docs =
+    session.provider === "antigravity" ? [...DOCS, "docs/bridge-v2/ANTIGRAVITY.md"] : [...DOCS];
+  const bootstrapSha256 = sha256Bytes(Buffer.from(JSON.stringify({ version, instructions, docs })));
   const ack: SessionBootstrapAck = {
     protocol: "bridge-session-bootstrap-ack/1",
     sessionId: session.sessionId,
@@ -118,7 +118,7 @@ export function createSessionBootstrap(
     bootstrapSha256,
     challengeId,
     instructions,
-    docs: [...DOCS],
+    docs,
     ack,
     reexecute: false,
   };
@@ -175,7 +175,11 @@ export interface PrepareSessionBootstrap {
   session: SessionBootstrapIdentity;
   /** Set by trusted Bridge launcher code, never inferred from model output. */
   bridgeLaunched: true;
-  startup: "claude-print-stdin" | "codex-exec-stdin" | "ordinary-chat-prompt";
+  startup:
+    | "claude-print-stdin"
+    | "codex-exec-stdin"
+    | "ordinary-chat-prompt"
+    | "antigravity-stream-stdin";
   mode: "new" | "resume";
   context: "retained" | "lost";
   /** Opaque ID must resolve to this store's matching, unexpired receipt. */
@@ -360,6 +364,7 @@ export class SessionBootstrapStore {
       claude: "claude-print-stdin",
       codex: "codex-exec-stdin",
       chatgpt: "ordinary-chat-prompt",
+      antigravity: "antigravity-stream-stdin",
     };
     if (
       input.bridgeLaunched !== true ||
