@@ -1,7 +1,7 @@
-# Requirement coverage at the SDK trial checkpoint
+# Requirement coverage at the issuer/bootstrap checkpoint
 
-Code baseline: draft PR14 final `27aec64dc3200fe404bb96fdb4d8252cadd6ecd9` (reviewed SDK code `ccc8c08efc0691840cc4286c07044200f2b060c8`), cumulative on PR13.
-This candidate adds the portable R14/R15 usage/alerts implementation described below.
+Code baseline: draft PR15 `275f7d5c25e69b6fa00305d4dba3c801e9514eb4`, cumulative on PR14 final `27aec64dc3200fe404bb96fdb4d8252cadd6ecd9`.
+This candidate adds bounded R04/I1 configured issuer methods and R09/B1 fresh-run advisory extraction.
 This matrix supersedes earlier stage descriptions in this file. It does not change the approved
 [consolidated design](CONSOLIDATED-DESIGN.md), protocol bytes, permissions or acceptance conditions.
 A final milestone still requires actual ordinary-Chat and actual CLI roundtrip evidence at a fixed
@@ -14,12 +14,12 @@ reviewed head. A merged source tree or a fake test pass cannot supply that evide
 | R01 / core | Exact TaskSpec JSON+MD, detached authority, workflow DAG, counters | Strict byte/hash validation, immutable grants/session bounds, mandatory confirmations; core regressions | Real registered policy/model/base and separately approved authority configuration |
 | R02 / runtime | Locks, quotas, fairness, resident lanes | Same-repo exclusion, batch cursors, independent non-overlapping lanes, explicit resident opt-in, bounded drain/start fencing | Native lock/process integration and real concurrent routes; unknown never releases authority for reexecution |
 | R03 / registry/transport | Product→request storage in one bus repo | Canonical UUID/repoId/slug, historical revision/hash, signed global UUID index, prospective root/display settings | Approved mapping/destination; no automatic external-file migration or reinterpretation of old pins |
-| R04 / provider integration | Authenticated bidirectional issuer tools/capability discovery | Signed transport and registered composer/catalogue/template ports exist | General authenticated agent-tool dispatch and signed cross-provider capability discovery still need integration code; an installed CLI is insufficient |
+| R04 / provider integration | Authenticated bidirectional issuer tools/capability discovery | Configured local CLI facade, scoped host session, recipient-role signed cached capability, shared recipe and immutable signed preparation, atomic publication binding, scoped result/materialize+ACK | Actual provider agent-tool connection/configuration and origin attestation remain separate; configured-local caller provider identity is explicitly unverified. Installed CLI or signed capability is not execution authority. See [issuer usage](ISSUER-USAGE.md) |
 | R05 / transport | Concurrent CLI+Chat and durable partial fan-in | Atomic parent/child bindings, independent results/ACK, reverse-order/blocked/duplicate/save-failure regressions | Actual simultaneous provider execution; each route retains its own policy/capability gate |
 | R06 / browser/archive | Full BEGIN/END framing and exact message/artifact selection | Exact request/hash/attempt frame; older source IDs, source proofs, strict output-contract and scoped completeness | Actual model adherence and site compatibility; missing required inventory/bytes remains delivery_pending |
 | R07 / native platform | General CLI OS enforcement and Windows service/binding | Broker/launch-plan contracts and portable fake-process checks | Enforcing native supervisor, Windows IPC/ACL/containment and authoritative termination/evidence integration remain missing or uncertified code. The custom native candidate is not merge-ready security evidence |
 | R08 / provider | Claude/Codex/AGY plans and exact model identity | Fixed launch argv/stdin, bounded provider parsers, no silent model/effort/API fallback; AGY version/help metadata host wiring | General live execution needs R07. Provider stdout/exit0 alone is not task completion. Effort is not a field in frozen TaskSpec |
-| R09 / bootstrap | New/resumed/version/context reminders | Versioned helper/store and one-turn launch reminder injection | Automatic advisory-ACK extraction/authenticated host wiring and real context-loss/resume detection remain integration work; no arbitrary manual CLI hook |
+| R09 / bootstrap | New/resumed/version/context reminders | Fresh-run broker-owned durable reminder store and exact saved plan; terminal-first extraction from selected cached/hash-verified response, strict advisory sidecar and local-only recovery | Real context-loss/resume detection and actual provider evidence remain unverified/missing; no arbitrary manual CLI hook. Advisory matching bytes never prove understanding, permission or artifact delivery |
 | R10 / archive | Durable artifact manifest, output roots, safe diagnostics | Route-neutral archive-2, pinned historical roots, exact source resolvers, scoped CAS, concrete requester materialization and signed proof-before-ACK; real filesystem fake-network regressions | Approved content destinations/read grants and real artifact retrieval. Local sender archive alone never proves requester delivery |
 | R11 / UI/API | Local/hosted/fanout monitor and explicit actions | Operations read models, registered secondary composer, shared LLM catalogue/template, concrete materialize+ACK port and trusted startup wiring | Real configured accounts/destinations; unconfigured actions stay unavailable. LLM-first automation still needs R04 where not wired |
 | R12 / presentation | Compact A bar, explicit expansion, theme and window controls | Product UI/native-shell changes, draft/state preservation, no auto-expansion, graceful shutdown; root/GUI tests | Actual rendering, Windows/DPI/multi-monitor/native-window checks |
@@ -31,6 +31,10 @@ reviewed head. A merged source tree or a fake test pass cannot supply that evide
 | R18 / integration acceptance | Final two-route milestone | Offline negative/recovery evidence and independent reviews | Actual Git→claim/approval→ordinary Chat→result/artifacts→save→ACK **and** actual CLI counterpart. Neither is established by this checkpoint |
 | R19 / SDK trial owner | Small own-cloud Haiku text handshake | PR14 separate SDK schemas, official SDK composition, signed bus, private bounded evidence, immutable requester bundle/ACK, one-shot entrypoint; lifecycle/startup races fixed | Same-context cloud auth, billing/extra-usage confirmation, terms and temporary-key/trial approval, private connector destination, then one real call. Linux trusted-host/SDK controls, no native confinement/OS-exit proof |
 | R20 / prompt/browser | Maintainable shared prompt and cache-aware formatting | PR12/13 deterministic shared brief, registered renderer/build/profile, final dispatch guard and historical collector validation | Live cache savings unmeasured; no API-cache control claim. SDK dependency changes require explicit new renderer build registration, never silent old-policy replacement |
+
+## Issuer/bootstrap extension evidence
+
+I1 and B1 are independently reviewed bounded extensions. I1 tests cover scope/signature/async drift, exact preparation publication, conditional Git retry and historical receipt recovery. B1 tests cover persisted reminder ownership and terminal-first cached-artifact advisory projection, including interrupted Markdown containers and finite diagnostic codes. The compiled issuer CLI tests use inert host ports only; no provider, operational keys or live network. The author cumulative check passes 2,474 root tests with 56 inherited explicit skips, GUI60, 12 compiled issuer and six compiled SDK cases. Exact review/publication references are recorded at the final PR head and in [verification](ISSUER-VERIFICATION.md).
 
 ## Usage/alerts extension evidence
 
@@ -51,8 +55,8 @@ inference, operational signing-key creation, cloud login, Windows execution or m
 this checkpoint. Remote status/check/workflow-run counts were zero; no workflow source exists at
 this head. GitHub's empty aggregate status is not a queued or passing CI job.
 
-The published tree has538 files:37 intended changes over PR13, including29 additions; all501
-other inherited files were verified unchanged. The SDK family preserves global request dedupe and
+The PR14 reviewed code tree has 538 files: 37 intended changes over PR13, including 29 additions; all 501
+other inherited files were verified unchanged. Its final docs-only head adds a separate COVERAGE update. The SDK family preserves global request dedupe and
 is skipped by unsupported legacy route pumps. Native/local ResultSpec, hosted response and SDK
 iterator evidence remain different types. Historical payload-only ACK cannot satisfy full delivery.
 

@@ -4,11 +4,22 @@
 import { createHash } from "node:crypto";
 import { parseStrictJsonBytes } from "../contracts/task.js";
 
+export interface GitPublicationBinding {
+  whenPresentPath: string;
+  bindingPath: string;
+  bindingBlobSha: string;
+}
 export interface GitObjectStore {
   readonly destination?: { repositoryFullName: string; branch: string };
   snapshot(): Promise<GitSnapshot>;
   read(snapshot: GitSnapshot, path: string): Promise<Uint8Array | null>;
   append(files: ReadonlyMap<string, Uint8Array>, message: string): Promise<string>;
+  /** Atomic all-or-absent publication with history binding rechecked at every retry snapshot. */
+  appendConditional?(
+    files: ReadonlyMap<string, Uint8Array>,
+    message: string,
+    bindings: readonly GitPublicationBinding[],
+  ): Promise<string>;
 }
 export interface GitSnapshot {
   commit: string;
@@ -314,6 +325,47 @@ export class GitHubGitStore implements GitObjectStore {
   /** Append-only atomic batch. CAS is the non-force fast-forward of a single-parent commit.
    * A lost PATCH reply reconciles exact file blobs on the current head, never reexecutes a job. */
   async append(files: ReadonlyMap<string, Uint8Array>, message: string): Promise<string> {
+    return this.appendBound(files, message, []);
+  }
+  async appendConditional(
+    files: ReadonlyMap<string, Uint8Array>,
+    message: string,
+    bindings: readonly GitPublicationBinding[],
+  ): Promise<string> {
+    if (!bindings.length || bindings.length > 32)
+      throw new Error("github_publication_binding_invalid");
+    return this.appendBound(files, message, bindings);
+  }
+  private async appendBound(
+    files: ReadonlyMap<string, Uint8Array>,
+    message: string,
+    inputBindings: readonly GitPublicationBinding[],
+  ): Promise<string> {
+    const bindings = inputBindings.map((v) => ({ ...v }));
+    for (const b of bindings) {
+      if (
+        Object.keys(b).sort().join(",") !== "bindingBlobSha,bindingPath,whenPresentPath" ||
+        !files.has(b.whenPresentPath) ||
+        !files.has(b.bindingPath) ||
+        !/^[a-f0-9]{40}(?![\s\S])/.test(b.bindingBlobSha) ||
+        gitBlobSha(files.get(b.bindingPath) ?? new Uint8Array()) !== b.bindingBlobSha
+      )
+        throw new Error("github_publication_binding_invalid");
+      transportPath(b.whenPresentPath);
+      transportPath(b.bindingPath);
+    }
+    const assertBindings = (snapshot: GitSnapshot) => {
+      for (const b of bindings)
+        if (
+          (snapshot.files.has(b.whenPresentPath) || snapshot.entries?.has(b.whenPresentPath)) &&
+          (snapshot.files.get(b.bindingPath) !== b.bindingBlobSha ||
+            (snapshot.entries &&
+              (snapshot.entries.get(b.bindingPath)?.type !== "blob" ||
+                snapshot.entries.get(b.bindingPath)?.mode !== "100644")))
+        )
+          throw new Error("github_publication_binding_conflict");
+    };
+
     files = new Map([...files].map(([path, bytes]) => [path, Buffer.from(bytes)]));
     if (!files.size || files.size > 32 || message.length > 200)
       throw new Error("github_batch_invalid");
@@ -332,6 +384,7 @@ export class GitHubGitStore implements GitObjectStore {
       throw new Error("github_batch_path_conflict");
     for (let attempt = 0; attempt < this.limits.conflicts; attempt++) {
       const base = await this.snapshot();
+      assertBindings(base);
       let present = 0;
       for (const [path, hash] of desired) {
         const existing = base.files.get(path);
@@ -390,6 +443,7 @@ export class GitHubGitStore implements GitObjectStore {
       try {
         await this.api(`/git/refs/heads/${this.ref}`, "PATCH", { sha: head, force: false });
         const visible = await this.snapshot();
+        assertBindings(visible);
         if (
           ![...desired].every(
             ([path, hash]) =>
@@ -404,6 +458,7 @@ export class GitHubGitStore implements GitObjectStore {
         if (error instanceof GitHubHttpError && ![409, 422].includes(error.status)) throw error;
         // Network loss might mean PATCH succeeded. One bounded reread establishes that.
         const after = await this.snapshot();
+        assertBindings(after);
         if (
           [...desired].every(
             ([path, hash]) =>

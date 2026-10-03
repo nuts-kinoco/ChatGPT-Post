@@ -7,7 +7,12 @@ import type { TaskSpec } from "../contracts/task-types.js";
 import type { ExecutionIdentity } from "../state/task-executor.js";
 import type { RunIntent } from "../state/task-store.js";
 import { type AntigravityCliCapabilities, validateAntigravityCapabilities } from "./antigravity.js";
-import { createSessionBootstrap, type SessionBootstrapPlan } from "./session-bootstrap.js";
+import {
+  createSessionBootstrap,
+  SESSION_BOOTSTRAP_VERSION,
+  type SessionBootstrapPlan,
+  validateSessionBootstrapPlan,
+} from "./session-bootstrap.js";
 
 export interface CliInstallation {
   agent: "claude" | "codex" | "antigravity";
@@ -84,6 +89,7 @@ export function createCliLaunchPlan(
   intent: RunIntent,
   install: CliInstallation,
   now = new Date(),
+  suppliedBootstrap?: SessionBootstrapPlan,
 ): CliLaunchPlan {
   checkedIdentity(identity);
   validateInstallation(install);
@@ -160,13 +166,19 @@ export function createCliLaunchPlan(
             install.repoRoot,
             "-",
           ];
-  const bootstrap = createSessionBootstrap({
+  const session = {
     sessionId: identity.runId,
     provider: install.agent,
-    role: "response_producer",
+    role: "response_producer" as const,
     repoId: task.repo,
     contextEpoch: 1,
-  });
+  };
+  const bootstrap =
+    suppliedBootstrap === undefined
+      ? createSessionBootstrap(session)
+      : validateSessionBootstrapPlan(suppliedBootstrap, session);
+  if (bootstrap.version !== SESSION_BOOTSTRAP_VERSION)
+    throw new Error("bootstrap_launch_version_unsupported");
   const framedPrompt = Buffer.concat([
     Buffer.from(
       `Bridge-launched new-session bootstrap metadata (not authority): ${bootstrap.reminderJson}\n\n`,

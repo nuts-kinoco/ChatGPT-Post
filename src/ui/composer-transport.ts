@@ -16,7 +16,7 @@ export function composerTransportPort(
   const fanout = new GitHubFanout(bus);
   return {
     prepare,
-    async issue(preview) {
+    async issue(preview, finalAppendGuard, issuerPreparation) {
       const registry = bus.registry;
       if (
         !registry ||
@@ -97,12 +97,16 @@ export function composerTransportPort(
             request.route,
             request.outputContractRaw,
             request.expectedProjectRegistration,
+            finalAppendGuard,
+            issuerPreparation,
           ),
         };
       }
       if (!preview.fanoutId || requests.length < 2 || requests.length > 4)
         throw new Error("composer_group_invalid");
-      return { commit: await fanout.issue(preview.fanoutId, requests) };
+      return {
+        commit: await fanout.issue(preview.fanoutId, requests, finalAppendGuard, issuerPreparation),
+      };
     },
   };
 }

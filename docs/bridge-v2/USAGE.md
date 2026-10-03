@@ -87,6 +87,12 @@ configured UI も core の capability/approval/quota/sandbox gate を通る。
 
 ## 3 LLM が準備・発行し、人は監視する
 
+ホストに scoped issuer を設定済みなら、[ISSUER-USAGE.md](ISSUER-USAGE.md) の
+`issuer-catalogue → issuer-template → issuer-prepare → issuer-issue → issuer-result → issuer-ack`
+を優先する。これは同じ recipe / registry / bus を使い、固定した host session の範囲と署名済み
+preparation を検証する。一般の deployment 選択・承認・開始 command をモデルに開放しない。
+以下の直接 JSON 作成・`bus issue` は運用者向けの従来経路として残る。
+
 通常は LLM が CLI を操作し、UI は進捗・結果・設定の確認に使う。手動 composer は補助経路。
 新しいモデルセッションでは [LLM-QUICKSTART.md](LLM-QUICKSTART.md) の短い導入を読み、
 版・capabilities・登録先を確認する。インストール済み CLI/skill は認証・文脈保持の証明ではない。

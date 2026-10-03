@@ -1,4 +1,5 @@
 /** Explicit host deployment entry point. Merely building/importing this module performs no IO. */
+
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,10 +9,15 @@ import type { BrowserDeliveryService } from "../adapters/browser-delivery.js";
 import { openTrustedDeployment } from "../adapters/deployment-loader.js";
 import { GitHubFanout } from "../adapters/fanout.js";
 import type { GitHubTaskBus } from "../adapters/github-transport.js";
+import type { IssuerFacade } from "../adapters/issuer-session.js";
 import { parseStrictJsonBytes } from "../contracts/task.js";
 import { checkFilesystemPath, checkRelativePath } from "../state/task-policy.js";
 import type { IssuerReadPort } from "../ui/issuer-read-port.js";
+import { ISSUER_COMMANDS, readIssuerInput, runIssuerCommand } from "./issuer.js";
+import { safeIssuerError } from "./issuer-errors.js";
 export interface BusDeployment {
+  /** Fixed host-scoped issuer methods. No deployment/path/authority arguments come from agent input. */
+  issuer?: IssuerFacade;
   bus: GitHubTaskBus;
   /** Same validated, read-only registered catalogue/recipe used by the manual composer. */
   issuerReadPort?: IssuerReadPort;
@@ -27,6 +33,8 @@ export interface BusDeployment {
 }
 const help = `Bridge GitHub transport host
 Usage: node dist/cli/bus.js capabilities
+       node dist/cli/bus.js --deployment /trusted/deployment.mjs issuer-catalogue
+       node dist/cli/bus.js --deployment /trusted/deployment.mjs issuer-template|issuer-prepare|issuer-issue|issuer-result|issuer-ack < bounded-input.json
        node dist/cli/bus.js --deployment /trusted/deployment.mjs catalogue
        node dist/cli/bus.js --deployment /trusted/deployment.mjs template PROJECT_UUID DESTINATION_ID [MODEL_ID]
        node dist/cli/bus.js --deployment /trusted/deployment.mjs tick
@@ -41,7 +49,17 @@ Deployment module exports openDeployment(): Promise<BusDeployment>. It must use 
 No deployment, model CLI, authentication or persistent permissions are activated by capabilities.
 Catalogue and template only read trusted registration/recipes; templates are explicitly non-executable and grant no authority.
 Result only reads. ACK requires explicit acceptance plus verified requester-side durable materialization of result, receipt and artifacts. Never rerun an unknown request.`;
-export async function runBusCli(args: string[]): Promise<unknown> {
+export async function runBusCli(args: string[], issuerInput?: Uint8Array): Promise<unknown> {
+  try {
+    return await runBusCommand(args, issuerInput);
+  } catch (error) {
+    // Includes loader, bounded stdin and deployment cleanup, not just facade methods.
+    if (ISSUER_COMMANDS.includes(args[2] as (typeof ISSUER_COMMANDS)[number]))
+      throw new Error(safeIssuerError(error));
+    throw error;
+  }
+}
+async function runBusCommand(args: string[], issuerInput?: Uint8Array): Promise<unknown> {
   if (args.length === 1 && ["help", "capabilities"].includes(args[0] ?? ""))
     return args[0] === "help"
       ? { help }
@@ -52,6 +70,7 @@ export async function runBusCli(args: string[]): Promise<unknown> {
           ordinaryChat: "browser_delivery_implemented_live_unverified",
           quota: "public_app_server_management_only",
           antigravity: ANTIGRAVITY_ADAPTER_CAPABILITIES,
+          issuer: "configured_local_cli_scoped_no_provider_identity_claim",
           liveActivated: false,
         };
   if (args[0] !== "--deployment" || !args[1] || !isAbsolute(args[1]))
@@ -60,6 +79,7 @@ export async function runBusCli(args: string[]): Promise<unknown> {
   if (
     !command ||
     ![
+      ...ISSUER_COMMANDS,
       "catalogue",
       "template",
       "tick",
@@ -92,6 +112,17 @@ export async function runBusCli(args: string[]): Promise<unknown> {
   }
   try {
     const bus = deployment.bus;
+    if (ISSUER_COMMANDS.includes(command as (typeof ISSUER_COMMANDS)[number])) {
+      if (args.length !== 3) throw new Error("issuer_arguments_invalid");
+      if (!deployment.issuer) throw new Error("issuer_unconfigured");
+      return await runIssuerCommand(
+        deployment.issuer,
+        command,
+        command === "issuer-catalogue"
+          ? issuerInput
+          : (issuerInput ?? (await readIssuerInput(process.stdin))),
+      );
+    }
     if (command === "catalogue" || command === "template") {
       const port = deployment.issuerReadPort;
       if (!port) throw new Error("issuer_catalogue_unconfigured");
@@ -278,8 +309,11 @@ export async function runBusCli(args: string[]): Promise<unknown> {
     } catch {
       process.stderr.write("Bridge usage projection pending; remaining reference is unknown\n");
     } finally {
-      if (ownUsage) await usage?.close();
-      await deployment.close?.();
+      try {
+        if (ownUsage) await usage?.close();
+      } finally {
+        await deployment.close?.();
+      }
     }
   }
 }
