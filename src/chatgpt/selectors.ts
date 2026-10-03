@@ -1,5 +1,12 @@
 import type { Locator, Page } from "playwright";
 import type { ObservedModel, ObservedPreset } from "../contracts/types.js";
+import {
+  describeObservation,
+  incompleteObservation,
+  type ScanReason,
+  scanVisible,
+  type VisibleObservation,
+} from "./dom-observation.js";
 
 export type Locale = "ja" | "en";
 
@@ -794,8 +801,12 @@ export interface Probe {
   visible?: boolean;
   locator?: Locator;
   matches: number;
+  complete?: boolean;
+  reason?: ScanReason | "ambiguous" | "absent";
 }
 
+// Legacy boolean-presence API only. Its partial/failure semantics are intentionally outside A/B;
+// never reuse this helper to establish uniqueness or catalog completeness.
 async function countVisible(loc: Locator): Promise<number> {
   const n = await loc.count();
   let visible = 0;
@@ -811,33 +822,7 @@ async function countVisible(loc: Locator): Promise<number> {
   return visible;
 }
 
-/**
- * A-123 (Phase 0-C-2, ChatGPT Pro redesign review §2.2): `resolve()`/`probe()` used to check
- * `countVisible(loc) === 1` but then return `loc.first()` — the first DOM-order match, not
- * necessarily the one confirmed visible. If match #1 was hidden and match #2 was the visible one,
- * the caller got handed a hidden element while believing visibility had been verified. Returns the
- * actual visible `nth(i)` locator (or null if none/more than one), so callers never act on an
- * element whose visibility was never actually checked.
- */
-async function findVisible(loc: Locator): Promise<{ count: number; visible: Locator | null }> {
-  const n = await loc.count();
-  let count = 0;
-  let visible: Locator | null = null;
-  for (let i = 0; i < Math.min(n, 20); i++) {
-    if (
-      await loc
-        .nth(i)
-        .isVisible()
-        .catch(() => false)
-    ) {
-      count++;
-      if (count === 1) visible = loc.nth(i);
-    }
-  }
-  return { count, visible };
-}
-
-/** unique: first candidate that is visible and exactly-one. Throws DomUnexpected. Pre-submit only. */
+/** Unique, complete observation only; fallback is allowed solely after complete absence. */
 export async function resolve(
   root: Page | Locator,
   key: ElementKey,
@@ -847,10 +832,15 @@ export async function resolve(
   const tried: string[] = [];
   for (const c of def.candidates) {
     if (opts.verifiedOnly && !c.verifiedOn) continue;
-    const loc = build(root, c);
-    const { count, visible } = await findVisible(loc);
-    tried.push(`${describeCandidate(c)} -> ${count}`);
-    if (count === 1 && visible) return visible;
+    let observation: VisibleObservation;
+    try {
+      observation = await scanVisible(build(root, c));
+    } catch {
+      observation = incompleteObservation("candidate_unreadable");
+    }
+    tried.push(`${describeCandidate(c)} -> ${describeObservation(observation)}`);
+    if (observation.kind === "unique") return observation.locator;
+    if (observation.kind !== "absent") throw new DomUnexpected(key, tried);
   }
   throw new DomUnexpected(key, tried);
 }
@@ -865,23 +855,36 @@ export async function probe(
   for (const c of def.candidates) {
     if (opts.verifiedOnly && !c.verifiedOn) continue;
     try {
-      const loc = build(root, c);
-      const { count, visible } = await findVisible(loc);
-      if (count === 1 && visible) {
+      const observation = await scanVisible(build(root, c));
+      if (observation.kind === "unique") {
+        let enabled: boolean;
+        try {
+          enabled = await observation.locator.isEnabled();
+        } catch {
+          return { found: false, matches: 1, complete: false, reason: "enabled_unreadable" };
+        }
         return {
           found: true,
           matches: 1,
           visible: true,
-          enabled: await visible.isEnabled().catch(() => false),
-          locator: visible,
+          enabled,
+          locator: observation.locator,
+          complete: true,
+          reason: "complete",
         };
       }
-      if (count > 1) return { found: false, matches: count };
+      if (observation.kind !== "absent")
+        return {
+          found: false,
+          matches: observation.visible,
+          complete: observation.complete,
+          reason: observation.kind === "ambiguous" ? "ambiguous" : observation.reason,
+        };
     } catch {
-      /* try next */
+      return { found: false, matches: 0, complete: false, reason: "candidate_unreadable" };
     }
   }
-  return { found: false, matches: 0 };
+  return { found: false, matches: 0, complete: true, reason: "absent" };
 }
 
 /** presence: any candidate with >= 1 visible match. */
