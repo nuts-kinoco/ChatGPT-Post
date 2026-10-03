@@ -1,9 +1,12 @@
 /** No live CLI, provider, credentials, or Windows operation. Process authority is fake. */
+
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { inspectAntigravityHelp } from "../../src/adapters/antigravity.js";
 import { CliBrokerService } from "../../src/adapters/cli-broker.js";
 import {
   CLI_ISOLATION_REQUIREMENTS,
@@ -34,6 +37,16 @@ const install: CliInstallation = {
   repoRoot: "/srv/repo",
   homeRoot: "/srv/homes",
   authentication: "subscription",
+};
+const agyInstall: CliInstallation = {
+  ...install,
+  agent: "antigravity",
+  executable: "/opt/bridge/agy",
+  version: "1.2.15",
+  antigravity: inspectAntigravityHelp(
+    readFileSync(new URL("../fixtures/antigravity/help-1.2.15.txt", import.meta.url), "utf8"),
+    "1.2.15",
+  ),
 };
 function task(): TaskSpec {
   return {
@@ -256,7 +269,7 @@ describe("durable CLI broker, fake process authority only", () => {
     new CliBrokerService({
       executorId: "broker",
       dbPath: join(dir, "broker.db"),
-      installations: [install],
+      installations: [install, agyInstall],
       runtime: fake,
       now: () => new Date(now),
       rpcTimeoutMs: 30,
@@ -270,6 +283,38 @@ describe("durable CLI broker, fake process authority only", () => {
   afterEach(async () => {
     broker.close();
     await rm(dir, { recursive: true, force: true });
+  });
+  it("runs Antigravity through the same broker identity, evidence, dedupe and collection gates", async () => {
+    const t = { ...task(), agent: "antigravity" };
+    const identity = id(t);
+    expect((await broker.start(t, text, identity, intent(identity))).kind).toBe("running");
+    expect(fake.plans.get(identity.runId)?.argv).toContain("--input-format");
+    broker.close();
+    broker = open();
+    expect((await broker.start(t, text, identity, intent(identity))).kind).toBe("running");
+    fake.finish(identity);
+    const observed = await broker.collect(identity);
+    expect(observed.kind).toBe("terminal");
+    if (observed.kind === "terminal") expect(observed.result.actual_agent).toBe("antigravity");
+    expect(fake.starts).toBe(1);
+  });
+  it("never treats Antigravity flags as the missing OS confinement", async () => {
+    const t = { ...task(), agent: "antigravity" };
+    const identity = id(t);
+    fake.rejectCheck = true;
+    await expect(broker.checkCapabilities(t)).rejects.toThrow("sandbox_capability_unavailable");
+    expect((await broker.start(t, text, identity, intent(identity))).kind).toBe("unknown");
+    expect(fake.starts).toBe(0);
+  });
+  it("keeps Antigravity cancellation on the durable broker, including pre-start tombstones", async () => {
+    const t = { ...task(), agent: "antigravity" };
+    const identity = id(t);
+    await broker.cancel(identity, "user", 1);
+    broker.close();
+    broker = open();
+    await broker.start(t, text, identity, intent(identity));
+    expect(fake.starts).toBe(0);
+    expect(fake.cancels).toBeGreaterThan(0);
   });
   it("uses exact direct argv, controlled home, stdin bytes and no shell", () => {
     const t = task();

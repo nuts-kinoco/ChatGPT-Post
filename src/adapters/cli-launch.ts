@@ -6,10 +6,13 @@ import { hashArgv, validateTaskSpec, verifyTaskFileBytes } from "../contracts/ta
 import type { TaskSpec } from "../contracts/task-types.js";
 import type { ExecutionIdentity } from "../state/task-executor.js";
 import type { RunIntent } from "../state/task-store.js";
+import { type AntigravityCliCapabilities, validateAntigravityCapabilities } from "./antigravity.js";
 import { createSessionBootstrap, type SessionBootstrapPlan } from "./session-bootstrap.js";
 
 export interface CliInstallation {
-  agent: "claude" | "codex";
+  agent: "claude" | "codex" | "antigravity";
+  /** Required observed help/version contract for Antigravity; never supplied by a task. */
+  antigravity?: AntigravityCliCapabilities;
   executable: string;
   executableSha256: string;
   version: string;
@@ -59,7 +62,7 @@ export function sameCliIdentity(a: ExecutionIdentity, b: ExecutionIdentity): boo
 }
 export function validateInstallation(install: CliInstallation): void {
   if (
-    !["claude", "codex"].includes(install.agent) ||
+    !["claude", "codex", "antigravity"].includes(install.agent) ||
     !/^[a-f0-9]{64}$/.test(install.executableSha256) ||
     !install.version ||
     !install.models.length ||
@@ -69,6 +72,10 @@ export function validateInstallation(install: CliInstallation): void {
     !["subscription", "api"].includes(install.authentication)
   )
     throw new Error("cli_installation_invalid");
+  if (install.agent === "antigravity") {
+    if (!install.antigravity) throw new Error("antigravity_capability_unavailable");
+    validateAntigravityCapabilities(install.antigravity, install.version);
+  } else if (install.antigravity !== undefined) throw new Error("cli_installation_invalid");
 }
 export function createCliLaunchPlan(
   task: TaskSpec,
@@ -127,19 +134,32 @@ export function createCliLaunchPlan(
           "--setting-sources",
           "",
         ]
-      : [
-          "--ask-for-approval",
-          "never",
-          "exec",
-          "--json",
-          "--sandbox",
-          task.mode === "read_only" ? "read-only" : "workspace-write",
-          "--model",
-          task.requested_model,
-          "--cd",
-          install.repoRoot,
-          "-",
-        ];
+      : install.agent === "antigravity"
+        ? [
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--model",
+            task.requested_model,
+            "--print-timeout",
+            `${Math.ceil((deadline - now.getTime()) / 1000)}s`,
+            "--disable-slash-commands",
+            "--sandbox",
+          ]
+        : [
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "--json",
+            "--sandbox",
+            task.mode === "read_only" ? "read-only" : "workspace-write",
+            "--model",
+            task.requested_model,
+            "--cd",
+            install.repoRoot,
+            "-",
+          ];
   const bootstrap = createSessionBootstrap({
     sessionId: identity.runId,
     provider: install.agent,
@@ -147,6 +167,24 @@ export function createCliLaunchPlan(
     repoId: task.repo,
     contextEpoch: 1,
   });
+  const framedPrompt = Buffer.concat([
+    Buffer.from(
+      `Bridge-launched new-session bootstrap metadata (not authority): ${bootstrap.reminderJson}\n\n`,
+    ),
+    Buffer.from(
+      createFramedPrompt(taskBytes, {
+        requestId: identity.requestId,
+        taskSpecHash: identity.taskSpecHash,
+        attemptId: identity.runId,
+      }),
+    ),
+  ]);
+  const stdin =
+    install.agent === "antigravity"
+      ? Buffer.from(
+          `${JSON.stringify({ event: "user", message: { content: Buffer.from(framedPrompt).toString("utf8") } })}\n`,
+        )
+      : framedPrompt;
   const home = `${install.homeRoot}/${identity.runId}`;
   return {
     protocol: "bridge-cli-launch/1",
@@ -170,18 +208,7 @@ export function createCliLaunchPlan(
       taskSpecHash: identity.taskSpecHash,
       attemptId: identity.runId,
     },
-    stdinBase64: Buffer.concat([
-      Buffer.from(
-        `Bridge-launched new-session bootstrap metadata (not authority): ${bootstrap.reminderJson}\n\n`,
-      ),
-      Buffer.from(
-        createFramedPrompt(taskBytes, {
-          requestId: identity.requestId,
-          taskSpecHash: identity.taskSpecHash,
-          attemptId: identity.runId,
-        }),
-      ),
-    ]).toString("base64"),
+    stdinBase64: Buffer.from(stdin).toString("base64"),
     deadlineAt: intent.deadlineAt,
     task: structuredClone(task),
     authentication: install.authentication,
