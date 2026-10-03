@@ -314,12 +314,21 @@ async function cmdRun(
   const input = await readRequestFile(resolve(requestPath));
   const isDot =
     input.kind === "read" && (input.raw as { target?: unknown } | null)?.target === "dot";
+  let usage: import("../ui/pro-counter-runtime.js").BridgeProCounterRuntime | undefined;
+  if (!isDot) {
+    try {
+      usage = await (await import("../ui/pro-counter-runtime.js")).openBridgeProCounter(cfg);
+    } catch {
+      logger.stderr("Bridge usage observations unavailable; remaining reference is unknown");
+    }
+  }
   const ports = buildPorts(cfg, logger, verifiedOnly, !isDot);
   // Dispatch and validation consume the same bytes; a changed request cannot switch targets.
   ports.contracts.readRequest = async () => input;
   let watchdog: RunWatchdog | null = null;
   const controllerOptions = {
     requestPath: resolve(requestPath),
+    ...(usage ? { usage } : {}),
     artifactsRoot: cfg.artifactsDir,
     bridgeVersion: cfg.bridgeVersion,
     traceOnSuccess: cfg.traceOnSuccess,
@@ -349,6 +358,15 @@ async function cmdRun(
   } finally {
     watchdog.cancel();
     for (const signal of signals) process.removeListener(signal, onSignal);
+    if (usage) {
+      try {
+        await usage.refresh();
+      } catch {
+        logger.stderr("Bridge usage projection pending; remaining reference is unknown");
+      } finally {
+        await usage.close();
+      }
+    }
   }
   const res = outcome.result;
   if (json) {
@@ -746,6 +764,19 @@ async function cmdCollect(
     attempt.warnings,
   );
   const written = await writeRecoveredResult(outputDir, recovered, attempt.extraction.markdown);
+  if (requestId) {
+    let usage: import("../ui/pro-counter-runtime.js").BridgeProCounterRuntime | undefined;
+    try {
+      usage = await (await import("../ui/pro-counter-runtime.js")).openBridgeProCounter(cfg);
+      await usage.recordCollected(requestId, recovered);
+    } catch {
+      process.stderr.write(
+        "Bridge usage recovery projection pending; remaining reference is unknown\n",
+      );
+    } finally {
+      await usage?.close();
+    }
+  }
   if (job) {
     const store = await openJobStore(jobStorePath(cfg));
     try {

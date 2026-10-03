@@ -37,6 +37,9 @@ import type {
 } from "../contracts/types.js";
 import { createLogger } from "../diagnostics/logger.js";
 import { RunController } from "../state/controller.js";
+import { markerPath, readMarker, type SubmissionBinding } from "../state/marker.js";
+import { type UsageConsumer, UsageLifecycleJournal } from "../state/usage-lifecycle.js";
+import { bridgeProScopeId, openBridgeProCounter } from "../ui/pro-counter-runtime.js";
 import type { GitHubTaskBus, HostedEvent, IssuedMessage } from "./github-transport.js";
 import { assertHostedOutputContract } from "./hosted-output-policy.js";
 import {
@@ -94,6 +97,7 @@ export interface HostedJobRecord {
   promptReceiptSha256?: string;
 }
 export interface BrowserRunControl {
+  submissionBinding: SubmissionBinding;
   signal: AbortSignal;
   deadlineAt: string;
   shouldCancel(): boolean;
@@ -149,6 +153,7 @@ export function productionBrowserRun(config: BridgeConfig): BrowserRun {
       artifactsRoot: config.artifactsDir,
       bridgeVersion: config.bridgeVersion,
       traceOnSuccess: config.traceOnSuccess,
+      submissionBinding: control.submissionBinding,
       ...(control.assertPromptBinding ? { assertPromptBinding: control.assertPromptBinding } : {}),
     });
     const stop = () => {
@@ -177,6 +182,13 @@ export function productionBrowserRun(config: BridgeConfig): BrowserRun {
 }
 export class BrowserDeliveryService {
   private readonly db: DatabaseSync;
+  private readonly lifecycle: UsageLifecycleJournal;
+  get sourceId(): string {
+    return this.lifecycle.sourceId;
+  }
+  get scopeId(): string {
+    return bridgeProScopeId(this.config);
+  }
   private readonly claimantId: string;
   readonly policyHash: string;
   private readonly active = new Map<string, AbortController>();
@@ -207,6 +219,8 @@ export class BrowserDeliveryService {
     const url = new URL(policy.conversationUrl);
     if (
       url.origin !== "https://chatgpt.com" ||
+      url.username ||
+      url.password ||
       !/^\/c\/[a-zA-Z0-9-]+$/.test(url.pathname) ||
       url.search ||
       url.hash ||
@@ -222,6 +236,7 @@ export class BrowserDeliveryService {
     this.db.exec(
       "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS hosted_jobs (id TEXT PRIMARY KEY, hash TEXT NOT NULL, snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hosted_prompt_receipts (request_id TEXT NOT NULL, attempt_id TEXT NOT NULL, policy_hash TEXT NOT NULL, body TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(request_id,attempt_id)); CREATE TABLE IF NOT EXISTS hosted_observations (request_id TEXT NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(request_id,revision), UNIQUE(request_id,digest)); CREATE TABLE IF NOT EXISTS hosted_configuration (id INTEGER PRIMARY KEY CHECK(id=1), digest TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hosted_reconcile_cursor (id INTEGER PRIMARY KEY CHECK(id=1), request_id TEXT NOT NULL); INSERT OR IGNORE INTO hosted_reconcile_cursor VALUES (1,''); CREATE TABLE IF NOT EXISTS hosted_identity (id INTEGER PRIMARY KEY CHECK(id=1), claimant TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hosted_cursor (id INTEGER PRIMARY KEY CHECK(id=1), path TEXT NOT NULL); INSERT OR IGNORE INTO hosted_cursor VALUES (1,''); CREATE TABLE IF NOT EXISTS hosted_budget (id INTEGER PRIMARY KEY CHECK(id=1), starts INTEGER NOT NULL); INSERT OR IGNORE INTO hosted_budget VALUES (1,0);",
     );
+    this.lifecycle = new UsageLifecycleJournal(this.db);
     const binding = sha256Bytes(
       Buffer.from(
         JSON.stringify({
@@ -245,6 +260,100 @@ export class BrowserDeliveryService {
     this.claimantId = String(
       this.db.prepare("SELECT claimant FROM hosted_identity WHERE id=1").get()?.claimant,
     );
+  }
+  private lifecycleEvidence(
+    job: HostedJobRecord,
+    kind: "start" | "result",
+    result?: BridgeResult,
+  ): void {
+    if (!job.attemptId || !job.attemptedAt) throw new Error("usage_hosted_identity_missing");
+    if (kind === "result" && !this.lifecycle.hasStart(job.issued.requestId, job.attemptId)) {
+      this.lifecycle.append(
+        {
+          origin: "hosted",
+          kind: "coverage_gap",
+          requestId: job.issued.requestId,
+          requesterActorId: job.issued.requesterId,
+          runId: null,
+          attemptId: null,
+          attemptedAt: job.attemptedAt,
+          observedAt: job.attemptedAt,
+        },
+        `legacy:${job.issued.requestId}`,
+      );
+      return;
+    }
+    this.lifecycle.append(
+      {
+        origin: "hosted",
+        kind,
+        requestId: job.issued.requestId,
+        requesterActorId: job.issued.requesterId,
+        runId: null,
+        attemptId: job.attemptId,
+        attemptedAt: job.attemptedAt,
+        observedAt: result ? result.completedAt : job.attemptedAt,
+        ...(result ? { result } : {}),
+      },
+      result
+        ? JSON.stringify(result)
+        : JSON.stringify({
+            requestId: job.issued.requestId,
+            attemptId: job.attemptId,
+            attemptedAt: job.attemptedAt,
+          }),
+    );
+  }
+  registerLifecycleSink(
+    namespace: string,
+    binding: import("../state/usage-lifecycle.js").LifecycleSinkBinding,
+  ): void {
+    this.lifecycle.registerLifecycleSink(namespace, binding);
+  }
+  cursorPosition(consumerId: string): number {
+    return this.lifecycle.cursorPosition(consumerId);
+  }
+  async drainLifecycle(
+    consumerId: string,
+    consumer: UsageConsumer,
+    limit = 32,
+  ): Promise<{ processed: number; pending: boolean }> {
+    // Old attempts remain explicit gaps; never manufacture their missing start identity.
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const rows = this.db
+        .prepare(
+          "SELECT snapshot FROM hosted_jobs WHERE json_extract(snapshot,'$.attempted')=1 AND NOT EXISTS(SELECT 1 FROM usage_lifecycle_events WHERE json_extract(body,'$.requestId')=hosted_jobs.id AND json_extract(body,'$.kind') IN ('start','coverage_gap')) LIMIT 100",
+        )
+        .all();
+      for (const row of rows) {
+        const job = JSON.parse(String(row.snapshot)) as HostedJobRecord;
+        this.lifecycle.append(
+          {
+            origin: "hosted",
+            kind: "coverage_gap",
+            requestId: job.issued.requestId,
+            requesterActorId: job.issued.requesterId,
+            runId: null,
+            attemptId: null,
+            attemptedAt: job.attemptedAt ?? null,
+            observedAt: job.attemptedAt ?? this.now().toISOString(),
+          },
+          `legacy:${job.issued.requestId}`,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    const value = await this.lifecycle.drainLifecycle(consumerId, consumer, limit);
+    const legacyPending = !!this.db
+      .prepare(
+        "SELECT 1 FROM hosted_jobs WHERE json_extract(snapshot,'$.attempted')=1 AND NOT EXISTS(SELECT 1 FROM usage_lifecycle_events WHERE json_extract(body,'$.requestId')=hosted_jobs.id AND json_extract(body,'$.kind') IN ('start','coverage_gap')) LIMIT 1",
+      )
+      .get();
+    return { ...value, pending: value.pending || legacyPending };
   }
   get(requestId: string): HostedJobRecord | null {
     const row = this.db.prepare("SELECT snapshot FROM hosted_jobs WHERE id=?").get(requestId) as
@@ -659,6 +768,7 @@ export class BrowserDeliveryService {
       current.attempted = true;
       current.state = "unknown";
       this.save(current);
+      this.lifecycleEvidence(current, "start");
       this.db.exec("UPDATE hosted_budget SET starts=starts+1 WHERE id=1; COMMIT");
       job = current;
     } catch (error) {
@@ -727,6 +837,14 @@ export class BrowserDeliveryService {
     try {
       const result = await this.run(path, {
         signal: control.signal,
+        submissionBinding: {
+          version: 1,
+          requestId,
+          attemptId: job.attemptId,
+          attemptedAt: job.attemptedAt as string,
+          scopeId: bridgeProScopeId(this.config),
+          owner: "hosted",
+        },
         deadlineAt,
         shouldCancel: () => !!this.get(requestId)?.cancelRequestedAt,
         ...(assertPromptBinding ? { assertPromptBinding } : {}),
@@ -778,6 +896,7 @@ export class BrowserDeliveryService {
           this.db
             .prepare("INSERT INTO hosted_observations VALUES (?,?,?,?)")
             .run(job.issued.requestId, current.revision, digest, body);
+          this.lifecycleEvidence(current, "result", result);
         }
         this.db.exec("COMMIT");
         return;
@@ -873,6 +992,7 @@ export class BrowserDeliveryService {
         stage: "hosted_result",
       };
       this.save(current);
+      this.lifecycleEvidence(current, "result", result);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -897,6 +1017,49 @@ export class BrowserDeliveryService {
   async reconcile(requestId: string): Promise<HostedJobRecord> {
     let job = this.get(requestId);
     if (!job) throw new Error("browser_delivery_missing");
+    const recoveredMarker = await readMarker(markerPath(this.config.stateDir, requestId));
+    const recoveredBinding = recoveredMarker?.submissionBinding;
+    if (
+      recoveredMarker?.recoveredUsage &&
+      recoveredBinding?.owner === "hosted" &&
+      recoveredBinding.scopeId === bridgeProScopeId(this.config) &&
+      recoveredBinding.requestId === requestId &&
+      recoveredBinding.attemptId === job.attemptId &&
+      recoveredBinding.attemptedAt === job.attemptedAt
+    ) {
+      const raw = recoveredMarker.recoveredUsage.raw,
+        result = JSON.parse(raw) as BridgeResult;
+      if (
+        !validateResult(result).valid ||
+        result.requestId !== requestId ||
+        result.target === "dot" ||
+        result.submitted !== "yes"
+      )
+        throw new Error("usage_hosted_recovery_invalid");
+      const digest = sha256Bytes(Buffer.from(raw));
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        if (
+          !this.db
+            .prepare("SELECT 1 FROM hosted_observations WHERE request_id=? AND digest=?")
+            .get(requestId, digest)
+        ) {
+          const current = this.get(requestId);
+          if (!current || current.attemptId !== job.attemptId)
+            throw new Error("usage_hosted_recovery_identity_changed");
+          this.save(current);
+          this.db
+            .prepare("INSERT INTO hosted_observations VALUES(?,?,?,?)")
+            .run(requestId, current.revision, digest, raw);
+          this.lifecycleEvidence(current, "result", result);
+          job = current;
+        }
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    }
     if (job.attempted && !job.response) {
       const dir = join(this.config.runtimeDir, "hosted-requests", requestId);
       try {
@@ -1290,5 +1453,41 @@ export class BrowserDeliveryService {
   }
   close() {
     this.db.close();
+  }
+}
+
+/** Owned programmatic host composition; raw construction journals but never opens a hidden counter. */
+export async function openObservedBrowserDelivery(
+  ...args: ConstructorParameters<typeof BrowserDeliveryService>
+) {
+  const service = new BrowserDeliveryService(...args);
+  let opened: Awaited<ReturnType<typeof openBridgeProCounter>> | undefined;
+  try {
+    const counter = await openBridgeProCounter(service.config);
+    opened = counter;
+    counter.attachHosted(service);
+    await counter.refresh();
+    let closed = false;
+    return {
+      service,
+      counter,
+      async close(): Promise<void> {
+        if (closed) return;
+        try {
+          await counter.refresh();
+        } finally {
+          closed = true;
+          await counter.close();
+          service.close();
+        }
+      },
+    };
+  } catch (error) {
+    try {
+      await opened?.close();
+    } finally {
+      service.close();
+    }
+    throw error;
   }
 }

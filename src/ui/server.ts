@@ -10,9 +10,11 @@ import {
   unavailableMetadataView,
 } from "../adapters/antigravity-metadata-host.js";
 import type { AntigravityMetadataConfiguration } from "../adapters/antigravity-metadata-store.js";
+import type { BrowserDeliveryService } from "../adapters/browser-delivery.js";
 import { openTrustedDeployment } from "../adapters/deployment-loader.js";
 import type { ResidentWorkerLifecycle } from "../adapters/resident-worker.js";
 import { ArchiveError } from "../archive/types.js";
+import { loadConfig } from "../cli/config.js";
 import { parseStrictJsonBytes, sha256Bytes } from "../contracts/task.js";
 import {
   type UiAck,
@@ -31,10 +33,12 @@ import {
   type NotificationPreferencesStore,
   openNotificationPreferencesStore,
 } from "./notification-preferences.js";
+import type { NotificationRuntime } from "./notification-runtime.js";
 import { type NotificationCataloguePort, UiNotificationSettings } from "./notification-settings.js";
 import { UiOperationsService } from "./operations.js";
 import { openPresentationStore, type PresentationStore } from "./presentation.js";
 import type { ProObservationStore } from "./pro-counter.js";
+import { type BridgeProCounterRuntime, openBridgeProCounter } from "./pro-counter-runtime.js";
 import { UiProCounterSettings } from "./pro-counter-settings.js";
 import { UiProjectSettings } from "./project-settings.js";
 import { openUiService, type TaskUiService, type UiServiceOptions } from "./service.js";
@@ -52,6 +56,9 @@ export interface UiServerOptions extends UiServiceOptions {
   composer?: UiComposerPort;
   archiveOperations?: UiArchivePort;
   proCounter?: ProObservationStore;
+  proCounterRuntime?: BridgeProCounterRuntime;
+  browser?: BrowserDeliveryService;
+  notificationRuntime?: NotificationRuntime;
   notificationPreferences?: NotificationPreferencesStore;
   notificationCatalogue?: NotificationCataloguePort;
 }
@@ -218,6 +225,9 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         uiComposer?: UiComposerPort;
         archiveOperations?: UiArchivePort;
         proCounter?: ProObservationStore;
+        proCounterRuntime?: BridgeProCounterRuntime;
+        browser?: BrowserDeliveryService;
+        notificationRuntime?: NotificationRuntime;
         notificationPreferences?: NotificationPreferencesStore;
         notificationCatalogue?: NotificationCataloguePort;
         /** Explicit trusted opt-in; no HTTP request or browser preference can enable this worker. */
@@ -253,7 +263,14 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     else deployment?.uiRuntime?.store.close();
     throw error;
   }
+  let counterRuntime: BridgeProCounterRuntime | undefined;
+  let ownCounterRuntime = false;
+  let counterTimer: ReturnType<typeof setInterval> | undefined;
+  const notificationRuntime = options.notificationRuntime ?? deployment?.notificationRuntime;
   const closeRuntime = async () => {
+    if (counterTimer) clearInterval(counterTimer);
+    await notificationRuntime?.close();
+    if (ownCounterRuntime) await counterRuntime?.close();
     if (deployment?.close) await deployment.close();
     else service.close();
   };
@@ -307,7 +324,33 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
   const projectSettings = new UiProjectSettings(operations.sources.registry);
   const composer = new UiComposer(operations, options.composer ?? deployment?.uiComposer);
   archiveApi = new UiArchiveApi(operations, archivePort);
-  const counterStore = options.proCounter ?? deployment?.proCounter;
+  const browser = options.browser ?? deployment?.browser;
+  counterRuntime = options.proCounterRuntime ?? deployment?.proCounterRuntime;
+  let counterStore = options.proCounter ?? deployment?.proCounter ?? counterRuntime?.store;
+  if (!counterStore) {
+    try {
+      counterRuntime = await openBridgeProCounter(
+        browser?.config ??
+          loadConfig({ ...process.env, CHATGPT_BRIDGE_RUNTIME_DIR: options.stateDir }),
+        service.profile,
+      );
+      ownCounterRuntime = true;
+      counterStore = counterRuntime.store;
+    } catch {
+      /* Unsupported private storage is unavailable, never zero usage. */
+    }
+  }
+  if (counterRuntime && counterStore !== counterRuntime.store) {
+    await closeRuntime();
+    presentation.close();
+    throw new UiError(
+      "counter_runtime_store_mismatch",
+      "Counter runtime and UI must share one store",
+      500,
+    );
+  }
+  if (counterRuntime && browser) counterRuntime.attachHosted(browser);
+  if (counterRuntime) await counterRuntime.refresh().catch(() => undefined);
   if (counterStore && counterStore.synthetic !== (service.profile === "demo")) {
     try {
       await closeRuntime();
@@ -316,8 +359,14 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     }
     throw new UiError("counter_profile_mismatch", "Counter and task profiles must match", 500);
   }
-  const proCounterSettings = new UiProCounterSettings(counterStore);
-  let notificationStore = options.notificationPreferences ?? deployment?.notificationPreferences;
+  const proCounterSettings = new UiProCounterSettings(
+    counterRuntime ? counterStore : undefined,
+    counterStore && !counterRuntime ? "counter_runtime_unbound" : "pro_counter_unconfigured",
+  );
+  let notificationStore =
+    options.notificationPreferences ??
+    deployment?.notificationPreferences ??
+    notificationRuntime?.preferences;
   let ownNotificationStore = false;
   let storageUnavailableReason:
     | "notification_storage_verifier_unavailable"
@@ -347,6 +396,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       authenticatedActorId: service.authenticatedRequesterId,
       profile: service.profile,
       ...(catalogue ? { catalogue } : {}),
+      ...(notificationRuntime ? { runtime: notificationRuntime } : {}),
       ...(storageUnavailableReason ? { storageUnavailableReason } : {}),
     });
   } catch (error) {
@@ -434,10 +484,19 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
               ...service.metadata(),
               notifications: await notifications.view(),
             });
-          if (rawUrl === "/api/settings/pro-counter")
+          if (rawUrl === "/api/settings/pro-counter") {
+            await counterRuntime?.refresh().catch(() => undefined);
             return sendJson(response, {
               ...service.metadata(),
               proCounter: proCounterSettings.view(),
+            });
+          }
+          const notificationAction =
+            /^\/api\/settings\/notifications\/actions\/([a-f0-9-]{36})$/.exec(rawUrl);
+          if (notificationAction?.[1])
+            return sendJson(response, {
+              ...service.metadata(),
+              action: notifications.actionStatus(notificationAction[1]),
             });
           if (rawUrl === "/api/archive")
             return sendJson(response, {
@@ -544,6 +603,16 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
               metadata: metadataHost ? await metadataHost.refresh() : metadataView(),
             });
           }
+          if (rawUrl === "/api/settings/notifications/test")
+            return sendJson(response, {
+              ...service.metadata(),
+              action: await notifications.test(input),
+            });
+          if (rawUrl === "/api/settings/notifications/credentials")
+            return sendJson(response, {
+              ...service.metadata(),
+              action: await notifications.credentials(input),
+            });
           if (rawUrl === "/api/settings/notifications")
             return sendJson(response, {
               ...service.metadata(),
@@ -728,6 +797,18 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         metadataUnavailable = unavailableMetadataView(reason);
       }
     }
+    if (counterRuntime) {
+      counterTimer = setInterval(() => {
+        void counterRuntime?.refresh().catch(() => undefined);
+      }, 1000);
+      counterTimer.unref?.();
+    }
+    if (notificationRuntime) {
+      if (counterRuntime)
+        notificationRuntime.attachSource(counterRuntime, service.authenticatedRequesterId);
+      if (browser) notificationRuntime.attachSource(browser);
+      notificationRuntime.start();
+    }
     deployment?.residentWorker?.start();
   } catch (error) {
     server.close();
@@ -762,11 +843,13 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       if (closed) return;
       if (closing) return closing;
       shutdownStarted = true;
+      if (counterTimer) clearInterval(counterTimer);
       metadataHost?.beginShutdown();
       service.beginShutdown();
       operations.beginShutdown();
       closing = (async () => {
         const drainedHttp = stopHttp();
+        await notificationRuntime?.close();
         // Keep stores open if either owned worker or outstanding API handlers cannot drain.
         // The same pending HTTP close is awaited again on an explicit shutdown retry.
         await metadataHost?.close();

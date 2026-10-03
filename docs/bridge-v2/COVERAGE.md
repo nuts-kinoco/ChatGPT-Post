@@ -1,6 +1,7 @@
 # Requirement coverage at the SDK trial checkpoint
 
-Code reference: draft PR14, `ccc8c08efc0691840cc4286c07044200f2b060c8`, cumulative on PR13.
+Code baseline: draft PR14 final `27aec64dc3200fe404bb96fdb4d8252cadd6ecd9` (reviewed SDK code `ccc8c08efc0691840cc4286c07044200f2b060c8`), cumulative on PR13.
+This candidate adds the portable R14/R15 usage/alerts implementation described below.
 This matrix supersedes earlier stage descriptions in this file. It does not change the approved
 [consolidated design](CONSOLIDATED-DESIGN.md), protocol bytes, permissions or acceptance conditions.
 A final milestone still requires actual ordinary-Chat and actual CLI roundtrip evidence at a fixed
@@ -23,15 +24,24 @@ reviewed head. A merged source tree or a fake test pass cannot supply that evide
 | R11 / UI/API | Local/hosted/fanout monitor and explicit actions | Operations read models, registered secondary composer, shared LLM catalogue/template, concrete materialize+ACK port and trusted startup wiring | Real configured accounts/destinations; unconfigured actions stay unavailable. LLM-first automation still needs R04 where not wired |
 | R12 / presentation | Compact A bar, explicit expansion, theme and window controls | Product UI/native-shell changes, draft/state preservation, no auto-expansion, graceful shutdown; root/GUI tests | Actual rendering, Windows/DPI/multi-monitor/native-window checks |
 | R13 / quota | Pre-dispatch/post-ACK Codex observations | Public app-server narrow port, provider attribution, freshness/generation fences, unknown/manual-as-unverified and bounded explicit fallback | Actual authenticated RPC/schema/account/billing-route verification. No money guarantee and no reuse as Chat/Claude/AGY quota |
-| R14 / operations follow-on | Bridge-only ordinary Chat Pro counter | Design and evidence semantics approved | Dedicated durable count/window/threshold UI integration remains planned: stable confirmed submission identity, uncertain outcomes, configured cap/reset/timezone, no hardcoded account quota |
-| R15 / notifications follow-on | Optional per-user Email/Discord human-check alerts | Design approved, default-off/no destination/no credentials | Sink, dedupe/rate/disable queued-retry semantics, secure local credential port and masked UI still need code and tests. Save and explicit Test Send remain separate; live recipient/authority required |
+| R14 / operations | Bridge-only ordinary Chat Pro counter | Shared scoped direct/hosted durable submission identity and replay, real CLI/UI wiring, confirmed versus possible, coverage-gap suppression and configurable reference-window/red-warning UI | Actual observed model/site behavior and Windows storage verification remain live/native gates; never account-global quota |
+| R15 / notifications | Optional per-user Email/Discord human-check alerts | Default-off registered destinations, durable source/outbox dedupe, atomic revision/generation/rate claim, bounded controlled transports, secure native interaction port, masked UI and separate Test Send/status | Actual native secret provider, recipient/recurring authority and configured sender binding are required; fake tests are not live-delivery proof. See [usage and alerts](USAGE-ALERTS.md) |
 | R16 / browser | Reuse browser/profile, auth recovery without bypass | Existing dedicated browser/daemon preserved; reviewed selector ambiguity fixes and read-only visible-model catalogue; registered prompt policy/renderer receipts on PR13 | Actual DOM/login/challenge behavior; unknown model fails closed without downgrade. Keeping a browser open is not proof of avoiding Cloudflare |
 | R17 / integration docs | LLM instructions, commands, role-specific test handoff | USAGE/TESTING, UI/ARCHIVE/SDK guides, capabilities/help, scripts and structured result reports | Actual Codex/Claude tasks only when individually authorized; task launcher is distinct from Bridge Codex CLI |
 | R18 / integration acceptance | Final two-route milestone | Offline negative/recovery evidence and independent reviews | Actual Git→claim/approval→ordinary Chat→result/artifacts→save→ACK **and** actual CLI counterpart. Neither is established by this checkpoint |
 | R19 / SDK trial owner | Small own-cloud Haiku text handshake | PR14 separate SDK schemas, official SDK composition, signed bus, private bounded evidence, immutable requester bundle/ACK, one-shot entrypoint; lifecycle/startup races fixed | Same-context cloud auth, billing/extra-usage confirmation, terms and temporary-key/trial approval, private connector destination, then one real call. Linux trusted-host/SDK controls, no native confinement/OS-exit proof |
 | R20 / prompt/browser | Maintainable shared prompt and cache-aware formatting | PR12/13 deterministic shared brief, registered renderer/build/profile, final dispatch guard and historical collector validation | Live cache savings unmeasured; no API-cache control claim. SDK dependency changes require explicit new renderer build registration, never silent old-policy replacement |
 
-## Evidence and compatibility
+## Usage/alerts extension evidence
+
+The portable extension passes root **2,348 tests with 56 inherited explicit browser skips**,
+GUI **60 tests**, root/GUI typecheck/lint/build, and the inherited compiled SDK CLI lifecycle suite.
+It adds real local persistence/loopback HTTP integration with fake browser/mail/HTTPS/native-provider
+ports. No live notifications, account setup, credentials, model calls or Windows runs were performed.
+Rendered Chromium verification was not run: browser launch was denied by the execution environment's
+socket permission restriction. DOM state/HTML parity tests passed; this is not rendered-browser evidence.
+
+## SDK baseline evidence and compatibility
 
 For the PR14 code head: root **2,145 passed +56 inherited explicit browser skips**; GUI **60 passed**;
 **6** compiled CLI lifecycle cases and **17** additional independent adversarial cases passed.

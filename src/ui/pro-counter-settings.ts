@@ -1,4 +1,5 @@
 /** A settings facade over one injected counter. No provider calls, ledger creation or HTTP observations. */
+
 import type { OperationSource } from "../contracts/operations.js";
 import { validateResult } from "../contracts/schema.js";
 import type { BridgeResult } from "../contracts/types.js";
@@ -9,6 +10,7 @@ import {
   type ProObservationStore,
   validateProSettings,
 } from "./pro-counter.js";
+import { qualifiedProPreset } from "./pro-counter-runtime.js";
 
 export type ProCounterSettingsView =
   | {
@@ -23,18 +25,24 @@ export type ProCounterSettingsView =
       configurable: false;
       reason:
         | "pro_counter_unconfigured"
+        | "counter_runtime_unbound"
         | "counter_integrity_unavailable"
         | "counter_read_unavailable";
     };
 export class UiProCounterSettings {
-  constructor(private readonly store?: ProObservationStore) {}
+  constructor(
+    private readonly store?: ProObservationStore,
+    private readonly unavailableReason:
+      | "pro_counter_unconfigured"
+      | "counter_runtime_unbound" = "pro_counter_unconfigured",
+  ) {}
   view(): ProCounterSettingsView {
     if (!this.store)
       return {
         version: "bridge-pro-counter-settings-1",
         state: "unavailable",
         configurable: false,
-        reason: "pro_counter_unconfigured",
+        reason: this.unavailableReason,
       };
     try {
       return {
@@ -154,12 +162,7 @@ export function createHostedProObserver(
         attemptedAt: new Date(job.attemptedAt).toISOString(),
         observedAt: new Date(result.completedAt).toISOString(),
         submitted: result.submitted,
-        observedPreset:
-          result.observedPreset === "pro"
-            ? "pro"
-            : result.observedPreset === null
-              ? "unknown"
-              : "other",
+        observedPreset: qualifiedProPreset(result),
         source: "trusted-ordinary-chat-observer",
         synthetic: options.synthetic,
       });

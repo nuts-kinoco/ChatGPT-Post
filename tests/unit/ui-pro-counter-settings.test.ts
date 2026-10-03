@@ -64,7 +64,7 @@ function fixture(): { job: HostedOperationsRecord; result: BridgeResult } {
     observedPreset: "pro",
     requestedModel: "gpt-5.5",
     observedModel: "gpt-5.5",
-    observedModelSlug: "gpt-5.5",
+    observedModelSlug: "gpt-5-5-pro",
     submitted: "yes",
     conversationUrl: "https://chatgpt.com/c/fixture",
     responseFile: "response.md",

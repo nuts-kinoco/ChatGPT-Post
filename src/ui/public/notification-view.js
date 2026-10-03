@@ -1,4 +1,4 @@
-/** Per-actor registered-recipient settings. No raw address/token input and no send path. */
+/** Per-actor settings and distinct explicit actions. Raw credentials stay in the native provider. */
 export function mountNotificationPreferences({
   api,
   document,
@@ -15,7 +15,12 @@ export function mountNotificationPreferences({
     selected = new Set(),
     enabled = false,
     epoch = 0,
-    destroyed = false;
+    destroyed = false,
+    actionDestination = "",
+    action = null,
+    actionPending = false,
+    actionReading = false,
+    actionVerified = false;
   const listeners = [];
   const listen = (name, event, fn) => {
     node(name).addEventListener(event, fn);
@@ -36,12 +41,39 @@ export function mountNotificationPreferences({
       [...selected].every((id) =>
         destinations().some((value) => value.destinationId === id && value.transportAvailable),
       ));
+  const actionTerminal = () =>
+    actionVerified && action && !["queued", "sending"].includes(action.state);
+  const actionReady = () =>
+    current?.state === "available" &&
+    current.sendingImplemented &&
+    current.controls?.version === "bridge-notification-controls-1" &&
+    !pending &&
+    !actionPending &&
+    !actionReading &&
+    !dirty &&
+    !uncertain &&
+    draftRevision === current.preferences.revision &&
+    (!action || actionTerminal());
+  const credential = () =>
+    current?.controls?.destinations.find((row) => row.destinationId === actionDestination);
   const controls = () => {
     const available = current?.state === "available";
-    node("enabled").disabled = pending || !available || (!current.canEnable && !enabled);
-    node("fields").disabled = pending || !available;
-    node("save").disabled = pending || !available || !dirty || uncertain || !validSelection();
-    node("reset-draft").disabled = pending || (uncertain && !reconciled);
+    const busy = pending || actionPending || actionReading;
+    node("enabled").disabled = busy || !available || (!current.canEnable && !enabled);
+    node("fields").disabled = busy || !available;
+    node("save").disabled = busy || !available || !dirty || uncertain || !validSelection();
+    node("reset-draft").disabled = busy || (uncertain && !reconciled);
+    node("action-destination").disabled = busy || !available || !current.controls;
+    node("test").disabled =
+      !actionReady() ||
+      credential()?.credentialState !== "configured" ||
+      !destinations().some(
+        (row) => row.destinationId === actionDestination && row.transportAvailable,
+      );
+    node("credentials").disabled =
+      !actionReady() || !credential() || !current.controls.credentialInteractionAvailable;
+    node("action-refresh").disabled = busy || !action;
+    node("refresh").disabled = busy;
   };
   const fill = () => {
     enabled = current?.state === "available" ? current.preferences.authBlocked.enabled : false;
@@ -64,7 +96,7 @@ export function mountNotificationPreferences({
       checkbox.disabled = !value.transportAvailable && !selected.has(value.destinationId);
       text.textContent = `${value.channel === "email" ? "Email" : "Discord"} · ${value.label}${value.transportAvailable ? "" : `（利用不可：${value.unavailableReason}）`}`;
       checkbox.addEventListener("change", () => {
-        if (pending || checkbox.disabled) return;
+        if (pending || actionPending || actionReading || checkbox.disabled) return;
         if (checkbox.checked && !value.transportAvailable) {
           checkbox.checked = false;
           message(`通知先を利用できません：${value.unavailableReason}`, true);
@@ -97,6 +129,53 @@ export function mountNotificationPreferences({
     }
     node("destinations").replaceChildren(...rows);
   };
+  const stateText = {
+    queued: "待機中",
+    sending: "処理中",
+    delivered: "配信済み",
+    not_sent: "未送信",
+    uncertain: "結果不明（自動再送しません）",
+    cancelled: "取り消し済み",
+    saved: "保存済み",
+    rejected: "拒否されました",
+    unknown: "結果を確認できません（自動再送しません）",
+  };
+  const renderAction = () => {
+    node("action-state").textContent = action
+      ? `${action.kind === "test" ? "テスト送信" : "安全なローカル設定"} · ${action.destinationId} · ${stateText[action.state] ?? stateText.unknown}`
+      : "未実行です。保存だけでは送信しません";
+    node("action-state").className =
+      `notice ${action && ["unknown", "uncertain"].includes(action.state) ? "danger" : "info"}`;
+  };
+  const renderActions = () => {
+    const implemented = current?.state === "available" && current.sendingImplemented;
+    node("actions").hidden = !implemented;
+    const values = destinations();
+    if (!values.some((row) => row.destinationId === actionDestination))
+      actionDestination = values[0]?.destinationId ?? "";
+    const options = values.map((value) => {
+      const option = document.createElement("option");
+      option.value = value.destinationId;
+      option.textContent = `${value.channel === "email" ? "Email" : "Discord"} · ${value.label}`;
+      return option;
+    });
+    node("action-destination").replaceChildren(...options);
+    node("action-destination").value = actionDestination;
+    const state = credential()?.credentialState;
+    node("credential-state").textContent =
+      state === "configured"
+        ? "認証情報：設定済み ••••••••"
+        : state === "missing"
+          ? "認証情報：未設定"
+          : "認証情報：利用不可";
+    const recent = (current?.controls?.recent ?? []).slice(0, 16).map((row) => {
+      const item = document.createElement("p");
+      item.textContent = `${row.destinationId} · ${row.kind === "test" ? "テスト" : "認証ブロック"} · ${stateText[row.state] ?? stateText.unknown} · 試行 ${row.attempts}/3`;
+      return item;
+    });
+    node("recent").replaceChildren(...recent);
+    renderAction();
+  };
   const render = () => {
     if (!dirty) fill();
     node("enabled").checked = enabled;
@@ -110,17 +189,47 @@ export function mountNotificationPreferences({
         : (current?.reason ?? "notification_preferences_unavailable");
     node("availability").textContent = reason
       ? `利用できない理由：${reason}`
-      : "登録先の設定を保存できます。この画面から通知は送信しません";
+      : current.sendingImplemented
+        ? "保存は通知希望だけを更新します。テスト送信と安全なローカル設定は別の操作です"
+        : "通知送信は未構成です。登録先の設定だけを保存できます";
     node("availability").className = `notice ${reason ? "danger" : "info"}`;
     renderChoices();
+    renderActions();
     controls();
   };
+  const validControlsView = (value) =>
+    value == null ||
+    (value.version === "bridge-notification-controls-1" &&
+      typeof value.credentialInteractionAvailable === "boolean" &&
+      Array.isArray(value.destinations) &&
+      value.destinations.length <= 64 &&
+      Array.isArray(value.recent) &&
+      value.recent.length <= 16 &&
+      value.destinations.every(
+        (row) =>
+          row &&
+          /^[a-z][a-z0-9_-]{0,63}$/.test(row.destinationId) &&
+          ["configured", "missing", "unavailable"].includes(row.credentialState),
+      ) &&
+      value.recent.every(
+        (row) =>
+          row &&
+          /^[a-z][a-z0-9_-]{0,63}$/.test(row.destinationId) &&
+          ["test", "human_check"].includes(row.kind) &&
+          ["queued", "sending", "delivered", "not_sent", "uncertain", "cancelled"].includes(
+            row.state,
+          ) &&
+          Number.isSafeInteger(row.attempts) &&
+          row.attempts >= 0 &&
+          row.attempts <= 3,
+      ));
   const accept = (response) => {
     const incoming = response?.notifications;
     if (
       incoming?.version !== "bridge-notification-settings-1" ||
       !["available", "unavailable"].includes(incoming.state) ||
-      incoming.sendingImplemented !== false
+      typeof incoming.sendingImplemented !== "boolean" ||
+      !validControlsView(incoming.controls)
     )
       throw new Error("notification_response_invalid");
     if (
@@ -134,7 +243,7 @@ export function mountNotificationPreferences({
     return true;
   };
   const refresh = async () => {
-    if (destroyed || pending) return;
+    if (destroyed || pending || actionPending || actionReading) return;
     const reading = ++epoch;
     try {
       const response = await api(endpoint);
@@ -169,7 +278,7 @@ export function mountNotificationPreferences({
     }
   };
   listen("enabled", "change", () => {
-    if (pending || node("enabled").disabled) return;
+    if (pending || actionPending || actionReading || node("enabled").disabled) return;
     enabled = node("enabled").checked;
     dirty = true;
     controls();
@@ -179,6 +288,8 @@ export function mountNotificationPreferences({
     if (
       destroyed ||
       pending ||
+      actionPending ||
+      actionReading ||
       uncertain ||
       !dirty ||
       current?.state !== "available" ||
@@ -223,9 +334,124 @@ export function mountNotificationPreferences({
       if (!destroyed) controls();
     }
   });
+  const acceptAction = (response, expected) => {
+    const value = response?.action;
+    if (
+      !value ||
+      Object.keys(value).sort().join() !== "actionId,destinationId,kind,state" ||
+      value.actionId !== expected.actionId ||
+      value.kind !== expected.kind ||
+      value.destinationId !== expected.destinationId ||
+      !(
+        value.kind === "test"
+          ? ["queued", "sending", "delivered", "not_sent", "uncertain", "cancelled"]
+          : ["queued", "sending", "saved", "rejected", "uncertain", "cancelled"]
+      ).includes(value.state)
+    )
+      throw new Error("notification_action_response_invalid");
+    action = {
+      actionId: value.actionId,
+      destinationId: value.destinationId,
+      kind: value.kind,
+      state: value.state,
+    };
+    actionVerified = true;
+    renderAction();
+  };
+  const startAction = async (kind) => {
+    if (destroyed || !actionReady() || node(kind === "test" ? "test" : "credentials").disabled)
+      return;
+    let actionId;
+    try {
+      actionId = globalThis.crypto.randomUUID();
+    } catch {
+      message("安全な操作IDを作成できません。この環境からは実行できません", true);
+      return;
+    }
+    const input = { actionId, destinationId: actionDestination, expectedRevision: draftRevision };
+    action = { actionId, destinationId: actionDestination, kind, state: "sending" };
+    actionVerified = false;
+    actionPending = true;
+    epoch++; // Older settings reads cannot replace the revision used by this action.
+    renderAction();
+    controls();
+    try {
+      const response = await api(`${endpoint}/${kind === "test" ? "test" : "credentials"}`, input);
+      if (destroyed) return;
+      acceptAction(response, action);
+      message(
+        kind === "test"
+          ? "明示した1回のテスト結果です。自動通知がOFFでも設定は変更しません"
+          : "安全なローカル設定の結果です。認証情報の状態は再読込で確認してください",
+      );
+    } catch (error) {
+      if (!destroyed) {
+        if (
+          error?.code === "stale_notification_preferences" &&
+          error.status === 409 &&
+          error.uncertain === false
+        ) {
+          // This fixed pre-admission rejection proves no action was admitted. Refresh first.
+          action = null;
+          actionVerified = false;
+          uncertain = true;
+          reconciled = false;
+          renderAction();
+          message(
+            "設定が更新されたため操作は受け付けられませんでした。再読込して最新設定を確認してください",
+            true,
+          );
+        } else {
+          action.state = "unknown";
+          actionVerified = false;
+          renderAction();
+          message("操作結果を確認できません。再実行せず、操作状態を確認してください", true);
+        }
+      }
+    } finally {
+      actionPending = false;
+      if (!destroyed) controls();
+    }
+  };
+  const refreshAction = async () => {
+    if (destroyed || !action || pending || actionPending || actionReading) return;
+    const expected = { ...action };
+    actionReading = true;
+    controls();
+    try {
+      const response = await api(`${endpoint}/actions/${expected.actionId}`);
+      if (destroyed) return;
+      acceptAction(response, expected);
+      message(
+        actionTerminal()
+          ? "操作状態を確認しました。新しい操作には明示的なボタンクリックが必要です"
+          : "操作はまだ終了していません。状態の再確認だけを行ってください",
+      );
+    } catch {
+      if (!destroyed) {
+        // An unavailable lookup cannot prove whether the earlier effect happened.
+        actionVerified = false;
+        message("操作状態を確認できません。自動再送は行いません", true);
+      }
+    } finally {
+      actionReading = false;
+      if (!destroyed) controls();
+    }
+  };
+  listen("action-destination", "change", () => {
+    if (destroyed || pending || actionPending || actionReading) return;
+    const value = node("action-destination").value;
+    if (!destinations().some((row) => row.destinationId === value)) return;
+    actionDestination = value;
+    renderActions();
+    controls();
+  });
+  listen("test", "click", () => startAction("test"));
+  listen("credentials", "click", () => startAction("credential"));
+  listen("action-refresh", "click", refreshAction);
   listen("refresh", "click", () => void refresh());
   listen("reset-draft", "click", () => {
-    if (pending || (uncertain && !reconciled)) return;
+    if (pending || actionPending || actionReading || (uncertain && !reconciled)) return;
     uncertain = false;
     fill();
     render();

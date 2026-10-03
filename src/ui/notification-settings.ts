@@ -1,4 +1,4 @@
-/** Per-actor registered-recipient preferences. Saving does not send, test-send, or install a transport. */
+/** Per-actor registered-recipient preferences and explicit, host-owned notification actions. */
 import type { OperationSource } from "../contracts/operations.js";
 import { UiError, type UiProfile } from "../contracts/ui.js";
 import {
@@ -8,6 +8,11 @@ import {
   validateNotificationActor,
   validateNotificationPreferences,
 } from "./notification-preferences.js";
+import type {
+  NotificationActionView,
+  NotificationControlsView,
+  NotificationRuntime,
+} from "./notification-runtime.js";
 export interface RegisteredNotificationDestination {
   destinationId: string;
   channel: "email" | "discord";
@@ -33,7 +38,8 @@ export type NotificationSettingsView =
       configurable: true;
       canEnable: boolean;
       unavailableReason: string | null;
-      sendingImplemented: false;
+      sendingImplemented: boolean;
+      controls: NotificationControlsView | null;
     }
   | {
       version: "bridge-notification-settings-1";
@@ -41,7 +47,8 @@ export type NotificationSettingsView =
       profile: UiProfile;
       configurable: false;
       reason: string;
-      sendingImplemented: false;
+      sendingImplemented: boolean;
+      controls: NotificationControlsView | null;
     };
 const ID = /^[a-z][a-z0-9_-]{0,63}$/;
 function catalogue(
@@ -83,6 +90,53 @@ function catalogue(
     };
   });
 }
+const DELIVERY_STATES = ["queued", "sending", "delivered", "not_sent", "uncertain", "cancelled"];
+/** Rebuild the bounded view rather than reflecting any provider-owned data. */
+function safeControls(value: NotificationControlsView | undefined): NotificationControlsView {
+  if (
+    value?.version !== "bridge-notification-controls-1" ||
+    typeof value.credentialInteractionAvailable !== "boolean" ||
+    !Array.isArray(value.destinations) ||
+    value.destinations.length > 64 ||
+    !Array.isArray(value.recent) ||
+    value.recent.length > 16 ||
+    new Set(value.destinations.map((row) => row.destinationId)).size !== value.destinations.length
+  )
+    throw new Error("notification_controls_invalid");
+  return {
+    version: "bridge-notification-controls-1",
+    credentialInteractionAvailable: value.credentialInteractionAvailable,
+    destinations: value.destinations.map((row) => {
+      if (
+        !ID.test(row.destinationId) ||
+        !["configured", "missing", "unavailable"].includes(row.credentialState)
+      )
+        throw new Error("notification_controls_invalid");
+      return {
+        destinationId: row.destinationId,
+        credentialState: row.credentialState,
+        masked: row.credentialState === "configured" ? "••••••••" : null,
+      };
+    }),
+    recent: value.recent.map((row) => {
+      if (
+        !ID.test(row.destinationId) ||
+        !["test", "human_check"].includes(row.kind) ||
+        !DELIVERY_STATES.includes(row.state) ||
+        !Number.isSafeInteger(row.attempts) ||
+        row.attempts < 0 ||
+        row.attempts > 3
+      )
+        throw new Error("notification_controls_invalid");
+      return {
+        destinationId: row.destinationId,
+        kind: row.kind,
+        state: row.state,
+        attempts: row.attempts,
+      };
+    }),
+  };
+}
 export class UiNotificationSettings {
   private readonly timeoutMs: number;
   constructor(
@@ -91,6 +145,7 @@ export class UiNotificationSettings {
       authenticatedActorId?: string;
       profile: UiProfile;
       catalogue?: NotificationCataloguePort;
+      runtime?: NotificationRuntime;
       readTimeoutMs?: number;
       storageUnavailableReason?:
         | "notification_storage_verifier_unavailable"
@@ -98,6 +153,18 @@ export class UiNotificationSettings {
         | "notification_storage_unavailable";
     },
   ) {
+    if (options.runtime && options.runtime.preferences !== options.store)
+      throw new UiError(
+        "notification_runtime_store_mismatch",
+        "Notification controls must share the settings store",
+        500,
+      );
+    if (options.runtime && options.catalogue && options.catalogue !== options.runtime)
+      throw new UiError(
+        "notification_runtime_catalogue_mismatch",
+        "Notification controls must share the registered destination catalogue",
+        500,
+      );
     this.timeoutMs = options.readTimeoutMs ?? 1000;
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 5000)
       throw new UiError(
@@ -120,7 +187,7 @@ export class UiNotificationSettings {
     return this.options.authenticatedActorId;
   }
   private async destinations(): Promise<OperationSource<RegisteredNotificationDestination[]>> {
-    const source = this.options.catalogue;
+    const source = this.options.runtime ?? this.options.catalogue;
     if (!source)
       return { state: "unavailable", reason: "notification_destination_catalogue_unconfigured" };
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -151,11 +218,56 @@ export class UiNotificationSettings {
       if (timer) clearTimeout(timer);
     }
   }
+  private async controlsView(): Promise<{
+    value: NotificationControlsView | null;
+    reason: string | null;
+  }> {
+    if (!this.options.runtime) return { value: null, reason: null };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve()
+          .then(() => this.options.runtime?.view(this.actor()))
+          .then((value) => ({ value: safeControls(value), reason: null }))
+          .catch(() => ({ value: null, reason: "notification_controls_read_failed" })),
+        new Promise<{ value: null; reason: string }>((resolve) => {
+          timer = setTimeout(
+            () => resolve({ value: null, reason: "notification_controls_read_timeout" }),
+            this.timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  private runtime(): NotificationRuntime {
+    if (!this.options.runtime)
+      throw new UiError(
+        "notification_controls_unconfigured",
+        "Notification sending and secure credential setup are not configured",
+        409,
+      );
+    return this.options.runtime;
+  }
+  async test(input: unknown): Promise<NotificationActionView> {
+    const actor = this.actor();
+    return this.runtime().test(actor, input);
+  }
+  async credentials(input: unknown): Promise<NotificationActionView> {
+    const actor = this.actor();
+    return this.runtime().credentials(actor, input);
+  }
+  actionStatus(actionId: string): NotificationActionView | null {
+    const actor = this.actor();
+    return this.runtime().status(actor, actionId);
+  }
   async view(): Promise<NotificationSettingsView> {
     const base = {
       version: "bridge-notification-settings-1" as const,
       profile: this.options.profile,
-      sendingImplemented: false as const,
+      sendingImplemented: !!this.options.runtime,
+      controls: null,
     };
     if (!this.options.store)
       return {
@@ -184,7 +296,10 @@ export class UiNotificationSettings {
             : "notification_preferences_unavailable",
       };
     }
-    const destinations = await this.destinations();
+    const [destinations, controlsSource] = await Promise.all([
+      this.destinations(),
+      this.controlsView(),
+    ]);
     const canEnable =
       destinations.state === "available" &&
       destinations.value.some((value) => value.transportAvailable);
@@ -196,19 +311,21 @@ export class UiNotificationSettings {
           )
         : null;
     const unavailableReason =
-      destinations.state !== "available"
+      controlsSource.reason ??
+      (destinations.state !== "available"
         ? destinations.reason
         : selectedUnavailable
           ? (destinations.value.find((row) => row.destinationId === selectedUnavailable)
               ?.unavailableReason ?? "notification_destination_no_longer_registered")
           : canEnable
             ? null
-            : (destinations.value[0]?.unavailableReason ?? "notification_transports_unconfigured");
+            : (destinations.value[0]?.unavailableReason ?? "notification_transports_unconfigured"));
     return {
       ...base,
       state: "available",
       configurable: true,
       preferences,
+      controls: controlsSource.value,
       destinations,
       canEnable,
       unavailableReason,
@@ -260,6 +377,7 @@ export class UiNotificationSettings {
     this.validateSelection(value.settings, destinationView, previous.authBlocked.destinationIds);
     try {
       store.update(actor, Number(value.expectedRevision), value.settings);
+      this.options.runtime?.invalidate(actor);
     } catch (error) {
       if (error instanceof UiError) throw error;
       throw new UiError(

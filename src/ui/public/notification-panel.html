@@ -1,7 +1,7 @@
-<!-- Same-frame preference surface. Parent inserts and mounts explicitly; no sender or test-send. -->
+<!-- Same-frame preferences with separate host-owned, explicit notification actions. -->
 <section id="notification-panel" hidden aria-labelledby="notification-title">
   <div class="section-head"><h2 id="notification-title">認証で止まったときの通知設定</h2><button id="notification-close" type="button" class="text-button">戻る</button></div>
-  <p class="small muted">接続中の利用者ごとに保存します。初期設定はOFFです。この画面は設定の保存だけを行い、通知の送信・テスト送信は行いません</p>
+  <p class="small muted">接続中の利用者ごとに保存します。初期設定はOFFです。設定の保存だけでは通知は送信しません。テスト送信は、別のボタンから明示した1回だけ実行します</p>
   <p id="notification-message" class="notice info" role="status" aria-live="polite"></p>
   <p id="notification-state" class="small muted"></p>
   <form id="notification-form">
@@ -10,5 +10,15 @@
     <p id="notification-availability" class="notice info"></p>
     <div class="button-row"><button id="notification-save" class="btn primary" type="submit" disabled>通知先設定を保存</button><button id="notification-refresh" class="outline" type="button">再読込</button><button id="notification-reset-draft" class="text-button" type="button">編集を取り消す</button></div>
   </form>
+  <section id="notification-actions" hidden aria-labelledby="notification-actions-title">
+    <h3 id="notification-actions-title">登録先の個別操作</h3>
+    <p class="small muted">編集内容を保存または取り消してから実行してください。テスト送信は自動通知がOFFでも実行できます。認証情報の入力・確認・保存は安全なローカル画面で行います</p>
+    <label for="notification-action-destination">操作する登録先</label>
+    <select id="notification-action-destination" disabled></select>
+    <p id="notification-credential-state" class="small muted"></p>
+    <div class="button-row"><button id="notification-credentials" type="button" class="outline" disabled>安全なローカル設定</button><button id="notification-test" type="button" class="outline" disabled>テスト送信（1回）</button><button id="notification-action-refresh" type="button" class="text-button" disabled>操作状態を確認</button></div>
+    <p id="notification-action-state" class="notice info" role="status" aria-live="polite"></p>
+    <h3>最近の配信状態</h3><div id="notification-recent"></div>
+  </section>
   <p class="small muted">完了時の画面内通知は表示設定で管理します。通知設定は実行許可やモデル利用枠を変更しません</p>
 </section>

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   type CompletionConfig,
   DEFAULT_COMPLETION_CONFIG,
@@ -21,6 +22,7 @@ import type {
   StateName,
 } from "../contracts/types.js";
 import { redactSecrets } from "../diagnostics/redact.js";
+import type { DirectUsagePort } from "./direct-usage.js";
 import {
   BEST_EFFORT_EFFECTS,
   type Effect,
@@ -30,6 +32,7 @@ import {
   RETRY_LIMITS,
   transition,
 } from "./machine.js";
+import type { SubmissionBinding } from "./marker.js";
 import type { Baseline, Ports, ProjectCreateControl } from "./ports.js";
 
 /** 15 §4: result.json carries no secrets — cause/warnings are redacted and length-capped. */
@@ -67,6 +70,8 @@ export function sanitiseConversationUrl(url: string | null): string | null {
 
 export interface ControllerOptions {
   requestPath: string;
+  usage?: DirectUsagePort;
+  submissionBinding?: SubmissionBinding;
   /** Recipient host hook; checks exact in-memory V2 prompt before all browser effects and dispatch. */
   assertPromptBinding?: (request: ChatRequest, prompt: string) => void;
   artifactsRoot: string;
@@ -153,6 +158,7 @@ class PhaseTimeout extends Error {
  */
 export class RunController {
   private state = initialState();
+  private submissionBinding: SubmissionBinding | null = null;
   private request: ChatRequest | null = null;
   private requestId: string | null = null;
   private requestDir = "";
@@ -436,6 +442,12 @@ export class RunController {
           ? { type: "PRIOR_MARKER_FOUND" }
           : { type: "NO_PRIOR_MARKER" };
       case "CHECK_PROFILE_FREE": {
+        if (!this.opts.submissionBinding)
+          await this.opts.usage?.beginRun(
+            this.requireId(),
+            this.opts.requestPath,
+            this.startedAt.toISOString(),
+          );
         const f = await browser.checkProfileFree();
         return f.free ? { type: "PROFILE_FREE" } : { type: "PROFILE_BUSY", cause: f.cause };
       }
@@ -580,14 +592,37 @@ export class RunController {
       case "WRITE_SUBMIT_MARKER": {
         const b = this.requireBaseline();
         try {
-          await lock.writeMarker(this.requireId(), {
+          const provided = this.opts.submissionBinding;
+          if (
+            provided &&
+            (provided.version !== 1 ||
+              provided.owner !== "hosted" ||
+              provided.requestId !== this.requireId() ||
+              !/^[a-f0-9-]{36}$/.test(provided.attemptId))
+          )
+            throw new Error("hosted_submission_binding_invalid");
+          this.submissionBinding = provided ?? {
+            version: 1,
+            owner: "direct",
+            requestId: this.requireId(),
+            attemptId: randomUUID(),
+            attemptedAt: this.ports.clock.now().toISOString(),
+            scopeId: this.opts.usage?.scopeId ?? "unverified",
+          };
+          const marker = {
+            submissionBinding: this.submissionBinding,
+            observedModelBefore: this.observedModel,
+            observedPresetBefore: this.observedPreset,
             requestId: this.requireId(),
             requestPath: this.opts.requestPath,
             writtenAt: this.ports.clock.now().toISOString(),
             urlBefore: b.url,
             baselineAssistantCount: b.assistantCount,
             presetLabelBefore: b.presetLabel,
-          });
+          };
+          await lock.writeMarker(this.requireId(), marker);
+          if (this.submissionBinding.owner === "direct")
+            await this.opts.usage?.markerWritten(marker);
           return { type: "MARKER_WRITTEN" };
         } catch (err) {
           return { type: "MARKER_WRITE_FAILED", cause: (err as Error).message };
@@ -616,7 +651,7 @@ export class RunController {
         });
         return null;
       case "DELETE_MARKER":
-        await lock.deleteMarker(this.requireId());
+        await this.deleteMarkerAfterNotSent(this.buildResult());
         return null;
       case "START_OBSERVATION_LOOP":
         this.observing = true;
@@ -747,6 +782,10 @@ export class RunController {
         try {
           this.resultPath = await contracts.writeResult(this.requestDir, result);
           this.result = result;
+          if (!this.opts.submissionBinding)
+            await this.opts.usage
+              ?.resultWritten(result)
+              .catch(() => this.warnings.push("usage_projection_pending"));
           return this.state.terminal ? null : { type: "RESULT_WRITTEN" };
         } catch (err) {
           const cause = (err as Error).message;
@@ -766,6 +805,10 @@ export class RunController {
             // would see two different error codes for the same run. Export the same object that
             // was actually written.
             this.result = fallback;
+            if (!this.opts.submissionBinding)
+              await this.opts.usage
+                ?.resultWritten(fallback)
+                .catch(() => this.warnings.push("usage_projection_pending"));
           } catch (err2) {
             this.ports.stderr(
               `WRITE_FAILED (result.json): ${cause}; emergency fallback also failed: ${(err2 as Error).message}`,
@@ -1109,10 +1152,25 @@ export class RunController {
     return false;
   }
 
+  /** Every unlink path first persists the exact bound no-send evidence; failure retains the marker. */
+  private async deleteMarkerAfterNotSent(evidence: BridgeResult): Promise<void> {
+    if (evidence.submitted !== "no") throw new Error("marker_cleanup_requires_not_sent_evidence");
+    if (this.submissionBinding?.owner === "direct")
+      await this.opts.usage?.resolveNotSent(this.submissionBinding, evidence);
+    await this.ports.lock.deleteMarker(this.requireId());
+  }
+
   /** A retryable not-sent result is honest only after its write-ahead marker is actually gone. */
   private async submitNotConfirmedEvent(cause: string): Promise<Event> {
     try {
-      await this.ports.lock.deleteMarker(this.requireId());
+      // Preview the pure transition without committing controller state or running its effects.
+      // The observer path is still in a post-dispatch state, so its verdict event differs.
+      const resolution: Event =
+        this.state.name === "PROMPT_SUBMITTING"
+          ? { type: "SUBMIT_NOT_CONFIRMED", cause }
+          : { type: "VERDICT_SUBMIT_NOT_CONFIRMED", cause };
+      const evidence = this.buildResult(transition(this.state, resolution).next);
+      await this.deleteMarkerAfterNotSent(evidence);
       return { type: "SUBMIT_NOT_CONFIRMED", cause };
     } catch (err) {
       return {
@@ -1181,10 +1239,10 @@ export class RunController {
     return true;
   }
 
-  private buildResult(): BridgeResult {
-    const term = this.state.terminal;
+  private buildResult(state: MachineState = this.state): BridgeResult {
+    const term = state.terminal;
     const completedAt = this.ports.clock.now();
-    const completed = term?.name === "COMPLETED" || (!term && this.state.name === "WRITING_RESULT");
+    const completed = term?.name === "COMPLETED" || (!term && state.name === "WRITING_RESULT");
     // Pre-existing mismatch noticed alongside A-113: error.cause is capped at 200 chars by
     // schemas/result.schema.json, not RESULT_TEXT_MAX's 500 — messageFor() below still gets the
     // fuller 500-char text since `message` has no such limit, only `cause` needs the tighter cap.
@@ -1204,7 +1262,7 @@ export class RunController {
       requestedModel: this.request ? (this.request.model ?? "current") : null,
       observedModel: this.observedModel,
       observedModelSlug: this.observedModelSlug,
-      submitted: this.state.submitted,
+      submitted: state.submitted,
       ...(this.project ? { project: this.project } : {}),
       conversationUrl: sanitiseConversationUrl(this.conversationUrl),
       responseFile: completed ? this.responseFile : null,
@@ -1223,7 +1281,7 @@ export class RunController {
               code: term.code,
               message: messageFor(term.code, safeCause),
               retryable: term.code === "SUBMIT_NOT_CONFIRMED",
-              phase: this.state.phase,
+              phase: state.phase,
               cause: safeFieldCause,
             },
     };

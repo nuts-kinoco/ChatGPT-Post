@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import type { NotificationControlsView } from "../../src/ui/notification-runtime.js";
 import { mountNotificationPreferences } from "../../src/ui/public/notification-view.js";
 
 const html = readFileSync(
@@ -18,6 +19,7 @@ function response(revision = 0, enabled = false, destinationIds: string[] = []) 
       state: "available",
       profile: "production",
       sendingImplemented: false,
+      controls: null as NotificationControlsView | null,
       configurable: true,
       canEnable: true,
       unavailableReason: null as string | null,
@@ -127,6 +129,9 @@ describe("same-frame auth-block notification preferences", () => {
     await panel.open();
     expect(node("enabled").checked).toBe(false);
     expect(node("save").disabled).toBe(true);
+    expect(node("actions").hidden).toBe(true);
+    expect(node("test").disabled).toBe(true);
+    expect(node("credentials").disabled).toBe(true);
     expect(choice(0).value).toBe("work-email");
     expect(choice(1).disabled).toBe(true);
     expect(node("destinations").children[1]?.children[1]?.textContent).toContain(
@@ -253,5 +258,287 @@ describe("same-frame auth-block notification preferences", () => {
     await node("refresh").emit("click");
     expect(calls).toBe(2);
     expect(node("destinations").children).toEqual([]);
+  });
+});
+
+function activeResponse(revision = 0, enabled = false, destinationIds: string[] = []) {
+  const data = response(revision, enabled, destinationIds);
+  data.notifications.sendingImplemented = true;
+  data.notifications.controls = {
+    version: "bridge-notification-controls-1",
+    credentialInteractionAvailable: true,
+    destinations: [
+      { destinationId: "work-email", credentialState: "configured", masked: "••••••••" },
+      { destinationId: "private-discord", credentialState: "missing", masked: null },
+    ],
+    recent: [{ destinationId: "work-email", kind: "human_check", state: "uncertain", attempts: 1 }],
+  };
+  return data;
+}
+function required<T>(value: T | undefined): T {
+  if (!value) throw new Error("expected captured action");
+  return value;
+}
+type ActionInput = { actionId: string; destinationId: string; expectedRevision: number };
+const actionResponse = (input: ActionInput, state = "delivered", kind = "test") => ({
+  action: { actionId: input.actionId, destinationId: input.destinationId, state, kind },
+});
+describe("separate one-shot notification action UI", () => {
+  it("permits an explicit default-OFF test with an opaque UUID and never sends during Save", async () => {
+    const { document, node, choice } = dom();
+    const api = vi.fn(async (path: string, body?: unknown) => {
+      if (path.endsWith("/test")) return actionResponse(body as ActionInput);
+      return body ? activeResponse(1, true, ["work-email"]) : activeResponse();
+    });
+    const panel = mountNotificationPreferences({ document, api });
+    await panel.open();
+    expect(node("enabled").checked).toBe(false);
+    expect(node("test").disabled).toBe(false);
+    expect(node("credential-state").textContent).toBe("認証情報：設定済み ••••••••");
+    expect(node("recent").children[0]?.textContent).toContain("結果不明");
+    await node("test").emit("click");
+    const sent = api.mock.calls[1]?.[1] as ActionInput;
+    expect(sent).toEqual({
+      actionId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+      destinationId: "work-email",
+      expectedRevision: 0,
+    });
+    expect(node("enabled").checked).toBe(false);
+    await enable(node, choice);
+    expect(node("test").disabled).toBe(true);
+    await node("form").emit("submit");
+    expect(api.mock.calls.map(([path]) => path)).toEqual([
+      "/api/settings/notifications",
+      "/api/settings/notifications/test",
+      "/api/settings/notifications",
+    ]);
+    expect(node("message").textContent).toContain("送信・テスト送信は行っていません");
+  });
+  it("keeps native setup separate, supports missing credentials, and never accepts browser secrets", async () => {
+    const { document, node } = dom();
+    const data = activeResponse();
+    // Display only the fixed mask, even if a malformed provider response attempted a suffix.
+    const firstDestination = data.notifications.controls?.destinations[0];
+    if (firstDestination) firstDestination.masked = "TOKEN" as "••••••••";
+    const api = vi.fn(async (path: string, body?: unknown) =>
+      path.endsWith("/credentials")
+        ? actionResponse(body as ActionInput, "saved", "credential")
+        : data,
+    );
+    const panel = mountNotificationPreferences({ document, api });
+    await panel.open();
+    expect(node("credential-state").textContent).not.toContain("TOKEN");
+    node("action-destination").value = "private-discord";
+    await node("action-destination").emit("change");
+    expect(node("credential-state").textContent).toContain("未設定");
+    expect(node("test").disabled).toBe(true);
+    expect(node("credentials").disabled).toBe(false);
+    await node("credentials").emit("click");
+    expect(api.mock.calls[1]?.[1]).toEqual({
+      actionId: expect.any(String),
+      destinationId: "private-discord",
+      expectedRevision: 0,
+    });
+    expect(node("action-state").textContent).toContain("保存済み");
+    expect(node("enabled").checked).toBe(false);
+    expect(html).not.toMatch(/type="(?:text|password|email|url)"|textarea/);
+    expect(source).not.toMatch(/localStorage|sessionStorage|window\.open|\.focus\(/);
+    expect(api.mock.calls.some(([path]) => path.endsWith("/test"))).toBe(false);
+  });
+  it("dedupes clicks while pending or queued, then needs a new explicit click after terminal status", async () => {
+    const { document, node } = dom();
+    const sent = deferred<ReturnType<typeof actionResponse>>();
+    let input: ActionInput | undefined;
+    const api = vi.fn(async (path: string, body?: unknown) => {
+      if (path.endsWith("/test")) {
+        input = body as ActionInput;
+        return sent.promise;
+      }
+      if (path.includes("/actions/")) return actionResponse(required(input));
+      return activeResponse();
+    });
+    const panel = mountNotificationPreferences({ document, api });
+    await panel.open();
+    const first = node("test").emit("click");
+    await node("test").emit("click");
+    await node("credentials").emit("click");
+    expect(api).toHaveBeenCalledTimes(2);
+    sent.resolve(actionResponse(required(input), "queued"));
+    await first;
+    await node("test").emit("click");
+    expect(api).toHaveBeenCalledTimes(2);
+    await node("action-refresh").emit("click");
+    expect(api.mock.calls[2]?.[0]).toBe(`/api/settings/notifications/actions/${input?.actionId}`);
+    const originalId = input?.actionId;
+    expect(node("test").disabled).toBe(false);
+    expect(api).toHaveBeenCalledTimes(3);
+    await node("test").emit("click");
+    expect(input?.actionId).not.toBe(originalId);
+    expect(api).toHaveBeenCalledTimes(4);
+  });
+  it("retains an uncertain action across close/refresh and reconciles only with status GET", async () => {
+    const { document, node } = dom();
+    let input: ActionInput | undefined,
+      found = false;
+    const api = vi.fn(async (path: string, body?: unknown) => {
+      if (path.endsWith("/test")) {
+        input = body as ActionInput;
+        throw new Error("lost response");
+      }
+      if (path.includes("/actions/"))
+        return found ? actionResponse(required(input), "uncertain") : { action: null };
+      return activeResponse();
+    });
+    const panel = mountNotificationPreferences({ document, api });
+    await panel.open();
+    await node("test").emit("click");
+    expect(node("action-state").textContent).toContain("自動再送しません");
+    await node("close").emit("click");
+    await panel.open();
+    await node("test").emit("click");
+    await node("action-refresh").emit("click");
+    expect(node("test").disabled).toBe(true);
+    expect(api.mock.calls.filter(([path]) => path.endsWith("/test"))).toHaveLength(1);
+    found = true;
+    await node("action-refresh").emit("click");
+    expect(node("action-state").textContent).toContain("結果不明");
+    expect(node("test").disabled).toBe(false);
+    expect(api.mock.calls.filter(([path]) => path.endsWith("/test"))).toHaveLength(1);
+  });
+  it("holds dirty/stale preferences and preserves draft and selected action destination through dismissal", async () => {
+    const { document, node, choice } = dom();
+    let data = activeResponse();
+    const api = vi.fn(async () => data);
+    const panel = mountNotificationPreferences({ document, api });
+    await panel.open();
+    node("action-destination").value = "private-discord";
+    await node("action-destination").emit("change");
+    await enable(node, choice);
+    await node("credentials").emit("click");
+    expect(api).toHaveBeenCalledTimes(1);
+    data = activeResponse(1);
+    await panel.refresh();
+    expect(node("test").disabled).toBe(true);
+    expect(node("credentials").disabled).toBe(true);
+    await node("close").emit("click");
+    await panel.open();
+    expect(node("enabled").checked).toBe(true);
+    expect(choice(0).checked).toBe(true);
+    expect(node("action-destination").value).toBe("private-discord");
+    await node("reset-draft").emit("click");
+    expect(node("credentials").disabled).toBe(false);
+  });
+  it("ignores an older settings read after an action starts and fences a destroyed action response", async () => {
+    const { document, node } = dom();
+    const old = deferred<ReturnType<typeof activeResponse>>(),
+      sent = deferred<ReturnType<typeof actionResponse>>();
+    let reads = 0,
+      input: ActionInput | undefined;
+    const api = vi.fn(async (path: string, body?: unknown) => {
+      if (path.endsWith("/test")) {
+        input = body as ActionInput;
+        return sent.promise;
+      }
+      return ++reads === 1 ? activeResponse(2) : old.promise;
+    });
+    const panel = mountNotificationPreferences({ document, api });
+    await panel.open();
+    const reading = panel.refresh();
+    const sending = node("test").emit("click");
+    old.resolve(activeResponse(3));
+    await reading;
+    expect(node("state").textContent).toContain("revision 2");
+    panel.close();
+    panel.destroy();
+    sent.resolve(actionResponse(required(input)));
+    await sending;
+    expect(node("panel").hidden).toBe(true);
+    expect(node("action-state").textContent).toContain("処理中");
+    await node("action-refresh").emit("click");
+    expect(api).toHaveBeenCalledTimes(3);
+  });
+  it("rejects mismatched action results and does not let an absent runtime activate controls", async () => {
+    const { document, node } = dom();
+    const api = vi.fn(async (path: string, body?: unknown) =>
+      path.endsWith("/test")
+        ? actionResponse({ ...(body as ActionInput), destinationId: "another-destination" })
+        : activeResponse(),
+    );
+    const panel = mountNotificationPreferences({ document, api });
+    await panel.open();
+    await node("test").emit("click");
+    expect(node("test").disabled).toBe(true);
+    expect(node("action-state").textContent).toContain("結果を確認できません");
+    const missing = dom(),
+      absent = mountNotificationPreferences({
+        document: missing.document,
+        api: async () => response(),
+      });
+    await absent.open();
+    expect(missing.node("actions").hidden).toBe(true);
+    expect(missing.node("test").disabled).toBe(true);
+  });
+  it("requires revision refresh after a proven stale pre-admission rejection, without retrying", async () => {
+    const { document, node } = dom();
+    let revision = 0;
+    const api = vi.fn(async (path: string) => {
+      if (path.endsWith("/test")) {
+        revision = 1;
+        throw { code: "stale_notification_preferences", status: 409, uncertain: false };
+      }
+      return activeResponse(revision);
+    });
+    const panel = mountNotificationPreferences({ document, api });
+    await panel.open();
+    await node("test").emit("click");
+    expect(node("test").disabled).toBe(true);
+    expect(node("reset-draft").disabled).toBe(true);
+    expect(node("message").textContent).toContain("操作は受け付けられませんでした");
+    await panel.refresh();
+    await node("reset-draft").emit("click");
+    expect(node("test").disabled).toBe(false);
+    expect(api.mock.calls.filter(([path]) => path.endsWith("/test"))).toHaveLength(1);
+    expect(node("state").textContent).toContain("revision 1");
+  });
+  it("holds the last valid masked view when a malformed controls response arrives", async () => {
+    const { document, node } = dom();
+    let data: unknown = activeResponse();
+    const panel = mountNotificationPreferences({ document, api: async () => data });
+    await panel.open();
+    const malformed = activeResponse();
+    data = {
+      notifications: {
+        ...malformed.notifications,
+        controls: {
+          version: "bridge-notification-controls-1",
+          credentialInteractionAvailable: true,
+        },
+      },
+    };
+    await panel.refresh();
+    expect(node("credential-state").textContent).toBe("認証情報：設定済み ••••••••");
+    expect(node("test").disabled).toBe(true);
+    expect(node("message").textContent).toContain("設定を読み込めません");
+  });
+  it("keeps standalone and embedded action controls in sync with distinct non-submit buttons", () => {
+    const embedded = readFileSync(
+      new URL("../../src/ui/public/index.html", import.meta.url),
+      "utf8",
+    );
+    for (const id of [
+      "actions",
+      "action-destination",
+      "credential-state",
+      "test",
+      "credentials",
+      "action-refresh",
+      "action-state",
+      "recent",
+    ]) {
+      expect(embedded.match(new RegExp(`id="notification-${id}"`, "g"))).toHaveLength(1);
+      expect(html).toContain(`id="notification-${id}"`);
+    }
+    for (const id of ["test", "credentials", "action-refresh"])
+      expect(html).toMatch(new RegExp(`id="notification-${id}" type="button"`));
   });
 });

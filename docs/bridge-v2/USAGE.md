@@ -298,3 +298,9 @@ read/probe/configure の差と requester materialization 設定は [ARCHIVE-USAG
 - **共通の未完成部分:** 任意 issuer agent 向け authenticated tool/capability integration、bootstrap ACK extraction/context-continuity の完全配線、Email/Discord 実送信。短い bootstrap と現実の authority を混同しない
 - **実機未検証:** 同じ会話/同じ model の通常 Chat、実 CLI、GitHub 実 roundtrip、描画/DPI/Windows/実 IPC。外部購読や dot/Codex task に置き換えない
 - **権限が必要:** 本人 identity、既存 account/route、credential/permission setup、実モデル一回試験、外部共有。コードを読んだだけでは許可されない
+
+## Usage reference and human-check alerts
+
+See [Usage and alerts](USAGE-ALERTS.md) for the shared ordinary-Chat observation counter,
+manual cap/window/JST settings, default-off per-user destinations, masked secure setup and
+explicit Test Send. Portable code and fake tests do not authorize or verify live delivery.

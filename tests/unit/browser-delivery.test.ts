@@ -322,7 +322,123 @@ describe("ordinary Chat hosted-response extension (fake browser only)", () => {
     behavior = "auth";
     await service.start(task.request_id);
     expect(service.get(task.request_id)?.state).toBe("blocked_auth");
+    const authEvents: import("../../src/state/usage-lifecycle.js").BridgeUsageEvent[] = [];
+    await service.drainLifecycle("auth_fixture", (event) => {
+      authEvents.push(event);
+    });
+    expect(authEvents.map((event) => event.kind)).toEqual(["start", "result"]);
+    expect(authEvents[1]).toMatchObject({
+      origin: "hosted",
+      requesterActorId: "requester",
+      runId: null,
+      attemptId: service.get(task.request_id)?.attemptId,
+      result: { submitted: "no", error: { code: "AUTH_REQUIRED" } },
+    });
     await expect(service.start(task.request_id)).rejects.toThrow();
+    expect(starts).toBe(1);
+  });
+  it("journals attempt/result atomically, replays failed consumer, and ignores ACK/read changes", async () => {
+    const task = await issue();
+    await service.start(task.request_id);
+    const events: import("../../src/state/usage-lifecycle.js").BridgeUsageEvent[] = [];
+    let failedId = "";
+    await expect(
+      service.drainLifecycle("alerts", async (event) => {
+        failedId = event.eventId;
+        throw new Error("failed enqueue");
+      }),
+    ).rejects.toThrow("failed enqueue");
+    await service.drainLifecycle("alerts", (event) => {
+      events.push(event);
+    });
+    expect(events.map((event) => event.kind)).toEqual(["start", "result"]);
+    expect(events[0]?.eventId).toBe(failedId);
+    expect(
+      events.every((event) => event.attemptId === service.get(task.request_id)?.attemptId),
+    ).toBe(true);
+    expect(events.every((event) => event.requesterActorId === "requester")).toBe(true);
+    await service.reconcile(task.request_id);
+    expect(
+      (
+        await service.drainLifecycle("alerts", () => {
+          throw new Error("must not append ACK/read event");
+        })
+      ).processed,
+    ).toBe(0);
+  });
+  it("leaves durable possible intent after browser crash, without generating another attempt", async () => {
+    const task = await issue();
+    behavior = "crash";
+    await expect(service.start(task.request_id)).rejects.toThrow("browser_crashed");
+    const events: import("../../src/state/usage-lifecycle.js").BridgeUsageEvent[] = [];
+    await service.drainLifecycle("counter", (event) => {
+      events.push(event);
+    });
+    expect(events.map((e) => e.kind)).toEqual(["start"]);
+    await expect(service.start(task.request_id)).rejects.toThrow();
+    expect(starts).toBe(1);
+  });
+  it("rejects userinfo in an otherwise exact ChatGPT conversation URL", () => {
+    expect(
+      () =>
+        new BrowserDeliveryService(
+          recipient,
+          loadConfig({ CHATGPT_BRIDGE_RUNTIME_DIR: dir }),
+          { ...service.policy, conversationUrl: "https://user@chatgpt.com/c/fixture" },
+          async () => null,
+        ),
+    ).toThrow("browser_delivery_policy_invalid");
+  });
+  it("rolls back the hosted attempt if atomic lifecycle append fails, and never starts browser", async () => {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(join(dir, "hosted-delivery.db"));
+    const task = await issue();
+    db.exec(
+      "CREATE TRIGGER fixture_event_failure BEFORE INSERT ON usage_lifecycle_events BEGIN SELECT RAISE(ABORT,'fixture_event_failure'); END;",
+    );
+    await expect(service.start(task.request_id)).rejects.toThrow("fixture_event_failure");
+    expect(service.get(task.request_id)?.attempted).toBe(false);
+    expect(starts).toBe(0);
+    db.exec("DROP TRIGGER fixture_event_failure");
+    db.close();
+    await service.start(task.request_id);
+    expect(starts).toBe(1);
+  });
+  it("rolls back result and journal together, then safely replays only persisted browser result", async () => {
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(join(dir, "hosted-delivery.db"));
+    const task = await issue();
+    db.exec(
+      "CREATE TRIGGER fixture_result_failure BEFORE INSERT ON usage_lifecycle_events WHEN json_extract(NEW.body,'$.kind')='result' BEGIN SELECT RAISE(ABORT,'fixture_result_failure'); END;",
+    );
+    await expect(service.start(task.request_id)).rejects.toThrow("fixture_result_failure");
+    expect(service.get(task.request_id)?.response).toBe(null);
+    expect(service.get(task.request_id)?.attempted).toBe(true);
+    expect(starts).toBe(1);
+    db.exec("DROP TRIGGER fixture_result_failure");
+    db.close();
+    await service.reconcile(task.request_id);
+    const events: import("../../src/state/usage-lifecycle.js").BridgeUsageEvent[] = [];
+    await service.drainLifecycle("fixture", (event) => {
+      events.push(event);
+    });
+    expect(events.map((event) => event.kind)).toEqual(["start", "result"]);
+    expect(starts).toBe(1);
+  });
+  it("exposes an old attempted record as a coverage gap without inventing a start or replaying browser", async () => {
+    const { DatabaseSync } = await import("node:sqlite");
+    const task = await issue();
+    behavior = "crash";
+    await expect(service.start(task.request_id)).rejects.toThrow();
+    const db = new DatabaseSync(join(dir, "hosted-delivery.db"));
+    db.exec("DELETE FROM usage_lifecycle_events");
+    db.close();
+    const events: import("../../src/state/usage-lifecycle.js").BridgeUsageEvent[] = [];
+    await service.drainLifecycle("fixture", (event) => {
+      events.push(event);
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: "coverage_gap", attemptId: null, runId: null });
     expect(starts).toBe(1);
   });
 });
