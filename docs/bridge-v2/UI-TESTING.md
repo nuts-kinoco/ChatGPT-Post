@@ -1,17 +1,17 @@
 # Bridge v2 UI テスト手順
 
-用途: PR2 の固定コミットを更新・ビルドしたあと、LLM または人間が同じ手順と期待値で確認するためのチェックリストです。使い方は [UI-USAGE.md](UI-USAGE.md)。PR2 の UI/API 試験と、未設定の本番実行アダプターの試験を混同しません。
+用途: この表示UIの固定コミットを更新・ビルドしたあと、LLM または人間が同じ手順と期待値で確認するためのチェックリストです。使い方は [UI-USAGE.md](UI-USAGE.md)。表示UIのAPI試験と、未設定の本番実行アダプターの試験を混同しません。
 
 ## A. 開始条件と記録
 
-1. PR2 説明の **Verified head** を `$ExpectedCommit` に設定し、その SHA を checkout
+1. このPR説明の **Verified head** を `$ExpectedCommit` に設定し、その SHA を checkout
 2. `git rev-parse HEAD` が一致すること、作業ツリーの変更がないことを確認
 3. OS、Node/npm、Chrome/Electron、時刻、コマンドと終了コードを記録
 4. 試験用のローカル runtime を使用。実データ、個人情報、API キー、認証情報を TaskSpec/MD に入れない
 5. UI トークン付き起動 URL は記録やスクリーンショットに含めない
 
 ```powershell
-$ExpectedCommit = '<PR2 description: Verified head>'
+$ExpectedCommit = '<このPR description: Verified head>'
 git fetch origin
 git switch --detach $ExpectedCommit
 if ((git rev-parse HEAD) -ne $ExpectedCommit) { throw 'Commit mismatch' }
@@ -39,7 +39,7 @@ cd ..
 
 | 操作 | 期待結果 |
 |---|---|
-| production の `gui/ npm start` | 280×380 ドックを表示。合成完了カードなし |
+| production の `gui/ npm start` | 440×46バー。明示的な展開だけで同じ440×604外枠へ。合成完了カードなし |
 | ドックの「詳細」 | 同じローカルサーバーの詳細画面。初回は指定 UUID、再表示は既存の選択と下書きを維持 |
 | 大画面、狭い画面、200%表示 | 横幅超過/文字切れなし。対のカード・操作幅が揃う |
 | ドックを移動、隠す、トレイ再表示 | 操作可能な位置へ表示。余分なサーバー/実行を作らない |

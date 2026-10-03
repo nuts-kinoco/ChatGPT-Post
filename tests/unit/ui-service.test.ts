@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sha256Bytes, validateTaskResult } from "../../src/contracts/task.js";
 import type { UiAck, UiBinding, UiTaskResponse } from "../../src/contracts/ui.js";
-import { type DemoTaskExecutor, demoTask } from "../../src/ui/demo.js";
+import { DemoAuthority, type DemoTaskExecutor, demoTask } from "../../src/ui/demo.js";
 import { openUiService, TaskUiService } from "../../src/ui/service.js";
 
 function binding(view: UiTaskResponse): UiBinding {
@@ -69,6 +69,23 @@ describe("product UI service, real SQLite and controller", () => {
     const changed = { ...input, taskMarkdown: `${input.taskMarkdown}\nmodified` };
     expect(service.validate(changed).valid).toBe(false);
     expect(() => service.import(changed)).toThrow("hash validation");
+  });
+  it("derives demo approval times from one clock sample and honors the task lifetime", async () => {
+    const service = await open();
+    const input = demoTask({});
+    const spec = JSON.parse(input.rawSpec);
+    spec.approval.max_age_seconds = 60;
+    const view = service.import({ ...input, rawSpec: JSON.stringify(spec) });
+    let samples = 0;
+    const base = Date.now();
+    const authority = new DemoAuthority(
+      service.runtime.store,
+      service.runtime.controller.policy,
+      () => new Date(base + samples++),
+    );
+    const grant = await authority.approve(view.task.summary.requestId);
+    expect(samples).toBe(1);
+    expect(Date.parse(grant.expires_at) - Date.parse(grant.issued_at)).toBe(60_000);
   });
   it("persists the complete synthetic lifecycle, exact hash-bound approval, receipt and idempotent ACK", async () => {
     let service = await open();

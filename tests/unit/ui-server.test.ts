@@ -26,6 +26,7 @@ describe("loopback UI HTTP security and product routes", () => {
       join(publicDir, "index.html"),
       '<!doctype html><html><head><link rel="stylesheet" href="/styles.css"></head><body><script src="/app.js" defer></script></body></html>',
     );
+    await writeFile(join(publicDir, "presentation.js"), '"use strict";');
     await writeFile(join(publicDir, "app.js"), '"use strict";');
     await writeFile(join(publicDir, "styles.css"), "body { color: black; }");
     await writeFile(join(directory, "secret.txt"), "not-a-public-asset");
@@ -150,7 +151,7 @@ describe("loopback UI HTTP security and product routes", () => {
   });
   it("serves only exact public assets with hardened headers and no filesystem path route", async () => {
     const server = await open();
-    for (const path of ["/", "/index.html", "/app.js", "/styles.css"]) {
+    for (const path of ["/", "/index.html", "/app.js", "/styles.css", "/presentation.js"]) {
       const response = await fetch(`${server.origin}${path}`);
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toBe("no-store");
@@ -176,6 +177,7 @@ describe("loopback UI HTTP security and product routes", () => {
     const server = await open();
     for (const path of [
       "/?view=dock",
+      "/?view=resident",
       "/?view=detail&tab=approval",
       "/?view=detail&tab=evidence&task=12345678-1234-1234-1234-123456789abc",
     ])

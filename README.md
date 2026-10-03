@@ -17,7 +17,7 @@ The v2 task protocol, durable controller and fake-only tests are implemented in 
 
 ## Bridge v2 product UI (PR2)
 
-The existing Electron app now opens the approved 280×380 vertical dock and a separate task-detail window.
+The Electron app opens the accepted 440×46 resident bar and expands downward in the same renderer to a total 440×604 panel. Monitoring and results are primary; manual JSON/Markdown import is secondary.
 From the repository root run `npm run build` then `npm run ui`, or build/start the existing `gui/` package.
 The UI is backed by the durable task ledger and authenticated loopback API; accepted payloads are immutable.
 Production execution/approval remain disabled until trusted adapters are configured. `npm run ui:demo` explicitly
@@ -26,6 +26,10 @@ selects a separate persistent synthetic profile with no model/process/network ex
 - [UI usage guide](docs/bridge-v2/UI-USAGE.md)
 - [UI test procedure](docs/bridge-v2/UI-TESTING.md)
 - [UI verification and remaining checks](docs/bridge-v2/UI-VERIFICATION.md)
+
+## 常駐表示・テーマの追加
+
+起動時は小さなバーから明示的に展開します。入力を保持したまま畳む/隠す/トレイ復帰、最前面、非アクティブ時の非表示、共通ライト/ダーク、画面内完了通知OFFを追加しています。[使い方と検証](docs/bridge-v2/UI-PRESENTATION.md)。実行権限やタスクの意味は変えません。
 
 ## 現状
 
