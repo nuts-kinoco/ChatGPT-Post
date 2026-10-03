@@ -1,6 +1,11 @@
 /** Concrete host wiring. Every byte publication still passes the configured CAS sharing grants. */
 import { isDeepStrictEqual } from "node:util";
 import type { DeliveryAcceptanceContext, GitHubTaskBus } from "../adapters/github-transport.js";
+import {
+  hostedPromptPolicyDetails,
+  isRegisteredHostedPromptPolicy,
+  type RegisteredHostedPromptPolicy,
+} from "../adapters/hosted-prompt-policy.js";
 import { assertDeliveryBinding } from "../contracts/delivery-proof.js";
 import {
   type DeliveryBindingV1,
@@ -221,7 +226,10 @@ export function createHostedPayloadContext(
   registry: import("../contracts/project-registry.js").ProjectRegistryPort,
   policyForHash: (
     policyHash: string,
-  ) => import("../contracts/output-contract.js").HostedExpectedOutputPolicy | null,
+  ) =>
+    | import("../contracts/output-contract.js").HostedExpectedOutputPolicy
+    | RegisteredHostedPromptPolicy
+    | null,
 ) {
   return async (context: DeliveryAcceptanceContext) => {
     const { loadTaskSpec } = await import("../contracts/task.js");
@@ -230,7 +238,17 @@ export function createHostedPayloadContext(
     if (!parsed.valid || !reference || !context.outputContractRaw)
       throw new ArchiveError("delivery_hosted_contract_context_required");
     const project = registry.resolve(reference.registryRevision, context.issued.repoId),
-      policy = policyForHash(parsed.task.policy_snapshot_sha256);
+      policyRegistration = policyForHash(parsed.task.policy_snapshot_sha256);
+    const registeredPrompt = isRegisteredHostedPromptPolicy(policyRegistration)
+      ? hostedPromptPolicyDetails(policyRegistration)
+      : null;
+    if (registeredPrompt && registeredPrompt.policySha256 !== parsed.task.policy_snapshot_sha256)
+      throw new ArchiveError("delivery_prompt_policy_mismatch");
+    const policy = registeredPrompt
+      ? registeredPrompt.policy.delivery.expectedOutputPolicy
+      : (policyRegistration as
+          | import("../contracts/output-contract.js").HostedExpectedOutputPolicy
+          | null);
     if (
       !project.githubDestination ||
       !policy ||
@@ -258,6 +276,9 @@ export function createHostedPayloadContext(
         },
       };
     return {
+      promptRendering: isRegisteredHostedPromptPolicy(policyRegistration)
+        ? { mode: "bound-hosted-v1" as const, policy: policyRegistration }
+        : { mode: "legacy" as const },
       expectedConversationId: policy.destination.conversationId,
       outputContractRaw: context.outputContractRaw,
       expectedOutputPolicy: policy,

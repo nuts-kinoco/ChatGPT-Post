@@ -67,6 +67,8 @@ export function sanitiseConversationUrl(url: string | null): string | null {
 
 export interface ControllerOptions {
   requestPath: string;
+  /** Recipient host hook; checks exact in-memory V2 prompt before all browser effects and dispatch. */
+  assertPromptBinding?: (request: ChatRequest, prompt: string) => void;
   artifactsRoot: string;
   bridgeVersion: string;
   traceOnSuccess: boolean;
@@ -406,6 +408,7 @@ export class RunController {
         if (v.kind === "invalid") return { type: "INVALID", errors: v.errors };
         if (v.request.target === "dot")
           return { type: "INVALID", errors: ["dot requires the dot target controller"] };
+        this.opts.assertPromptBinding?.(v.request, v.prompt);
         this.request = v.request;
         this.prompt = v.prompt;
         this.timeoutMs = v.timeoutMs;
@@ -551,6 +554,7 @@ export class RunController {
         break;
       }
       case "ENTER_PROMPT": {
+        this.opts.assertPromptBinding?.(this.requireRequest(), this.prompt);
         // A-084: the 60 s pre-submit limit is extended by the upload budget when files are attached
         const e = await this.withPhaseLimit(
           chatgpt.enterPrompt(this.prompt, this.attachments),
@@ -590,6 +594,7 @@ export class RunController {
         }
       }
       case "DISPATCH_SUBMIT": {
+        this.opts.assertPromptBinding?.(this.requireRequest(), this.prompt);
         const d = await chatgpt.dispatchSubmit(this.requireBaseline(), {
           newChat: this.requireRequest().newChat,
         });

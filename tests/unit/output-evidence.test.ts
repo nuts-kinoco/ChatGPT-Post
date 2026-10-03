@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { HostedResponse } from "../../src/adapters/browser-delivery.js";
+import { createHostedPromptReceipt } from "../../src/adapters/hosted-prompt-policy.js";
 import { ExactHostedSourceResolver } from "../../src/archive/hosted-source.js";
 import { ArchiveDeliveryPersistence } from "../../src/archive/materialization-store.js";
 import {
@@ -24,19 +25,24 @@ import {
 } from "../../src/contracts/output-contract.js";
 import { encodeResponseFrame, parseResponseFrame } from "../../src/contracts/response-frame.js";
 import { sha256Bytes } from "../../src/contracts/task.js";
+import { revokeHostedRenderer } from "../../src/prompt-rendering/hosted-registry.js";
 import { ProjectRegistry } from "../../src/state/project-registry.js";
 import { adapterTask, adapterTaskBytes } from "../helpers/adapter-fixture.js";
+import { hostedPromptFixture } from "../helpers/hosted-prompt-fixture.js";
 import {
   fixtureHostedOutputPolicy,
   fixtureOutputContract,
   fixtureProjectRegistry,
 } from "../helpers/output-contract-fixture.js";
 
-async function fixture(registryHash?: string) {
-  const task = Object.assign(adapterTask(), {
-      agent: "chatgpt-browser",
-      requested_model: "current",
-    }),
+async function fixture(registryHash?: string, production?: ReturnType<typeof hostedPromptFixture>) {
+  const task =
+      production?.task ??
+      Object.assign(adapterTask(), {
+        agent: "chatgpt-browser",
+        requested_model: "current",
+      }),
+    taskBytes = production?.taskFileBytes ?? adapterTaskBytes,
     raw = Buffer.from(JSON.stringify(task)),
     contractRaw = registryHash
       ? Buffer.from(
@@ -53,7 +59,10 @@ async function fixture(registryHash?: string) {
       attemptId: randomUUID(),
     },
     prompt = Buffer.from(
-      createOutputContractPrompt(adapterTaskBytes, identity, contractRaw),
+      production
+        ? createHostedPromptReceipt(production.registration, raw, taskBytes, identity, contractRaw)
+            .promptBytes
+        : createOutputContractPrompt(taskBytes, identity, contractRaw),
     ).toString("utf8");
   const declaration = {
     schema: "artifact-declaration-1",
@@ -151,9 +160,12 @@ async function fixture(registryHash?: string) {
   };
   const context = {
     rawTaskSpec: raw,
-    taskFileBytes: adapterTaskBytes,
+    taskFileBytes: taskBytes,
     terminalEvent: event,
     claimedArtifacts: proof.artifacts,
+    promptRendering: production
+      ? { mode: "bound-hosted-v1" as const, policy: production.registration }
+      : { mode: "legacy" as const },
     expectedConversationId: "fixture",
     synthetic: true,
     allowSynthetic: true,
@@ -431,4 +443,53 @@ describe("no-send evidence cannot certify a generated reply", () => {
       ).rejects.toThrow();
     },
   );
+});
+
+describe("production prompt historical source reconstruction; fake evidence only", () => {
+  it.each(["gpt-5.6-sol", "gpt-5.5"] as const)(
+    "verifies exact source and required artifact evidence for %s",
+    async (model) => {
+      const f = hostedPromptFixture(model);
+      const x = await fixture(undefined, f);
+      await expect(x.verifier.validatePayload(x.payload, x.binding)).resolves.toBeDefined();
+      await expect(
+        x.verifier.validateReceiptEvidence(x.payload, x.artifacts, x.binding),
+      ).resolves.toBeUndefined();
+      expect(x.proof.proof.source.promptSha256).not.toBe(
+        sha256Bytes(
+          createOutputContractPrompt(
+            f.taskFileBytes,
+            x.response.framing?.identity ?? f.frame,
+            x.contractRaw,
+          ),
+        ),
+      );
+    },
+  );
+  it("rejects missing historical registration and legacy reconstruction for a V2 source", async () => {
+    const f = hostedPromptFixture(),
+      x = await fixture(undefined, f);
+    x.context.promptRendering = { mode: "legacy" };
+    await expect(
+      x.verifier.validateReceiptEvidence(x.payload, x.artifacts, x.binding),
+    ).rejects.toThrow("delivery_hosted_source_mismatch");
+    delete (x.context as unknown as { promptRendering?: unknown }).promptRendering;
+    await expect(x.verifier.validatePayload(x.payload, x.binding)).rejects.toThrow(
+      "delivery_prompt_policy_unavailable",
+    );
+  });
+  it("cannot reconstruct using a revoked renderer or a model/profile from another policy", async () => {
+    const f = hostedPromptFixture(),
+      x = await fixture(undefined, f),
+      other = hostedPromptFixture("gpt-5.5");
+    x.context.promptRendering = { mode: "bound-hosted-v1", policy: other.registration };
+    await expect(x.verifier.validatePayload(x.payload, x.binding)).rejects.toThrow(
+      "delivery_prompt_policy_mismatch",
+    );
+    x.context.promptRendering = { mode: "bound-hosted-v1", policy: f.registration };
+    revokeHostedRenderer(f.renderer);
+    await expect(
+      x.verifier.validateReceiptEvidence(x.payload, x.artifacts, x.binding),
+    ).rejects.toThrow("hosted_renderer_unavailable");
+  });
 });

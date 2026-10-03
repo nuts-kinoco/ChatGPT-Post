@@ -326,6 +326,7 @@ async function publishKnownNoSend(x: Awaited<ReturnType<typeof setup>>) {
     taskFileBytes: adapterTaskBytes,
     terminalEvent: event,
     claimedArtifacts: [descriptor],
+    promptRendering: { mode: "legacy" as const },
     expectedConversationId: "fixture",
     outputContractRaw: x.contractRaw,
     expectedOutputPolicy: x.expectedOutputPolicy,

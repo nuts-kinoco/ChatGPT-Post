@@ -39,6 +39,15 @@ import { createLogger } from "../diagnostics/logger.js";
 import { RunController } from "../state/controller.js";
 import type { GitHubTaskBus, HostedEvent, IssuedMessage } from "./github-transport.js";
 import { assertHostedOutputContract } from "./hosted-output-policy.js";
+import {
+  createHostedPromptReceipt,
+  hostedPromptPolicyDetails,
+  isRegisteredHostedPromptPolicy,
+  parseHostedPromptReceipt,
+  type RegisteredHostedPromptPolicy,
+  reverifyHostedPromptPolicy,
+  validateHostedPromptTask,
+} from "./hosted-prompt-policy.js";
 
 export interface HostedResponse {
   version: "hosted-response-1";
@@ -81,11 +90,15 @@ export interface HostedJobRecord {
   acknowledged: boolean;
   payloadAcknowledged: boolean;
   materialization: MaterializationReceiptV1 | null;
+  /** Present only for V2 production rendering; absent legacy rows are never upgraded. */
+  promptReceiptSha256?: string;
 }
 export interface BrowserRunControl {
   signal: AbortSignal;
   deadlineAt: string;
   shouldCancel(): boolean;
+  /** Trusted in-memory check for V2, never taken from request JSON or model output. */
+  assertPromptBinding?: (request: ChatRequest, prompt: string) => void;
 }
 export type BrowserRun = (
   requestPath: string,
@@ -136,6 +149,7 @@ export function productionBrowserRun(config: BridgeConfig): BrowserRun {
       artifactsRoot: config.artifactsDir,
       bridgeVersion: config.bridgeVersion,
       traceOnSuccess: config.traceOnSuccess,
+      ...(control.assertPromptBinding ? { assertPromptBinding: control.assertPromptBinding } : {}),
     });
     const stop = () => {
       if (interrupted) return;
@@ -166,10 +180,12 @@ export class BrowserDeliveryService {
   private readonly claimantId: string;
   readonly policyHash: string;
   private readonly active = new Map<string, AbortController>();
+  readonly policy: BrowserDeliveryPolicy;
+  private readonly promptPolicy: RegisteredHostedPromptPolicy | null;
   constructor(
     readonly bus: GitHubTaskBus,
     readonly config: BridgeConfig,
-    readonly policy: BrowserDeliveryPolicy,
+    policyInput: BrowserDeliveryPolicy | RegisteredHostedPromptPolicy,
     private readonly run: BrowserRun = productionBrowserRun(config),
     private readonly now = () => new Date(),
     readonly archiveIntegration: {
@@ -178,11 +194,16 @@ export class BrowserDeliveryService {
     } = {},
   ) {
     this.config = Object.freeze(structuredClone(config));
+    this.promptPolicy = isRegisteredHostedPromptPolicy(policyInput) ? policyInput : null;
+    if (!this.promptPolicy && ("kind" in policyInput || "schema" in policyInput))
+      throw new Error("hosted_prompt_registration_unknown");
+    const registered = this.promptPolicy ? hostedPromptPolicyDetails(this.promptPolicy) : null;
+    const policy = registered ? registered.policy.delivery : (policyInput as BrowserDeliveryPolicy);
     this.policy = Object.freeze({
       ...structuredClone(policy),
       requesterIds: Object.freeze([...policy.requesterIds]),
     });
-    this.policyHash = sha256Bytes(Buffer.from(JSON.stringify(policy)));
+    this.policyHash = registered?.policySha256 ?? sha256Bytes(Buffer.from(JSON.stringify(policy)));
     const url = new URL(policy.conversationUrl);
     if (
       url.origin !== "https://chatgpt.com" ||
@@ -199,12 +220,12 @@ export class BrowserDeliveryService {
       throw new Error("browser_delivery_policy_invalid");
     this.db = new DatabaseSync(join(config.runtimeDir, "hosted-delivery.db"));
     this.db.exec(
-      "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS hosted_jobs (id TEXT PRIMARY KEY, hash TEXT NOT NULL, snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hosted_observations (request_id TEXT NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(request_id,revision), UNIQUE(request_id,digest)); CREATE TABLE IF NOT EXISTS hosted_configuration (id INTEGER PRIMARY KEY CHECK(id=1), digest TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hosted_reconcile_cursor (id INTEGER PRIMARY KEY CHECK(id=1), request_id TEXT NOT NULL); INSERT OR IGNORE INTO hosted_reconcile_cursor VALUES (1,''); CREATE TABLE IF NOT EXISTS hosted_identity (id INTEGER PRIMARY KEY CHECK(id=1), claimant TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hosted_cursor (id INTEGER PRIMARY KEY CHECK(id=1), path TEXT NOT NULL); INSERT OR IGNORE INTO hosted_cursor VALUES (1,''); CREATE TABLE IF NOT EXISTS hosted_budget (id INTEGER PRIMARY KEY CHECK(id=1), starts INTEGER NOT NULL); INSERT OR IGNORE INTO hosted_budget VALUES (1,0);",
+      "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS hosted_jobs (id TEXT PRIMARY KEY, hash TEXT NOT NULL, snapshot TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hosted_prompt_receipts (request_id TEXT NOT NULL, attempt_id TEXT NOT NULL, policy_hash TEXT NOT NULL, body TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(request_id,attempt_id)); CREATE TABLE IF NOT EXISTS hosted_observations (request_id TEXT NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(request_id,revision), UNIQUE(request_id,digest)); CREATE TABLE IF NOT EXISTS hosted_configuration (id INTEGER PRIMARY KEY CHECK(id=1), digest TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hosted_reconcile_cursor (id INTEGER PRIMARY KEY CHECK(id=1), request_id TEXT NOT NULL); INSERT OR IGNORE INTO hosted_reconcile_cursor VALUES (1,''); CREATE TABLE IF NOT EXISTS hosted_identity (id INTEGER PRIMARY KEY CHECK(id=1), claimant TEXT NOT NULL); CREATE TABLE IF NOT EXISTS hosted_cursor (id INTEGER PRIMARY KEY CHECK(id=1), path TEXT NOT NULL); INSERT OR IGNORE INTO hosted_cursor VALUES (1,''); CREATE TABLE IF NOT EXISTS hosted_budget (id INTEGER PRIMARY KEY CHECK(id=1), starts INTEGER NOT NULL); INSERT OR IGNORE INTO hosted_budget VALUES (1,0);",
     );
     const binding = sha256Bytes(
       Buffer.from(
         JSON.stringify({
-          policy,
+          policy: registered ? registered.policy : policy,
           profileDir: config.profileDir,
           runtimeDir: config.runtimeDir,
           channel: config.channel,
@@ -357,8 +378,50 @@ export class BrowserDeliveryService {
       expectedOutputPolicy: this.policy.expectedOutputPolicy,
     });
   }
+  /** Host-owned audit record; parsing it alone is never approval or a success claim. */
+  promptReceipt(requestId: string): { raw: Uint8Array; sha256: string } | null {
+    const job = this.get(requestId);
+    if (!job?.attemptId) return null;
+    const row = this.db
+      .prepare(
+        "SELECT body,digest,policy_hash FROM hosted_prompt_receipts WHERE request_id=? AND attempt_id=?",
+      )
+      .get(requestId, job.attemptId);
+    if (!row) {
+      if (this.promptPolicy || job.promptReceiptSha256)
+        throw new Error("hosted_prompt_receipt_missing");
+      return null;
+    }
+    const raw = Buffer.from(String(row.body));
+    const receipt = parseHostedPromptReceipt(raw);
+    if (
+      !this.promptPolicy ||
+      receipt.requestId !== requestId ||
+      receipt.attemptId !== job.attemptId ||
+      row.policy_hash !== this.policyHash ||
+      receipt.policySnapshotSha256 !== this.policyHash ||
+      row.digest !== sha256Bytes(raw) ||
+      row.digest !== job.promptReceiptSha256
+    )
+      throw new Error("hosted_prompt_receipt_mismatch");
+    return { raw, sha256: String(row.digest) };
+  }
   private promptFor(job: HostedJobRecord, identity: ResponseFrameIdentity): Uint8Array {
     if (!job.outputContractRaw) throw new ArchiveError("output_contract_required");
+    if (this.promptPolicy) {
+      const expected = createHostedPromptReceipt(
+        this.promptPolicy,
+        Buffer.from(job.raw),
+        Buffer.from(job.taskBytesBase64, "base64"),
+        identity,
+        Buffer.from(job.outputContractRaw, "base64"),
+      );
+      const saved = this.promptReceipt(job.issued.requestId);
+      if (!saved || !Buffer.from(saved.raw).equals(expected.receiptRaw))
+        throw new Error("hosted_prompt_receipt_mismatch");
+      return expected.promptBytes;
+    }
+    if (job.promptReceiptSha256) throw new Error("hosted_prompt_legacy_fallback_denied");
     return createOutputContractPrompt(
       Buffer.from(job.taskBytesBase64, "base64"),
       identity,
@@ -450,6 +513,7 @@ export class BrowserDeliveryService {
       parsed.task.timeout.run_seconds < 10
     )
       throw new Error("browser_delivery_request_denied");
+    if (this.promptPolicy) validateHostedPromptTask(this.promptPolicy, raw, taskBytes);
     const prior = this.get(issued.requestId);
     const contractRaw =
       outputContractRaw ??
@@ -571,6 +635,26 @@ export class BrowserDeliveryService {
         ),
       ).toISOString();
       current.attemptId = randomUUID();
+      if (this.promptPolicy) {
+        if (!current.outputContractRaw) throw new ArchiveError("output_contract_required");
+        const rendered = createHostedPromptReceipt(
+          this.promptPolicy,
+          Buffer.from(current.raw),
+          Buffer.from(current.taskBytesBase64, "base64"),
+          { requestId, taskSpecHash: current.issued.taskSpecHash, attemptId: current.attemptId },
+          Buffer.from(current.outputContractRaw, "base64"),
+        );
+        current.promptReceiptSha256 = sha256Bytes(rendered.receiptRaw);
+        this.db
+          .prepare("INSERT INTO hosted_prompt_receipts VALUES (?,?,?,?,?)")
+          .run(
+            requestId,
+            current.attemptId,
+            this.policyHash,
+            rendered.receiptRaw.toString(),
+            current.promptReceiptSha256,
+          );
+      }
       current.attemptedAt = this.now().toISOString();
       current.attempted = true;
       current.state = "unknown";
@@ -612,6 +696,25 @@ export class BrowserDeliveryService {
     };
     const path = join(dir, "request.json");
     await writeFile(path, JSON.stringify(request), { flag: "wx", mode: 0o600 });
+    const assertPromptBinding = this.promptPolicy
+      ? (actualRequest: ChatRequest, actualPrompt: string) => {
+          if (!this.promptPolicy) throw new Error("hosted_prompt_registration_unknown");
+          reverifyHostedPromptPolicy(this.promptPolicy);
+          const saved = this.promptReceipt(requestId);
+          if (!saved) throw new Error("hosted_prompt_receipt_missing");
+          const receipt = parseHostedPromptReceipt(saved.raw);
+          if (
+            !isDeepStrictEqual(actualRequest, request) ||
+            Buffer.byteLength(actualPrompt) !== receipt.promptSizeBytes ||
+            sha256Bytes(Buffer.from(actualPrompt)) !== receipt.promptSha256
+          )
+            throw new Error("hosted_prompt_send_bytes_mismatch");
+        }
+      : undefined;
+    if (assertPromptBinding) {
+      const storedRequest = JSON.parse(await readFile(path, "utf8")) as ChatRequest;
+      assertPromptBinding(storedRequest, await readFile(join(dir, "prompt.md"), "utf8"));
+    }
     const deadlineAt = job.deadlineAt;
     if (
       !deadlineAt ||
@@ -626,6 +729,7 @@ export class BrowserDeliveryService {
         signal: control.signal,
         deadlineAt,
         shouldCancel: () => !!this.get(requestId)?.cancelRequestedAt,
+        ...(assertPromptBinding ? { assertPromptBinding } : {}),
       });
       if (result)
         await this.capture(

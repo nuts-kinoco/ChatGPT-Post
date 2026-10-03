@@ -1,5 +1,5 @@
 /** Transport framing only: never authorization, success, process termination or a ResultSpec. */
-import { sha256Bytes } from "./task.js";
+import { sha256Bytes } from "./raw-bytes.js";
 export interface ResponseFrameIdentity {
   requestId: string;
   taskSpecHash: string;
@@ -48,6 +48,15 @@ export function parseResponseFrame(
     bodySha256: sha256Bytes(Buffer.from(markdown)),
   };
 }
+/** Fixed instruction text is shared by both renderers; no request values enter it. */
+export const RESPONSE_FRAME_STATIC_INSTRUCTIONS =
+  "Bridge transport framing metadata. This metadata is not authorization or a success claim.";
+export const RESPONSE_FRAME_BODY_INSTRUCTIONS =
+  "Put your complete response between those two lines, without a code fence or quotation around the frame. Do not repeat framing tokens in the body, echo this prompt, or use a bare completion phrase.";
+export function responseFrameInstructions(identity: ResponseFrameIdentity): string {
+  validate(identity);
+  return `${RESPONSE_FRAME_STATIC_INSTRUCTIONS}\nReturn exactly one response. Its first line must equal: ${boundary("BEGIN", identity)}\nIts last line must equal: ${boundary("END", identity)}\n${RESPONSE_FRAME_BODY_INSTRUCTIONS}`;
+}
 export function createFramedPrompt(
   taskBytes: Uint8Array,
   identity: ResponseFrameIdentity,
@@ -56,6 +65,6 @@ export function createFramedPrompt(
   validate(identity);
   // There is deliberately no ready-made framed answer/template to accidentally echo as completion.
   return Buffer.from(
-    `Bridge transport framing metadata. This metadata is not authorization or a success claim.\nReturn exactly one response. Its first line must equal: ${boundary("BEGIN", identity)}\nIts last line must equal: ${boundary("END", identity)}\nPut your complete response between those two lines, without a code fence or quotation around the frame. Do not repeat framing tokens in the body, echo this prompt, or use a bare completion phrase.\n\nApproved task-file content follows (its exact bytes are hashed separately):\n${task}`,
+    `${responseFrameInstructions(identity)}\n\nApproved task-file content follows (its exact bytes are hashed separately):\n${task}`,
   );
 }

@@ -2,6 +2,11 @@
 import { isDeepStrictEqual } from "node:util";
 import type { HostedResponse } from "../adapters/browser-delivery.js";
 import type { HostedEvent } from "../adapters/github-transport.js";
+import {
+  createHostedPromptReceipt,
+  hostedPromptPolicyDetails,
+  type RegisteredHostedPromptPolicy,
+} from "../adapters/hosted-prompt-policy.js";
 import { checkResultInvariants } from "../contracts/invariants.js";
 import type {
   DeliveryArtifactDescriptorV1,
@@ -41,7 +46,12 @@ export interface LocalPayloadContext {
   terminalEvent: TaskHandshake;
   allowSynthetic?: boolean;
 }
+export type HostedPromptRenderingContext =
+  | { mode: "legacy" }
+  | { mode: "bound-hosted-v1"; policy: RegisteredHostedPromptPolicy };
 export interface HostedPayloadContext {
+  /** Positive historical policy classification, never inferred from result content. */
+  promptRendering: HostedPromptRenderingContext;
   rawTaskSpec: Uint8Array;
   taskFileBytes: Uint8Array;
   terminalEvent: HostedEvent;
@@ -53,6 +63,26 @@ export interface HostedPayloadContext {
   outputContractRaw?: Uint8Array;
   expectedOutputPolicy?: HostedExpectedOutputPolicy;
   outputContractBinding?: OutputContractBindingV1;
+}
+export function expectedHostedPrompt(
+  context: HostedPayloadContext,
+  frame: import("../contracts/response-frame.js").ResponseFrameIdentity,
+): Uint8Array {
+  if (!context.promptRendering) throw new ArchiveError("delivery_prompt_policy_unavailable");
+  if (context.promptRendering.mode === "legacy") {
+    return context.outputContractRaw
+      ? createOutputContractPrompt(context.taskFileBytes, frame, context.outputContractRaw)
+      : createFramedPrompt(context.taskFileBytes, frame);
+  }
+  if (context.promptRendering.mode !== "bound-hosted-v1" || !context.outputContractRaw)
+    throw new ArchiveError("delivery_prompt_policy_unavailable");
+  return createHostedPromptReceipt(
+    context.promptRendering.policy,
+    context.rawTaskSpec,
+    context.taskFileBytes,
+    frame,
+    context.outputContractRaw,
+  ).promptBytes;
 }
 function requiredTask(raw: Uint8Array, file: Uint8Array, binding: DeliveryBindingV1) {
   const loaded = loadTaskSpec(raw, binding.taskSpecHash);
@@ -333,6 +363,17 @@ export class HostedDeliveryPayloadVerifier implements DeliveryPayloadVerifierV1 
     if (context.synthetic && !context.allowSynthetic)
       throw new ArchiveError("delivery_synthetic_not_authorized");
     const artifacts = validateDeliveryArtifactDescriptorsV1(context.claimedArtifacts);
+    if (
+      !context.promptRendering ||
+      !["legacy", "bound-hosted-v1"].includes(context.promptRendering.mode)
+    )
+      throw new ArchiveError("delivery_prompt_policy_unavailable");
+    if (
+      context.promptRendering.mode === "bound-hosted-v1" &&
+      hostedPromptPolicyDetails(context.promptRendering.policy).policySha256 !==
+        task.policy_snapshot_sha256
+    )
+      throw new ArchiveError("delivery_prompt_policy_mismatch");
     if (context.outputContractRaw) {
       if (!context.expectedOutputPolicy || !context.outputContractBinding)
         throw new ArchiveError("delivery_hosted_contract_context_required");
@@ -530,11 +571,7 @@ export class HostedDeliveryPayloadVerifier implements DeliveryPayloadVerifierV1 
         throw new ArchiveError("delivery_hosted_contract_proof_mismatch");
       const validatedFrame = value.response.framing;
       if (!validatedFrame) throw new ArchiveError("delivery_hosted_source_incomplete");
-      const prompt = createOutputContractPrompt(
-        value.context.taskFileBytes,
-        validatedFrame.identity,
-        value.context.outputContractRaw,
-      );
+      const prompt = expectedHostedPrompt(value.context, validatedFrame.identity);
       if (
         proof.source.promptSha256 !== sha256Bytes(prompt) ||
         proof.source.promptMatchSha256 !==
@@ -558,7 +595,7 @@ export class HostedDeliveryPayloadVerifier implements DeliveryPayloadVerifierV1 
       new TextDecoder("utf8", { fatal: true }).decode(raw.bytes),
       frame.identity,
     );
-    const prompt = createFramedPrompt(value.context.taskFileBytes, frame.identity);
+    const prompt = expectedHostedPrompt(value.context, frame.identity);
     if (
       proof.source.promptSha256 !== sha256Bytes(prompt) ||
       proof.source.promptMatchSha256 !==

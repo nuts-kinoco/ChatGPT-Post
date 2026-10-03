@@ -316,6 +316,177 @@ describe("operations view interrupted-flow regressions", () => {
     expect(api.mock.calls.some(([path]) => path === "/api/composer/issue")).toBe(false);
   });
 
+  it("offers common kinds only for registered formats and reuses one exact preview until edited", async () => {
+    const view = dom();
+    for (const value of ["legacy-verbatim", "answer", "review", "change"]) {
+      const option = new Element("option");
+      option.value = value;
+      view.node("composer-mode").append(option);
+    }
+    const child = {
+      destinationId: "hosted",
+      requestId: "fixed-request",
+      taskSpecHash: "spec",
+      taskFileHash: "file",
+      rawSpec: "exact raw spec",
+      taskMarkdown: "exact original brief bytes",
+      promptFormat: { readiness: "registered-pre-approval", codec: "bridge-task-brief-1" },
+      promptPreview: { preview: { text: "Display only: unresolved attempt and output contract" } },
+    };
+    const api = vi.fn(async (path: string, body?: Record<string, unknown>) => {
+      if (path === "/api/setup")
+        return {
+          setup: {
+            registry: available({
+              revision: 1,
+              projects: [{ projectId: "project", displayName: "Project", repoId: "repo" }],
+            }),
+            destinations: available([
+              {
+                destinationId: "hosted",
+                route: "ordinary_chat_browser",
+                modelIds: ["gpt-5.6-sol"],
+              },
+            ]),
+          },
+        };
+      if (path === "/api/composer")
+        return {
+          capability: { enabled: true },
+          promptFormats: {
+            version: "bridge-composer-prompt-formats-1",
+            formats: [
+              { destinationId: "hosted", modelId: "gpt-5.6-sol", promptFormat: child.promptFormat },
+            ],
+          },
+        };
+      if (path === "/api/composer/preview")
+        return {
+          preview: { previewId: "exact-preview", children: [child] },
+          previewSha256: "preview-hash",
+        };
+      throw new Error(`Unexpected execution or issue: ${path} ${JSON.stringify(body)}`);
+    });
+    mountComposer({ api, document: view.document, presentation: view.presentation });
+    await view.click("open-composer");
+    const [destination, model] = view.node("composer-targets").children[0]?.children ?? [];
+    if (!destination || !model) throw new Error("Expected composer destination and model");
+    destination.value = "hosted";
+    await destination.emit("change");
+    model.value = "gpt-5.6-sol";
+    await model.emit("change");
+    expect(view.node("composer-mode").children[0]?.disabled).toBe(true);
+    expect(
+      view
+        .node("composer-mode")
+        .children.slice(1)
+        .every((option) => !option.disabled),
+    ).toBe(true);
+    expect(view.node("composer-preview").disabled).toBe(true);
+    view.node("composer-mode").value = "review";
+    await view.node("composer-mode").emit("change");
+    view.node("composer-title").value = "Synthetic review";
+    view.node("composer-instruction").value = "Do not call a model";
+    view.node("composer-constraints").value = "Keep scope\n\n Preserve evidence ";
+    view.node("composer-deliverables").value = "Findings";
+    view.node("composer-acceptance").value = "Allow no findings";
+    await view.click("composer-preview");
+    await view.click("composer-preview");
+    expect(api.mock.calls.filter(([path]) => path === "/api/composer/preview")).toHaveLength(1);
+    expect(api.mock.calls.find(([path]) => path === "/api/composer/preview")?.[1]).toMatchObject({
+      mode: "bridge-task-brief-1",
+      taskKind: "review",
+      constraints: ["Keep scope", " Preserve evidence "],
+      deliverables: ["Findings"],
+      acceptance: ["Allow no findings"],
+      destinations: [{ destinationId: "hosted", modelId: "gpt-5.6-sol" }],
+    });
+    expect(
+      view
+        .node("composer-preview-bytes")
+        .children[0]?.children.some((node) => node.textContent.includes("non-dispatch-preview")),
+    ).toBe(true);
+    expect(api.mock.calls.some(([path]) => /issue|start|approve/.test(path))).toBe(false);
+    await view.node("composer-instruction").emit("input");
+    expect(view.node("composer-issue").disabled).toBe(true);
+    expect(view.node("composer-preview").disabled).toBe(false);
+    model.value = "unregistered-model";
+    await model.emit("change");
+    expect(view.node("composer-mode").value).toBe("legacy-verbatim");
+    expect(
+      view
+        .node("composer-mode")
+        .children.slice(1)
+        .every((option) => option.disabled),
+    ).toBe(true);
+  });
+
+  it.each([false, true])(
+    "handles stale issue with uncertain=%s without automatic retries",
+    async (uncertain) => {
+      const view = dom();
+      const api = vi.fn(async (path: string) => {
+        if (path === "/api/setup")
+          return {
+            setup: {
+              registry: available({
+                revision: 1,
+                projects: [{ projectId: "project", displayName: "Project", repoId: "repo" }],
+              }),
+              destinations: available([
+                { destinationId: "legacy", route: "cli", modelIds: ["model"] },
+              ]),
+            },
+          };
+        if (path === "/api/composer") return { capability: { enabled: true } };
+        if (path === "/api/composer/preview")
+          return {
+            preview: {
+              previewId: "fixed",
+              children: [
+                {
+                  destinationId: "legacy",
+                  requestId: "original-request",
+                  taskSpecHash: "spec",
+                  taskFileHash: "file",
+                  rawSpec: "original spec",
+                  taskMarkdown: "original task",
+                },
+              ],
+            },
+            previewSha256: "hash",
+          };
+        if (path === "/api/composer/issue")
+          throw { code: uncertain ? "disconnected" : "composer_prompt_format_stale", uncertain };
+        throw new Error(`Unexpected route ${path}`);
+      });
+      mountComposer({ api, document: view.document, presentation: view.presentation });
+      await view.click("open-composer");
+      view.node("composer-title").value = "Keep title";
+      view.node("composer-instruction").value = "Keep objective";
+      await view.click("composer-preview");
+      await view.click("composer-issue");
+      await view.click("composer-issue");
+      expect(api.mock.calls.filter(([path]) => path === "/api/composer/issue")).toHaveLength(1);
+      expect(api.mock.calls.filter(([path]) => path === "/api/composer/preview")).toHaveLength(1);
+      expect(api.mock.calls.filter(([path]) => path === "/api/setup")).toHaveLength(1);
+      expect(view.node("composer-issue").disabled).toBe(true);
+      expect(view.node("composer-title").value).toBe("Keep title");
+      expect(view.node("composer-instruction").value).toBe("Keep objective");
+      if (uncertain) {
+        expect(view.node("composer-message").textContent).toContain("original-request");
+        expect(view.node("composer-preview").disabled).toBe(true);
+      } else {
+        expect(view.node("composer-message").textContent).toContain("発行しませんでした");
+        await view.click("close-composer");
+        await view.click("open-composer");
+        expect(api.mock.calls.filter(([path]) => path === "/api/setup")).toHaveLength(2);
+        expect(api.mock.calls.filter(([path]) => path === "/api/composer/preview")).toHaveLength(1);
+        expect(view.node("composer-preview").disabled).toBe(false);
+      }
+    },
+  );
+
   it("does not let an old archive collection re-enable an unavailable capability", async () => {
     const view = dom(),
       late = deferred<Reply>();

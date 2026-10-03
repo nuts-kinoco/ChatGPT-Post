@@ -36,7 +36,18 @@
       "$ref": "#/$defs/id"
     },
     "requested_model": {
-      "$ref": "#/$defs/id"
+      "description": "Existing generic IDs plus two explicitly supported dotted browser IDs; non-browser agents retain the generic grammar.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/id"
+        },
+        {
+          "enum": [
+            "gpt-5.6-sol",
+            "gpt-5.5"
+          ]
+        }
+      ]
     },
     "repo": {
       "$ref": "#/$defs/id"
@@ -193,6 +204,27 @@
           }
         },
         "type": "object"
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "const": "chatgpt-browser"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "else": {
+        "type": "object",
+        "properties": {
+          "requested_model": {
+            "$ref": "#/$defs/id"
+          }
+        }
       }
     }
   ],

@@ -6,7 +6,14 @@ import type { ProjectRegistration } from "../contracts/project-registry.js";
 import { loadTaskSpec, sha256Bytes, verifyTaskFileBytes } from "../contracts/task.js";
 import type { TaskSpec } from "../contracts/task-types.js";
 import { UiError } from "../contracts/ui.js";
+import { encodeTaskBrief } from "../prompt-rendering/brief.js";
+import { prepareHostedPromptPreview } from "../prompt-rendering/hosted-renderer.js";
 import type { UiOperationsService } from "./operations.js";
+import {
+  type ComposerPromptFormat,
+  type ComposerPromptFormatResolver,
+  readComposerPromptFormat,
+} from "./prompt-format.js";
 export interface ComposerRecipeInput {
   requestId: string;
   project: ProjectRegistration;
@@ -14,6 +21,8 @@ export interface ComposerRecipeInput {
   modelId: string;
   title: string;
   instruction: string;
+  /** Exact codec bytes, prepared before the recipe hashes the original task file. */
+  taskMarkdown?: string;
 }
 export interface ComposerChild {
   destinationId: string;
@@ -25,8 +34,12 @@ export interface ComposerChild {
   rawSpec: string;
   taskMarkdown: string;
   outputPolicy?: HostedExpectedOutputPolicy | null;
+  promptFormat?: ComposerPromptFormat;
+  promptPreview?: ReturnType<typeof prepareHostedPromptPreview>;
 }
 export interface UiComposerPort {
+  /** Trusted deployment registry only. Request JSON cannot supply a renderer or profile. */
+  promptFormat?: ComposerPromptFormatResolver;
   prepareTimeoutMs?: number;
   /** A trusted deployment template supplies policy, base commit, evaluators, and bounds. */
   prepare(input: ComposerRecipeInput):
@@ -46,7 +59,7 @@ export interface UiComposerPort {
   }): Promise<{ commit: string }>;
 }
 interface Preview {
-  version: "bridge-composer-preview-1";
+  version: "bridge-composer-preview-1" | "bridge-composer-preview-2";
   previewId: string;
   fanoutId: string | null;
   registryRevision: number;
@@ -124,7 +137,8 @@ export function validatePreparedRecipe(
     parsed.task.agent !== input.destination.providerId ||
     parsed.task.requested_model !== input.modelId ||
     parsed.task.policy_snapshot_sha256 !== input.destination.policyHash ||
-    parsed.task.mode === "design_fixture"
+    parsed.task.mode === "design_fixture" ||
+    (input.taskMarkdown !== undefined && prepared.taskMarkdown !== input.taskMarkdown)
   )
     throw new UiError(
       "composer_recipe_invalid",
@@ -136,7 +150,13 @@ export function validatePreparedRecipe(
 export class UiComposer {
   private readonly previews = new Map<
     string,
-    { preview: Preview; catalogue: string[]; pending: boolean; receipt: { commit: string } | null }
+    {
+      preview: Preview;
+      catalogue: string[];
+      promptFormats: string[];
+      pending: boolean;
+      receipt: { commit: string } | null;
+    }
   >();
   constructor(
     private readonly operations: UiOperationsService,
@@ -152,15 +172,42 @@ export class UiComposer {
         : "Trusted task recipe and issue transport are not configured",
     };
   }
+  /** Metadata-only route. Does not call the recipe, allocate UUIDs or prepare dispatch bytes. */
+  async promptFormats() {
+    const version = "bridge-composer-prompt-formats-1" as const;
+    if (!this.port?.promptFormat) return { version, formats: [] };
+    const setup = await this.operations.setup();
+    const formats = [];
+    if (setup.destinations.state === "available")
+      for (const destination of setup.destinations.value) {
+        if (destination.unavailableReason) continue;
+        for (const modelId of destination.modelIds) {
+          const format = readComposerPromptFormat(this.port.promptFormat, destination, modelId);
+          formats.push({
+            destinationId: destination.destinationId,
+            modelId,
+            promptFormat: format.metadata,
+          });
+        }
+      }
+    return { version, formats };
+  }
   async preview(input: unknown): Promise<Preview> {
     if (!this.port || !this.capability().enabled)
       throw new UiError("composer_unconfigured", "Trusted composer is unavailable", 409);
+    const mode =
+      input && typeof input === "object" ? (input as { mode?: unknown }).mode : undefined;
+    const briefMode = mode === "bridge-task-brief-1";
+    if (mode !== undefined && mode !== "legacy-verbatim" && !briefMode)
+      throw new UiError("composer_input_invalid", "Unknown composer task-file mode");
     const body = exact(input, [
       "registryRevision",
       "projectId",
       "destinations",
       "title",
       "instruction",
+      ...(mode === undefined ? [] : ["mode"]),
+      ...(briefMode ? ["taskKind", "constraints", "deliverables", "acceptance"] : []),
     ]);
     if (
       !Number.isSafeInteger(body.registryRevision) ||
@@ -181,6 +228,23 @@ export class UiComposer {
         "composer_input_invalid",
         "Project, bounded text and one to four registered destinations are required",
       );
+    let taskMarkdown: string | undefined;
+    if (briefMode) {
+      try {
+        taskMarkdown = Buffer.from(
+          encodeTaskBrief({
+            taskKind: body.taskKind,
+            objective: `# ${body.title}\n\n${body.instruction}`,
+            constraints: body.constraints,
+            deliverables: body.deliverables,
+            acceptance: body.acceptance,
+            context: [],
+          }),
+        ).toString("utf8");
+      } catch {
+        throw new UiError("composer_brief_invalid", "Common brief fields are invalid or too large");
+      }
+    }
     const registry = this.operations.sources.registry;
     if (!registry || registry.currentRevision() !== body.registryRevision)
       throw new UiError(
@@ -221,24 +285,37 @@ export class UiComposer {
       selected.push({ destination, modelId: value.modelId });
     }
     const children: ComposerChild[] = [];
+    const promptFormats: string[] = [];
     for (const { destination, modelId } of selected) {
+      const format = readComposerPromptFormat(this.port.promptFormat, destination, modelId);
+      if (briefMode !== !!format.renderer)
+        throw new UiError(
+          "composer_prompt_format_unsupported",
+          briefMode
+            ? "Common brief requires an exact registered production prompt profile"
+            : "This destination requires explicit common-brief mode",
+          409,
+        );
       const requestId = randomUUID();
-      const raw = await prepareTaskRecipe(this.port, {
-        requestId,
-        project: structuredClone(project),
-        destination: structuredClone(destination),
-        modelId,
-        title: body.title,
-        instruction: body.instruction,
-      });
-      validatePreparedRecipe(raw, {
+      const recipeInput: ComposerRecipeInput = {
         requestId,
         project,
         destination,
         modelId,
         title: body.title,
         instruction: body.instruction,
-      });
+        ...(taskMarkdown === undefined ? {} : { taskMarkdown }),
+      };
+      const raw = await prepareTaskRecipe(this.port, structuredClone(recipeInput));
+      validatePreparedRecipe(raw, recipeInput);
+      const afterFormat = readComposerPromptFormat(this.port.promptFormat, destination, modelId);
+      if (afterFormat.fingerprint !== format.fingerprint)
+        throw new UiError(
+          "composer_prompt_format_stale",
+          "Prompt registration changed during preview",
+          409,
+        );
+      promptFormats.push(format.fingerprint);
       children.push({
         destinationId: destination.destinationId,
         recipientActorId: destination.recipientActorId,
@@ -247,6 +324,17 @@ export class UiComposer {
         taskSpecHash: sha256Bytes(Buffer.from(raw.rawSpec)),
         taskFileHash: sha256Bytes(Buffer.from(raw.taskMarkdown)),
         ...raw,
+        ...(format.renderer
+          ? {
+              promptFormat: format.metadata,
+              promptPreview: prepareHostedPromptPreview({
+                renderer: format.renderer,
+                rawTaskSpec: Buffer.from(raw.rawSpec),
+                taskFileBytes: Buffer.from(raw.taskMarkdown),
+                policySnapshotSha256: destination.policyHash,
+              }),
+            }
+          : {}),
       });
     }
     if (registry.currentRevision() !== body.registryRevision)
@@ -256,7 +344,7 @@ export class UiComposer {
         409,
       );
     const preview: Preview = {
-      version: "bridge-composer-preview-1",
+      version: briefMode ? "bridge-composer-preview-2" : "bridge-composer-preview-1",
       previewId: randomUUID(),
       fanoutId: children.length > 1 ? randomUUID() : null,
       registryRevision: Number(body.registryRevision),
@@ -277,6 +365,7 @@ export class UiComposer {
     this.previews.set(preview.previewId, {
       preview,
       catalogue: selected.map((x) => destinationFingerprint(x.destination)),
+      promptFormats,
       pending: false,
       receipt: null,
     });
@@ -340,6 +429,27 @@ export class UiComposer {
         "Destination policy or model changed after preview",
         409,
       );
+    for (const [index, child] of entry.preview.children.entries()) {
+      const destination = catalogue.find((value) => value.destinationId === child.destinationId);
+      const parsed = loadTaskSpec(Buffer.from(child.rawSpec));
+      if (!destination || !parsed.valid)
+        throw new UiError(
+          "composer_prompt_format_stale",
+          "Prompt registration is unavailable",
+          409,
+        );
+      const current = readComposerPromptFormat(
+        this.port.promptFormat,
+        destination,
+        parsed.task.requested_model,
+      );
+      if (current.fingerprint !== entry.promptFormats[index])
+        throw new UiError(
+          "composer_prompt_format_stale",
+          "Prompt profile or renderer changed after preview",
+          409,
+        );
+    }
     // A second request may have crossed the asynchronous catalogue read above.
     const cached = this.previews.get(String(body.previewId))?.receipt;
     if (cached)
@@ -391,7 +501,7 @@ export function manualTaskTemplate(
   if (template.approval.tier !== "manual" || template.approval.preauthorization !== null)
     throw new Error("manual_template_required");
   return (input) => {
-    const taskMarkdown = `# ${input.title}\n\n${input.instruction}`;
+    const taskMarkdown = input.taskMarkdown ?? `# ${input.title}\n\n${input.instruction}`;
     const task = {
       ...structuredClone(template),
       request_id: input.requestId,

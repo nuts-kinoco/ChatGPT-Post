@@ -445,7 +445,11 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
               capability: archiveApi.capability(),
             });
           if (rawUrl === "/api/composer")
-            return sendJson(response, { ...service.metadata(), capability: composer.capability() });
+            return sendJson(response, {
+              ...service.metadata(),
+              capability: composer.capability(),
+              promptFormats: await composer.promptFormats(),
+            });
           if (rawUrl === "/api/settings/projects")
             return sendJson(response, { ...service.metadata(), settings: projectSettings.view() });
           if (rawUrl === "/api/setup")
