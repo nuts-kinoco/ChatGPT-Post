@@ -1233,6 +1233,7 @@ export class GitHubRecipientPump {
           const key = `send:${event.eventId}`;
           if (!this.journal.due(key, event.payloadSha256, this.now())) continue;
           try {
+            if (stage === "terminal_result") await this.controller.archiveResult(requestId);
             await this.bus.publish(
               event,
               stage === "terminal_result"

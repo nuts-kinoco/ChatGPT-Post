@@ -703,6 +703,20 @@ export class TaskStore {
       media_type: "application/json",
     };
   }
+  readLocalEvidence(ref: ArtifactRef): Uint8Array | null {
+    const row = this.db
+      .prepare("SELECT sha256,body FROM task_evidence WHERE artifact_id=?")
+      .get(ref.artifact_id);
+    if (!row) return null;
+    const bytes = Buffer.from(String(row.body));
+    if (
+      row.sha256 !== ref.sha256 ||
+      bytes.byteLength !== ref.size_bytes ||
+      createHash("sha256").update(bytes).digest("hex") !== ref.sha256
+    )
+      throw new Error("local_evidence_hash_mismatch");
+    return bytes;
+  }
   stopSession(sessionId: string): void {
     this.transaction(() => {
       this.db

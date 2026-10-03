@@ -1,3 +1,5 @@
+import { exportRouteDiagnostics, exportSanitizedDiagnostics } from "../archive/diagnostics.js";
+import type { ArtifactArchive } from "../archive/store.js";
 /** Product operations compose the v2 controller and persistent ledger, never spawn a CLI. */
 
 import { mkdir } from "node:fs/promises";
@@ -44,6 +46,7 @@ import { DEMO_LABEL, DemoAuthority, DemoTaskExecutor, demoPolicy, demoTask } fro
 
 export interface UiRuntime {
   store: TaskStore;
+  archive?: ArtifactArchive;
   controller: TaskController;
   materialize?(
     requestId: string,
@@ -534,7 +537,10 @@ export class TaskUiService {
         record.bridgeId === this.runtime.controller.policy.bridgeId
       )
         await this.runtime.controller.acknowledgeResult(ack, proof);
-      else this.runtime.store.acknowledgeDelivery(ack, proof);
+      else {
+        await this.runtime.controller.archiveResult(requestId);
+        this.runtime.store.acknowledgeDelivery(ack, proof);
+      }
       return this.task(requestId);
     });
   }
@@ -563,6 +569,85 @@ export class TaskUiService {
         this.runtime.controller.resumeSession();
       return this.task(requestId);
     });
+  }
+  private archiveManager(): ArtifactArchive {
+    if (!this.runtime.archive)
+      throw new UiError(
+        "archive_unconfigured",
+        "Configure the trusted host archive manager first",
+        409,
+      );
+    return this.runtime.archive;
+  }
+  archiveSettings() {
+    return this.archiveManager().settings();
+  }
+  configureArchive(input: Parameters<ArtifactArchive["configure"]>[0]) {
+    return this.archiveManager().configure(input);
+  }
+  probeArchiveRoot(root: string) {
+    return this.archiveManager().probe(root, "probe_output_root");
+  }
+  inspectArchive(requestId: string) {
+    this.required(requestId);
+    return this.archiveManager().inspect(requestId);
+  }
+  async archiveResult(requestId: string) {
+    this.required(requestId);
+    this.archiveManager();
+    return this.runtime.controller.archiveResult(requestId);
+  }
+  exportDiagnostics(requestId: string) {
+    const record = this.required(requestId);
+    const inspection = this.runtime.controller.artifactArchive?.inspect(requestId);
+    const stage = (status: string) =>
+      status === "received"
+        ? "receive"
+        : status === "awaiting_approval" || status === "approved"
+          ? "approval"
+          : status === "running"
+            ? "execution"
+            : ["succeeded", "failed", "cancelled"].includes(status)
+              ? "result"
+              : "execution";
+    const input = {
+      record,
+      ...(inspection
+        ? {
+            manifest: inspection.manifest,
+            archiveVerification: {
+              state: inspection.state === "complete" ? "verified" : "rejected",
+              ...(inspection.issue ? { issue: inspection.issue } : {}),
+            },
+          }
+        : {}),
+      environment: {
+        bridgeVersion: "0.1.0",
+        nodeVersion: process.version,
+        platform: process.platform,
+        arch: process.arch,
+      },
+      stages: this.runtime.store.events(requestId).map((event) => ({
+        stage: stage(event.result.status),
+        state: event.result.status === "unknown" ? "unknown" : "observed",
+        sequence: event.result.observation_seq,
+        observedAt: event.result.observed_at,
+      })),
+      ack: this.runtime.store.handshake(requestId, "result_ack"),
+    };
+    if (inspection && "schema" in inspection && inspection.schema === "archive-inspection-2")
+      return exportRouteDiagnostics(
+        {
+          local: { record, environment: input.environment, stages: input.stages, ack: input.ack },
+          manifest: inspection.manifest,
+          archiveState: inspection.state,
+        },
+        { userAction: "export_sanitized_diagnostics" },
+      );
+    return exportSanitizedDiagnostics(
+      input as import("../archive/diagnostics.js").DiagnosticInput,
+      { userAction: "export_sanitized_diagnostics" },
+    );
   }
   resultPayload(requestId: string): string {
     this.required(requestId);

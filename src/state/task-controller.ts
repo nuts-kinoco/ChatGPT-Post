@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
+import type { ArchiveInspection, TaskArchivePort } from "../archive/types.js";
 import {
   loadTaskSpec,
   sha256Bytes,
@@ -65,6 +66,7 @@ export class TaskController {
     },
     private readonly rpcTimeoutMs = 5000,
     private readonly quotaSource?: AccountQuotaPort,
+    readonly artifactArchive?: TaskArchivePort,
   ) {
     if (!Number.isFinite(rpcTimeoutMs) || rpcTimeoutMs <= 0) throw new Error("invalid_rpc_timeout");
   }
@@ -136,6 +138,12 @@ export class TaskController {
         evidence_ref: null,
       },
     };
+    this.artifactArchive?.reserve(task, parsed.taskSpecHash, {
+      requesterId,
+      worktreeRoot: this.policy.repoRoot,
+      acceptedPreviously: !!this.store.get(task.request_id),
+      ...context,
+    });
     const received = this.store.receive({
       projectRegistration: context.projectRegistration ?? null,
       rawSpec: Buffer.from(raw).toString("utf8"),
@@ -489,11 +497,26 @@ export class TaskController {
     );
   }
 
+  async archiveResult(
+    requestId: string,
+  ): Promise<ArchiveInspection | import("../archive/route-types.js").ArchiveInspectionV2 | null> {
+    if (!this.artifactArchive) return null;
+    const record = this.required(requestId);
+    // The immutable receipt/payload remains authority; exports cannot invent a terminal result.
+    this.store.deliveryPayload(requestId);
+    return this.artifactArchive.archive(
+      record,
+      async (ref) =>
+        this.store.readLocalEvidence(ref) ?? (await this.bounded(this.executor.readArtifact(ref))),
+    );
+  }
+
   async acknowledgeResult(
     ack: TaskHandshake,
     proof?: import("../contracts/materialization.js").MaterializationReceiptV1,
   ): Promise<void> {
     this.required(ack.requestId);
+    await this.archiveResult(ack.requestId);
     const prior = this.store.deliveryVerified(ack.requestId);
     this.store.acknowledgeDelivery(ack, proof);
     if (!prior) await this.captureQuota(ack.requestId, "post_result_ack");

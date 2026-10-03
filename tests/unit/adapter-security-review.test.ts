@@ -416,7 +416,12 @@ vi.mock("../../src/cli/adapters.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/cli/adapters.js")>()),
   buildPorts: (c: BridgeConfig) => {
     f.config = c;
-    return { chatgpt: { dispatchSubmit: f.dispatch } };
+    return {
+      chatgpt: {
+        dispatchSubmit: f.dispatch,
+        extractLatest: async () => ({ kind: "empty", cause: "empty" }),
+      },
+    };
   },
 }));
 vi.mock("../../src/state/controller.js", async (importOriginal) => ({
