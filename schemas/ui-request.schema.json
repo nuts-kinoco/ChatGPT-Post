@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/bridge-v2/ui-request.schema.json",
+  "title": "Bridge v2 local UI request bodies",
+  "$defs": {
+    "import": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rawSpec",
+        "taskMarkdown"
+      ],
+      "properties": {
+        "rawSpec": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 262144
+        },
+        "taskMarkdown": {
+          "type": "string",
+          "maxLength": 1048576
+        }
+      }
+    },
+    "empty": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 0
+    },
+    "bound": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskSpecHash",
+        "taskFileHash",
+        "sequence"
+      ],
+      "properties": {
+        "taskSpecHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+        },
+        "taskFileHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventId",
+        "payloadSha256",
+        "sequence"
+      ],
+      "properties": {
+        "eventId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payloadSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}(?![\\s\\S])"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "demo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "taskMarkdown": {
+          "type": "string",
+          "maxLength": 1048000
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome"
+      ],
+      "properties": {
+        "outcome": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "unknown"
+          ]
+        }
+      }
+    }
+  }
+}

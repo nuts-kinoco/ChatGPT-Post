@@ -25,14 +25,14 @@ export function forbiddenProfileRoots(env: ProfileGuardEnv = process.env): strin
   return roots;
 }
 
-function norm(p: string): string {
+function norm(p: string, caseInsensitive = process.platform === "win32"): string {
   const r = resolve(p).replace(/[\\/]+$/, "");
-  return process.platform === "win32" ? r.toLowerCase() : r;
+  return caseInsensitive ? r.toLowerCase() : r;
 }
 
-function isWithin(child: string, parent: string): boolean {
-  const c = norm(child);
-  const p = norm(parent);
+function isWithin(child: string, parent: string, caseInsensitive?: boolean): boolean {
+  const c = norm(child, caseInsensitive);
+  const p = norm(parent, caseInsensitive);
   return c === p || c.startsWith(p + sep);
 }
 
@@ -90,9 +90,19 @@ export async function checkProfilePath(
   }
   const canonical = real ? join(real, ...suffix) : resolve(profileDir);
 
+  // LOCALAPPDATA/APPDATA identify Windows profile families even during an offline check on
+  // another host. Keep their case-insensitive deny rule independent of the checking OS.
+  // HOME-derived native roots retain the host filesystem's existing comparison behavior.
+  const windowsRoots = new Set(
+    forbiddenProfileRoots({ LOCALAPPDATA: env.LOCALAPPDATA, APPDATA: env.APPDATA }),
+  );
   for (const rootPath of forbiddenProfileRoots(env)) {
+    const caseInsensitive = process.platform === "win32" || windowsRoots.has(rootPath);
     const rootReal = (await safeRealpath(rootPath)) ?? rootPath;
-    if (isWithin(canonical, rootReal) || isWithin(canonical, rootPath)) {
+    if (
+      isWithin(canonical, rootReal, caseInsensitive) ||
+      isWithin(canonical, rootPath, caseInsensitive)
+    ) {
       return { ok: false, cause: `profile path points at a regular browser profile: ${rootPath}` };
     }
   }

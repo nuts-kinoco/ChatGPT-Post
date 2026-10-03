@@ -183,6 +183,31 @@ describe("profile guard (FR-015, Codex F-01)", () => {
     ).toBe(false);
     expect((await checkProfilePath(join(dir, "runtime", "profile"), env)).ok).toBe(true);
   });
+  it("uses case-insensitive deny rules for all configured Windows browser families", async () => {
+    const env = { LOCALAPPDATA: join(dir, "Local"), APPDATA: join(dir, "Roaming") };
+    for (const profile of [
+      join(env.LOCALAPPDATA, "microsoft", "EDGE", "user data", "Profile 1"),
+      join(env.LOCALAPPDATA, "CHROMIUM", "User DATA"),
+      join(env.APPDATA, "mozilla", "firefox", "PROFILES", "work"),
+    ]) {
+      expect((await checkProfilePath(profile, env)).ok).toBe(false);
+    }
+    // Prefix siblings remain allowed; only the profile root and descendants are denied.
+    expect(
+      (await checkProfilePath(join(env.LOCALAPPDATA, "Google", "Chrome", "User Data-copy"), env))
+        .ok,
+    ).toBe(true);
+  });
+  it("continues to deny native HOME profile roots and descendants", async () => {
+    const env = { HOME: join(dir, "home") };
+    expect((await checkProfilePath(join(env.HOME, ".config", "google-chrome"), env)).ok).toBe(
+      false,
+    );
+    expect((await checkProfilePath(join(env.HOME, ".config", "chromium", "Default"), env)).ok).toBe(
+      false,
+    );
+    expect((await checkProfilePath(join(env.HOME, ".config", "chromium-copy"), env)).ok).toBe(true);
+  });
   it("rejects a junction / symlink that points at User Data (Windows)", async () => {
     if (process.platform !== "win32") return;
     const env = { LOCALAPPDATA: join(dir, "Local"), APPDATA: join(dir, "Roaming") };
