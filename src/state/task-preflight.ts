@@ -35,7 +35,7 @@ export function quotaDecision(
       ? Number.POSITIVE_INFINITY
       : now.getTime() - Date.parse(observation.observedAt);
   const valid =
-    observation.source !== "unknown" &&
+    observation.source === "provider" &&
     observation.remainingPercent !== null &&
     Number.isFinite(observation.remainingPercent) &&
     observation.remainingPercent >= 0 &&

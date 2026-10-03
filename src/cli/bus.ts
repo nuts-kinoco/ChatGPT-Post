@@ -9,8 +9,11 @@ import { GitHubFanout } from "../adapters/fanout.js";
 import type { GitHubTaskBus } from "../adapters/github-transport.js";
 import { parseStrictJsonBytes } from "../contracts/task.js";
 import { checkFilesystemPath, checkRelativePath } from "../state/task-policy.js";
+import type { IssuerReadPort } from "../ui/issuer-read-port.js";
 export interface BusDeployment {
   bus: GitHubTaskBus;
+  /** Same validated, read-only registered catalogue/recipe used by the manual composer. */
+  issuerReadPort?: IssuerReadPort;
   host?: BridgeHost;
   materialize?(
     context: import("../adapters/github-transport.js").DeliveryAcceptanceContext,
@@ -22,6 +25,8 @@ export interface BusDeployment {
 }
 const help = `Bridge GitHub transport host
 Usage: node dist/cli/bus.js capabilities
+       node dist/cli/bus.js --deployment /trusted/deployment.mjs catalogue
+       node dist/cli/bus.js --deployment /trusted/deployment.mjs template PROJECT_UUID DESTINATION_ID [MODEL_ID]
        node dist/cli/bus.js --deployment /trusted/deployment.mjs tick
        node dist/cli/bus.js --deployment /trusted/deployment.mjs issue task.json task.md recipient cli|ordinary_chat_browser [output-contract.json]
        node dist/cli/bus.js --deployment /trusted/deployment.mjs approve request-id expected-task-sha256
@@ -32,6 +37,7 @@ Usage: node dist/cli/bus.js capabilities
        node dist/cli/bus.js --deployment /trusted/deployment.mjs ack request-id expected-payload-sha256
 Deployment module exports openDeployment(): Promise<BusDeployment>. It must use already-authorized credential/signing providers.
 No deployment, model CLI, authentication or persistent permissions are activated by capabilities.
+Catalogue and template only read trusted registration/recipes; templates are explicitly non-executable and grant no authority.
 Result only reads. ACK requires explicit acceptance plus verified requester-side durable materialization of result, receipt and artifacts. Never rerun an unknown request.`;
 export async function runBusCli(args: string[]): Promise<unknown> {
   if (args.length === 1 && ["help", "capabilities"].includes(args[0] ?? ""))
@@ -51,6 +57,8 @@ export async function runBusCli(args: string[]): Promise<unknown> {
   if (
     !command ||
     ![
+      "catalogue",
+      "template",
       "tick",
       "issue",
       "fanout-issue",
@@ -65,6 +73,27 @@ export async function runBusCli(args: string[]): Promise<unknown> {
   const deployment = await openTrustedDeployment<BusDeployment>(args[1]);
   try {
     const bus = deployment.bus;
+    if (command === "catalogue" || command === "template") {
+      const port = deployment.issuerReadPort;
+      if (!port) throw new Error("issuer_catalogue_unconfigured");
+      if (command === "catalogue") {
+        if (args.length !== 3) throw new Error("bus_arguments_invalid");
+        return await port.catalogue();
+      }
+      const [projectId, destinationId, modelId] = args.slice(3);
+      if (
+        (args.length !== 5 && args.length !== 6) ||
+        !projectId ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?![\s\S])/.test(
+          projectId,
+        ) ||
+        !destinationId ||
+        !/^[a-z][a-z0-9_-]{0,63}(?![\s\S])/.test(destinationId) ||
+        (modelId !== undefined && (!modelId || modelId.length > 128 || /[\0\r\n]/.test(modelId)))
+      )
+        throw new Error("bus_arguments_invalid");
+      return await port.template(projectId, destinationId, modelId);
+    }
     if (command === "tick") {
       if (args.length !== 3) throw new Error("bus_arguments_invalid");
       const [cli, browser] = await Promise.allSettled([

@@ -25,7 +25,13 @@ export class BridgeHost {
     if (options.evaluateBoundedPolicy && pump.controller.policy.confirmation === "manual")
       throw new Error("host_automatic_policy_not_configured");
   }
-  async tick(): Promise<HostTick> {
+  async tick(signal?: AbortSignal): Promise<HostTick> {
+    if (signal?.aborted)
+      return {
+        transport: { received: [], delivered: [], acknowledged: [], blocked: [] },
+        advanced: [],
+        blocked: [],
+      };
     if (this.busy) throw new Error("host_tick_in_progress");
     this.busy = true;
     try {
@@ -41,6 +47,7 @@ export class BridgeHost {
         ...tasks.filter((t) => t.result.request_id <= cursor),
       ].slice(0, this.options.maxPerTick);
       for (const task of ordered) {
+        if (signal?.aborted) break;
         const id = task.result.request_id;
         try {
           if (task.intent) {
@@ -57,7 +64,7 @@ export class BridgeHost {
               .reverse()
               .find((row) => !row.consumed && row.envelope.decision === "approved");
             if (!grant) throw new Error("host_approval_missing");
-            await controller.start(id, grant.envelope.approval_id);
+            await controller.start(id, grant.envelope.approval_id, signal);
             result.advanced.push(id);
           }
         } catch (error) {
@@ -73,6 +80,7 @@ export class BridgeHost {
         }
       }
       // Receipt/result writeback after newly observed transitions, without waiting another cycle.
+      if (signal?.aborted) return result;
       const after = await this.pump.tick();
       result.transport.received.push(...after.received);
       result.transport.delivered.push(...after.delivered);

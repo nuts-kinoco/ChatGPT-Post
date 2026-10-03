@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { productNavigation, productStartupError, productUiProfile, productUrl, revealExistingProductDetail, startProductUi } from "../dist/main/product-ui.js";
+import { isTrustedProductFrame, productNavigation, productStartupError, productUiProfile, productUrl, revealExistingProductDetail, startProductUi } from "../dist/main/product-ui.js";
 
 const server = { origin: "http://127.0.0.1:41234", token: "test-token", url: "unused", close: async () => {} };
 test("default product profile is production; demo is explicit and invalid values fail closed", () => {
@@ -21,7 +21,7 @@ test("product server loads only the selected checkout and keeps runtime paths ho
   });
   assert.equal(actual, server);
   assert.match(loaded, /\/dist\/ui\/server\.js$/u);
-  assert.deepEqual(options, { profile: "demo", stateDir: path.join(root, "runtime"), port: 0 });
+  assert.deepEqual(options, { profile: "demo", stateDir: path.join(root, "runtime"), port: 0, nativeControls: true });
 });
 
 test("window navigation accepts only product root with known views and task identity", () => {
@@ -46,8 +46,9 @@ test("capability is added by main to fragment only; untrusted input cannot provi
 
 test("default launch uses v2 isolated window while explicit legacy route is preserved", async () => {
   const source = await readFile(new URL("../src/main/main.ts", import.meta.url), "utf8");
-  assert.match(source, /void showProductDock\(\);/u);
-  assert.match(source, /width: 280, height: 380/u);
+  assert.match(source, /actOnProduct\("collapse"\);/u);
+  assert.match(source, /productBounds\(productAnchor, workArea, false\)/u);
+  assert.doesNotMatch(source, /width: 1280|height: 900/u);
   assert.match(source, /nodeIntegration: false, sandbox: true, partition: "bridge-v2-ui"/u);
   assert.match(source, /従来のブラウザチャット/u);
   assert.match(source, /productNavigation\(target, server.origin\)/u);
@@ -74,6 +75,16 @@ test("native load failures never disclose the launch capability URL", () => {
   const error = new Error("ERR_FAILED loading http://127.0.0.1:41234/#token=PRIVATE_TEST_CAPABILITY");
   assert.doesNotMatch(productStartupError(error), /PRIVATE_TEST_CAPABILITY|#token|127\.0\.0\.1/u);
   assert.doesNotMatch(productStartupError({ code: "ERR_MODULE_NOT_FOUND", message: error.message }), /PRIVATE_TEST_CAPABILITY/u);
+});
+
+test("cosmetic IPC requires exact product sender, main frame, and validated local page", () => {
+  const sender={},frame={},other={};const url=server.origin+"/?view=resident";
+  assert.equal(isTrustedProductFrame(sender,[sender],frame,frame,url,server.origin),true);
+  assert.equal(isTrustedProductFrame(other,[sender],frame,frame,url,server.origin),false);
+  assert.equal(isTrustedProductFrame(sender,[sender],other,frame,url,server.origin),false);
+  assert.equal(isTrustedProductFrame(sender,[sender],null,frame,url,server.origin),false);
+  assert.equal(isTrustedProductFrame(sender,[sender],frame,frame,"https://example.invalid/?view=resident",server.origin),false);
+  assert.equal(isTrustedProductFrame(sender,[sender],frame,frame,server.origin+"/api/bootstrap",server.origin),false);
 });
 
 test("explicit production deployment module reaches the shared product server", async () => {

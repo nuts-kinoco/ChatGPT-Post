@@ -49,7 +49,7 @@ describe("quota observations never imply billing or model authority", () => {
       ).toBe("unknown");
     }
   });
-  it("accepts a fresh user observation without pretending it is a provider reading", () => {
+  it("keeps a fresh user observation unverified and requires an explicit bounded fallback", () => {
     const reported: QuotaObservation = {
       source: "user",
       observedAt: now.toISOString(),
@@ -57,7 +57,17 @@ describe("quota observations never imply billing or model authority", () => {
       remainingPercent: 20,
       maxAgeSeconds: 300,
     };
-    expect(quotaDecision(reported, null, false, now).state).toBe("observed");
+    expect(quotaDecision(reported, null, false, now)).toMatchObject({
+      state: "unknown",
+      mayContinue: false,
+    });
+    expect(
+      quotaDecision(reported, { preauthorized: true, maxStarts: 1, maxRunSeconds: 3 }, false, now),
+    ).toMatchObject({
+      state: "unknown",
+      mayContinue: true,
+      reason: "preauthorized_bounded_fallback",
+    });
     expect(reported.source).toBe("user");
   });
 });

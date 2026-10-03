@@ -20,6 +20,7 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 export class CodexQuotaClient implements AccountQuotaPort {
+  readonly providerId = "codex" as const;
   private buffer = Buffer.alloc(0);
   private pending = new Map<number, Pending>();
   private nextId = 1;

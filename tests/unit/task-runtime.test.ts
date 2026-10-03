@@ -3,7 +3,7 @@ import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MaterializationReceiptV1 } from "../../src/contracts/materialization.js";
 import {
   serializeTaskResult,
@@ -176,6 +176,76 @@ describe("Bridge v2 task runtime (fake executor only)", () => {
       requiresActionConfirmation: false,
     };
     controller = new TaskController(store, fake, policy, now);
+  });
+  it("shutdown before preflight leaves approval and start capacity untouched", async () => {
+    const t = task();
+    const g = approve(t);
+    const abort = new AbortController();
+    abort.abort();
+    const check = vi.spyOn(fake, "checkCapabilities");
+    await expect(controller.start(t.request_id, g.approval_id, abort.signal)).rejects.toThrow(
+      "dispatch_stopped",
+    );
+    expect(check).not.toHaveBeenCalled();
+    expect(fake.starts).toBe(0);
+    expect(store.get(t.request_id)?.intent).toBeNull();
+    expect(store.approvalsForRequest(t.request_id)[0]?.consumed).toBe(false);
+    await controller.start(t.request_id, g.approval_id);
+    expect(fake.starts).toBe(1);
+  });
+  it("shutdown during asynchronous preflight prevents durable intent and later replay", async () => {
+    const t = task();
+    const g = approve(t);
+    const abort = new AbortController();
+    let release = () => {};
+    let entered = () => {};
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(fake, "checkCapabilities").mockImplementationOnce(async () => {
+      entered();
+      await gate;
+    });
+    const start = controller.start(t.request_id, g.approval_id, abort.signal);
+    await ready;
+    abort.abort();
+    release();
+    await expect(start).rejects.toThrow("dispatch_stopped");
+    expect(fake.starts).toBe(0);
+    expect(store.get(t.request_id)?.intent).toBeNull();
+    expect(store.approvalsForRequest(t.request_id)[0]?.consumed).toBe(false);
+    await controller.start(t.request_id, g.approval_id);
+    expect(fake.starts).toBe(1);
+  });
+  it("the transaction's final approval fence observes shutdown before consuming the grant", async () => {
+    const t = task();
+    const g = approve(t);
+    const abort = new AbortController();
+    const claim = store.claimStart.bind(store);
+    vi.spyOn(store, "claimStart").mockImplementationOnce((...args) => {
+      abort.abort();
+      return claim(...args);
+    });
+    await expect(controller.start(t.request_id, g.approval_id, abort.signal)).rejects.toThrow(
+      "dispatch_stopped",
+    );
+    expect(fake.starts).toBe(0);
+    expect(store.get(t.request_id)?.intent).toBeNull();
+    expect(store.approvalsForRequest(t.request_id)[0]?.consumed).toBe(false);
+  });
+  it("shutdown does not roll back an admitted run or start/cancel it again", async () => {
+    const t = task();
+    const g = approve(t);
+    const initial = await controller.start(t.request_id, g.approval_id);
+    const abort = new AbortController();
+    abort.abort();
+    const repeated = await controller.start(t.request_id, g.approval_id, abort.signal);
+    expect(repeated.intent).toEqual(initial.intent);
+    expect(fake.starts).toBe(1);
+    expect(fake.cancels).toBe(0);
   });
   afterEach(async () => {
     store.close();
@@ -892,11 +962,14 @@ describe("Bridge v2 task runtime (fake executor only)", () => {
       get: () => (++reads <= 2 ? now().toISOString() : new Date(clock - 2000).toISOString()),
     });
     controller = new TaskController(store, fake, policy, now, {
+      providerId: "codex",
       observation,
       fallback: { preauthorized: true, maxStarts: 1, maxRunSeconds: 1 },
       strictMoneyBudget: false,
     });
     const t = task();
+    t.agent = "codex";
+    policy.agents.codex = ["fake-model"];
     const g = approve(t);
     await expect(controller.start(t.request_id, g.approval_id)).rejects.toThrow(
       "quota_constraints_changed",
@@ -1289,6 +1362,7 @@ describe("Bridge v2 task runtime (fake executor only)", () => {
   it("host quota snapshots surround dispatch/ACK and a failed post-ACK read never changes success", async () => {
     let calls = 0;
     controller = new TaskController(store, fake, policy, now, undefined, 20, {
+      providerId: "codex",
       readRateLimits: async () => {
         calls++;
         if (calls > 1) throw new Error("quota_rpc_unavailable");
@@ -1307,6 +1381,8 @@ describe("Bridge v2 task runtime (fake executor only)", () => {
       },
     });
     const t = task();
+    t.agent = "codex";
+    policy.agents.codex = ["fake-model"];
     const g = approve(t);
     const running = await controller.start(t.request_id, g.approval_id);
     clock += 1000;

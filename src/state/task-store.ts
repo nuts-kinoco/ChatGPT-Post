@@ -772,6 +772,34 @@ export class TaskStore {
       .get(sessionId) as { stopped: number } | undefined;
     return row?.stopped === 1;
   }
+  /** Monitor order only: the authoritative insertion rowid, with an opaque existing UUID cursor. */
+  recentPage(after = "", limit = 32): { requestIds: string[]; next: string | null } {
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 256 ||
+      (after !== "" &&
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(after))
+    )
+      throw new Error("task_page_invalid");
+    const cursor = after
+      ? this.db.prepare("SELECT rowid AS position FROM task_jobs WHERE request_id=?").get(after)
+      : null;
+    if (after && !cursor) throw new Error("task_page_cursor_missing");
+    const rows = (
+      cursor
+        ? this.db
+            .prepare("SELECT request_id FROM task_jobs WHERE rowid<? ORDER BY rowid DESC LIMIT ?")
+            .all(Number(cursor.position), limit + 1)
+        : this.db
+            .prepare("SELECT request_id FROM task_jobs ORDER BY rowid DESC LIMIT ?")
+            .all(limit + 1)
+    ) as { request_id: string }[];
+    return {
+      requestIds: rows.slice(0, limit).map((row) => row.request_id),
+      next: rows.length > limit ? (rows[limit - 1]?.request_id ?? null) : null,
+    };
+  }
   listPage(after = "", limit = 32): { requestIds: string[]; next: string | null } {
     if (
       !Number.isSafeInteger(limit) ||
