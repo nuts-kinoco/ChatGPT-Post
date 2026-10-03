@@ -4,6 +4,17 @@
 
 Claude Code 等のローカルオーケストレータが、人間のコピー＆ペーストなしに ChatGPT Web を「外部アドバイザー」として使えるようにすることが目的です。
 
+## Bridge v2: offline core and LLM entrypoint
+
+Start with [the short LLM quickstart](docs/bridge-v2/LLM-QUICKSTART.md) or `node dist/cli/main.js task help`.
+The v2 task protocol, durable controller and fake-only tests are implemented in this repository. Production task execution, authenticated approval, GitHub job transport and notification adapters are **not configured**; execution commands fail closed. Existing browser `run`/`submit`/`collect` commands keep their original behavior.
+
+- [Reviewed protocol and non-executable examples](docs/bridge-v2/protocol/bridge_v2_protocol.md)
+- [Implementation coverage and verification](docs/bridge-v2/IMPLEMENTATION.md)
+- [Windows / Claude handoff checklist](docs/bridge-v2/WINDOWS-HANDOFF.md)
+- [Ordinary Chat / Work event-delivery research and verification limits](docs/bridge-v2/DELIVERY-ADDENDUM.md)
+- [Standalone synthetic UI mock](docs/bridge-v2/mock/bridge-v2-interface.html)
+
 ## 現状
 
 **Phase 7（運用手順・最終レビュー）実施中。契約 1.2。** 実ブラウザで次が動いています（すべて 2026-09-15 の Live で確認、[docs/live-results/](docs/live-results/)）:
