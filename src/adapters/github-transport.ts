@@ -7,6 +7,13 @@ import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { assertDeliveryBinding, assertMaterializationProof } from "../contracts/delivery-proof.js";
 import {
+  type IssuerBusMessage,
+  parsePreparedComposer,
+  strictBase64,
+  validateIssuerPreparation,
+  validateRecipientCapability,
+} from "../contracts/issuer.js";
+import {
   type DeliveryBindingV1,
   type DeliveryManifestV1,
   type MaterializationReceiptV1,
@@ -34,7 +41,13 @@ import {
 } from "../contracts/task.js";
 import type { TaskController } from "../state/task-controller.js";
 import type { TaskHandshake } from "../state/task-store.js";
-import type { GitObjectStore, GitSnapshot } from "./github-client.js";
+import { applyFinalAppendGuard } from "./append-guard.js";
+import {
+  type GitObjectStore,
+  type GitPublicationBinding,
+  type GitSnapshot,
+  gitBlobSha,
+} from "./github-client.js";
 
 export interface MessageSigner {
   readonly actorId: string;
@@ -125,6 +138,7 @@ export interface DeliveryAcceptanceContext {
   outputContractRaw: Uint8Array | null;
 }
 type BusMessage =
+  | IssuerBusMessage
   | TextPacket
   | IssuedMessage
   | ClaimMessage
@@ -219,6 +233,22 @@ export class SignedBusCodec {
     )
       throw new Error("transport_signature_invalid");
     const data = record(parseStrictJsonBytes(raw));
+    if (data.kind === "issuer_capability") {
+      exactKeys(data, ["kind", "capability"]);
+      const capability = validateRecipientCapability(data.capability);
+      this.role(identity.actorId, "recipient");
+      if (capability.recipientActorId !== identity.actorId)
+        throw new Error("transport_actor_denied");
+      return { actorId: identity.actorId, message: { kind: "issuer_capability", capability } };
+    }
+    if (data.kind === "issuer_preparation") {
+      exactKeys(data, ["kind", "preparation"]);
+      const preparation = validateIssuerPreparation(data.preparation);
+      this.role(identity.actorId, "requester");
+      if (preparation.requesterActorId !== identity.actorId)
+        throw new Error("transport_actor_denied");
+      return { actorId: identity.actorId, message: { kind: "issuer_preparation", preparation } };
+    }
     if (data.kind === "text_inference") {
       const packet = validateTextPacket(data);
       const requesterStage = packet.stage === "issued" || packet.stage === "acceptance";
@@ -689,6 +719,8 @@ export class GitHubTaskBus {
     route: IssuedMessage["route"] = "cli",
     outputContractRaw?: Uint8Array,
     expectedProjectRegistration?: ProjectRegistrationReference,
+    finalAppendGuard?: () => void,
+    issuerPreparation?: Uint8Array,
   ): Promise<string> {
     const { issued, files } = await this.prepareIssue(
       raw,
@@ -700,7 +732,76 @@ export class GitHubTaskBus {
       expectedProjectRegistration,
     );
     this.assertPreparedIssueCurrent(issued);
+    const bindings = issuerPreparation
+      ? this.attachIssuerPreparation(files, [issued], issuerPreparation)
+      : null;
+    if (bindings) {
+      const append = this.git.appendConditional;
+      if (!append) throw new Error("issuer_conditional_append_unavailable");
+      applyFinalAppendGuard(finalAppendGuard);
+      return append.call(this.git, files, `Bridge request ${issued.requestId}`, bindings);
+    }
+    applyFinalAppendGuard(finalAppendGuard);
     return this.git.append(files, `Bridge request ${issued.requestId}`);
+  }
+  /** Host-only immutable preparation proof; no separate job ledger or changed IssuedMessage bytes. */
+  attachIssuerPreparation(
+    files: Map<string, Uint8Array>,
+    issuances: readonly IssuedMessage[],
+    input: Uint8Array,
+  ): GitPublicationBinding[] {
+    const bytes = Buffer.from(input),
+      decoded = this.codec.decode(bytes);
+    if (
+      decoded.message.kind !== "issuer_preparation" ||
+      decoded.actorId !== this.codec.signer.actorId
+    )
+      throw new Error("issuer_requester_denied");
+    const prepared = parsePreparedComposer(
+      strictBase64(decoded.message.preparation.preparedBase64),
+    );
+    if (prepared.preview.children.length !== issuances.length)
+      throw new Error("issuer_publication_binding_mismatch");
+    const bindings: GitPublicationBinding[] = [];
+    for (const issued of issuances) {
+      const child = prepared.preview.children.find((c) => c.requestId === issued.requestId);
+      if (
+        !child ||
+        issued.requesterId !== decoded.actorId ||
+        issued.taskSpecHash !== child.taskSpecHash ||
+        issued.taskFileHash !== child.taskFileHash ||
+        issued.recipientId !== child.recipientActorId ||
+        issued.route !== child.route ||
+        issued.fanoutId !== prepared.preview.fanoutId ||
+        sha256Bytes(
+          files.get(this.path("inbox", issued.requestId, "task.json")) ?? new Uint8Array(),
+        ) !== child.taskSpecHash ||
+        sha256Bytes(
+          files.get(this.path("inbox", issued.requestId, "task.md")) ?? new Uint8Array(),
+        ) !== child.taskFileHash ||
+        !isDeepStrictEqual(issued.projectRegistration, {
+          projectId: prepared.preview.projectId,
+          registryRevision: prepared.preview.registryRevision,
+          snapshotSha256: prepared.preview.registrySha256,
+        })
+      )
+        throw new Error("issuer_publication_binding_mismatch");
+      const bindingPath = this.path("outbox", issued.requestId, "issuer_preparation.json"),
+        bindingBlobSha = gitBlobSha(bytes);
+      files.set(bindingPath, Buffer.from(bytes));
+      bindings.push({
+        whenPresentPath: this.path("inbox", issued.requestId, "issued.json"),
+        bindingPath,
+        bindingBlobSha,
+      });
+      if (issued.fanoutId)
+        bindings.push({
+          whenPresentPath: `${this.prefix}/workflows/${issued.fanoutId}.json`,
+          bindingPath,
+          bindingBlobSha,
+        });
+    }
+    return bindings;
   }
   /** Linearizes the chosen preview before append starts; later edits affect later issuance only. */
   assertPreparedIssueCurrent(issued: IssuedMessage): void {
@@ -928,9 +1029,14 @@ export class GitHubTaskBus {
       event: HostedEvent,
       context: DeliveryAcceptanceContext,
     ) => Promise<MaterializationReceiptV1 | undefined>,
+    finalAppendGuard?: () => void,
   ): Promise<string> {
-    return this.acceptMaterialized(requestId, "ordinary_chat_browser", async (context) =>
-      accept(context.payloadBytes, context.terminalEvent as HostedEvent, context),
+    return this.acceptMaterialized(
+      requestId,
+      "ordinary_chat_browser",
+      async (context) =>
+        accept(context.payloadBytes, context.terminalEvent as HostedEvent, context),
+      finalAppendGuard,
     );
   }
   async readEvent(
@@ -972,9 +1078,14 @@ export class GitHubTaskBus {
       event: TaskHandshake,
       context: DeliveryAcceptanceContext,
     ) => Promise<MaterializationReceiptV1 | undefined>,
+    finalAppendGuard?: () => void,
   ): Promise<string> {
-    return this.acceptMaterialized(requestId, "cli", async (context) =>
-      accept(context.payloadBytes, context.terminalEvent as TaskHandshake, context),
+    return this.acceptMaterialized(
+      requestId,
+      "cli",
+      async (context) =>
+        accept(context.payloadBytes, context.terminalEvent as TaskHandshake, context),
+      finalAppendGuard,
     );
   }
   private binding(
@@ -1122,6 +1233,7 @@ export class GitHubTaskBus {
     requestId: string,
     route: IssuedMessage["route"],
     accept: (context: DeliveryAcceptanceContext) => Promise<MaterializationReceiptV1 | undefined>,
+    finalAppendGuard?: () => void,
   ): Promise<string> {
     const snapshot = await this.git.snapshot();
     const context = await this.deliveryContext(snapshot, requestId);
@@ -1144,13 +1256,12 @@ export class GitHubTaskBus {
     const signedAck = hosted
       ? await this.codec.encode({ kind: "hosted", event: event as HostedEvent })
       : await this.codec.encode({ kind: "handshake", event: event as TaskHandshake });
+    const signedProof = await this.codec.encode({ kind: "materialization", receipt });
+    applyFinalAppendGuard(finalAppendGuard);
     // One atomic immutable commit: no ACK without matching requester proof, and retry reuses exact bytes.
     return this.git.append(
       new Map([
-        [
-          this.path("outbox", requestId, "materialization.json"),
-          await this.codec.encode({ kind: "materialization", receipt }),
-        ],
+        [this.path("outbox", requestId, "materialization.json"), signedProof],
         [this.path(hosted ? "hosted" : "outbox", requestId, `${stage}.json`), signedAck],
       ]),
       `Bridge materialized ACK ${requestId}`,

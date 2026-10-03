@@ -159,6 +159,25 @@ export function parseSessionBootstrap(
   return parsed;
 }
 
+/** Validate every supplied plan field and its original v1 byte representation. */
+export function validateSessionBootstrapPlan(
+  plan: SessionBootstrapPlan,
+  expectedSession?: SessionBootstrapIdentity,
+): SessionBootstrapPlan {
+  if (!plan || typeof plan.reminderJson !== "string") throw new Error("bootstrap_plan_invalid");
+  const reminder = parseSessionBootstrap(Buffer.from(plan.reminderJson), plan.reminderSha256);
+  const expected = createSessionBootstrap(reminder.session, {
+    version: reminder.version,
+    challengeId: reminder.challengeId,
+  });
+  if (
+    !isDeepStrictEqual(plan, expected) ||
+    (expectedSession && !isDeepStrictEqual(reminder.session, expectedSession))
+  )
+    throw new Error("bootstrap_plan_mismatch");
+  return structuredClone(expected);
+}
+
 export interface SessionBootstrapReceipt {
   protocol: "bridge-session-bootstrap-receipt/1";
   receiptId: string;
@@ -259,10 +278,15 @@ export class SessionBootstrapStore {
         throw new Error("bootstrap_state_file_not_private");
     }
     this.db = new DatabaseSync(options.dbPath ?? ":memory:");
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
-      CREATE TABLE IF NOT EXISTS bridge_session_bootstrap (
-        session_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
-        row_json TEXT NOT NULL CHECK(length(row_json) <= 32768));`);
+    try {
+      this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
+        CREATE TABLE IF NOT EXISTS bridge_session_bootstrap (
+          session_id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+          row_json TEXT NOT NULL CHECK(length(row_json) <= 32768));`);
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
   close(): void {
     this.db.close();
@@ -393,7 +417,10 @@ export class SessionBootstrapStore {
         )
           throw new Error("bootstrap_context_epoch_required");
       }
-      const current = createSessionBootstrap(input.session, { version: this.version });
+      const current = createSessionBootstrap(input.session, {
+        version: this.version,
+        ...(previous ? { challengeId: previous.plan.challengeId } : {}),
+      });
       const sameVersion = previous?.plan.bootstrapSha256 === current.bootstrapSha256;
       const sameContext =
         previous?.plan.reminder.session.contextEpoch === input.session.contextEpoch;
@@ -421,16 +448,27 @@ export class SessionBootstrapStore {
             : input.mode === "new"
               ? "new_session"
               : "receipt_missing";
+      // Only a genuinely new confirmation gets a challenge. Retained pending reads generate none.
+      const fresh = previous
+        ? createSessionBootstrap(input.session, { version: this.version })
+        : current;
       const row: StoredSession = {
-        plan: current,
+        plan: fresh,
         receipt: null,
         reason,
         createdAt: now,
         expiresAt: now + this.ttlMs,
       };
       this.save(row, now);
-      return { kind: "confirm", reason, plan: structuredClone(current), alreadyPending: false };
+      return { kind: "confirm", reason, plan: structuredClone(fresh), alreadyPending: false };
     });
+  }
+  /** Read only. A dispatched run must never prepare replacement advisory state. */
+  inspect(plan: SessionBootstrapPlan): { receipt: SessionBootstrapReceipt | null } | null {
+    validateSessionBootstrapPlan(plan);
+    const row = this.read(plan.reminder.session.sessionId, this.time());
+    if (!row || !isDeepStrictEqual(row.plan, plan)) return null;
+    return { receipt: structuredClone(row.receipt) };
   }
   /** Caller must authenticate the session/channel before invoking this function. */
   acknowledge(session: SessionBootstrapIdentity, bytes: Uint8Array): SessionBootstrapReceipt {
@@ -440,9 +478,12 @@ export class SessionBootstrapStore {
     return this.transaction(() => {
       const now = this.time();
       const row = this.read(session.sessionId, now);
-      const current = createSessionBootstrap(session, { version: this.version });
+      if (!row) throw new Error("bootstrap_ack_mismatch");
+      const current = createSessionBootstrap(session, {
+        version: this.version,
+        challengeId: row.plan.challengeId,
+      });
       if (
-        !row ||
         !isDeepStrictEqual(row.plan.reminder.session, session) ||
         row.plan.bootstrapSha256 !== current.bootstrapSha256 ||
         !isDeepStrictEqual(ack, row.plan.ack)

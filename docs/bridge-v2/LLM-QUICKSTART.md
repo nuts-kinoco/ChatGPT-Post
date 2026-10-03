@@ -26,6 +26,22 @@ receipt; version change or context/compaction loss needs a short reconfirmation.
 plans create new sessions and do not promise arbitrary manually launched CLI hooks. Installation of
 a skill/CLAUDE.md/AGENTS.md alone does not prove that any session received or followed it.
 
+## Configured issuer and fresh-session receipt
+
+When the host exposes a fixed scoped issuer wrapper, use [ISSUER-USAGE.md](ISSUER-USAGE.md):
+read signed capabilities, prepare via the registered recipe, save the exact returned preparation,
+issue once with stable UUIDs, collect each child and explicitly materialize/ACK. Do not supply a
+deployment path, credential, policy or arbitrary file path in agent input. An unavailable issuer
+is a setup gate; do not fall back to the broader operator CLI. New requests require fresh cached
+capabilities; historical recovery uses the original published preparation and a current scoped
+session for the same requester.
+
+A configured general CLI broker now owns a durable fresh-run bootstrap store and can project a
+strict advisory acknowledgement from a trusted selected cached response artifact. Missing, quoted,
+malformed or stale acknowledgements remain unconfirmed. Recovery only re-reads saved verified bytes;
+it never starts a model or regenerates a challenge. See [SESSION-BOOTSTRAP.md](SESSION-BOOTSTRAP.md).
+The native execution gate and real resumed-context integration remain separate.
+
 ## What is usable now
 
 - Offline TaskSpec and task-file validation, exact-byte SHA-256 binding, schema discovery, and read-only local ledger snapshots

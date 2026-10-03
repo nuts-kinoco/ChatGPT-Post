@@ -50,15 +50,19 @@ export interface UiComposerPort {
       }>
     | { rawSpec: string; taskMarkdown: string; outputPolicy?: HostedExpectedOutputPolicy | null };
   /** Must atomically issue these exact immutable UUIDs/bytes through existing bus/fanout authority. */
-  issue(preview: {
-    fanoutId: string | null;
-    registryRevision: number;
-    registrySha256: string;
-    projectId: string;
-    children: readonly ComposerChild[];
-  }): Promise<{ commit: string }>;
+  issue(
+    preview: {
+      fanoutId: string | null;
+      registryRevision: number;
+      registrySha256: string;
+      projectId: string;
+      children: readonly ComposerChild[];
+    },
+    finalAppendGuard?: () => void,
+    issuerPreparation?: Uint8Array,
+  ): Promise<{ commit: string }>;
 }
-interface Preview {
+export interface ComposerPreview {
   version: "bridge-composer-preview-1" | "bridge-composer-preview-2";
   previewId: string;
   fanoutId: string | null;
@@ -67,6 +71,11 @@ interface Preview {
   projectId: string;
   expiresAt: string;
   children: ComposerChild[];
+}
+export interface PreparedComposerPreview {
+  preview: ComposerPreview;
+  catalogue: string[];
+  promptFormats: string[];
 }
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 function exact(value: unknown, keys: string[]): Record<string, unknown> {
@@ -151,7 +160,7 @@ export class UiComposer {
   private readonly previews = new Map<
     string,
     {
-      preview: Preview;
+      preview: ComposerPreview;
       catalogue: string[];
       promptFormats: string[];
       pending: boolean;
@@ -162,6 +171,11 @@ export class UiComposer {
     private readonly operations: UiOperationsService,
     private readonly port: UiComposerPort | undefined,
     private readonly now: () => Date = () => new Date(),
+    private readonly identities?: {
+      previewId: string;
+      requestIds: readonly string[];
+      fanoutId: string | null;
+    },
   ) {}
   capability() {
     return {
@@ -192,7 +206,7 @@ export class UiComposer {
       }
     return { version, formats };
   }
-  async preview(input: unknown): Promise<Preview> {
+  async preview(input: unknown): Promise<ComposerPreview> {
     if (!this.port || !this.capability().enabled)
       throw new UiError("composer_unconfigured", "Trusted composer is unavailable", 409);
     const mode =
@@ -284,6 +298,20 @@ export class UiComposer {
       seen.add(destination.destinationId);
       selected.push({ destination, modelId: value.modelId });
     }
+    if (this.identities) {
+      const ids = [
+        this.identities.previewId,
+        ...this.identities.requestIds,
+        ...(this.identities.fanoutId ? [this.identities.fanoutId] : []),
+      ];
+      if (
+        this.identities.requestIds.length !== selected.length ||
+        selected.length > 1 !== (this.identities.fanoutId !== null) ||
+        ids.some((id) => !UUID.test(id)) ||
+        new Set(ids).size !== ids.length
+      )
+        throw new UiError("composer_identity_invalid", "Host preparation identities are invalid");
+    }
     const children: ComposerChild[] = [];
     const promptFormats: string[] = [];
     for (const { destination, modelId } of selected) {
@@ -296,7 +324,7 @@ export class UiComposer {
             : "This destination requires explicit common-brief mode",
           409,
         );
-      const requestId = randomUUID();
+      const requestId = this.identities?.requestIds[children.length] ?? randomUUID();
       const recipeInput: ComposerRecipeInput = {
         requestId,
         project,
@@ -343,10 +371,14 @@ export class UiComposer {
         "Registration changed while preparing the preview",
         409,
       );
-    const preview: Preview = {
+    const preview: ComposerPreview = {
       version: briefMode ? "bridge-composer-preview-2" : "bridge-composer-preview-1",
-      previewId: randomUUID(),
-      fanoutId: children.length > 1 ? randomUUID() : null,
+      previewId: this.identities?.previewId ?? randomUUID(),
+      fanoutId: this.identities
+        ? this.identities.fanoutId
+        : children.length > 1
+          ? randomUUID()
+          : null,
       registryRevision: Number(body.registryRevision),
       registrySha256: registry.snapshotHash(Number(body.registryRevision)),
       projectId: body.projectId,
@@ -371,29 +403,21 @@ export class UiComposer {
     });
     return structuredClone(preview);
   }
-  async issue(input: unknown) {
+  /** Host-only export for a signed preparation receipt; HTTP cannot import or replace cached previews. */
+  preparation(previewId: string, expectedHash: string): PreparedComposerPreview {
+    const entry = this.previews.get(previewId);
+    if (!entry || sha256Bytes(Buffer.from(JSON.stringify(entry.preview))) !== expectedHash)
+      throw new UiError("composer_preview_mismatch", "Prepared preview was not found", 409);
+    return structuredClone({
+      preview: entry.preview,
+      catalogue: entry.catalogue,
+      promptFormats: entry.promptFormats,
+    });
+  }
+  /** Shared validation for the original UI cache and authenticated immutable issuer receipts. */
+  async validatePreparation(entry: PreparedComposerPreview): Promise<void> {
     if (!this.port)
-      throw new UiError("composer_unconfigured", "Issue transport is unavailable", 409);
-    const body = exact(input, ["previewId", "previewSha256"]);
-    const entry = this.previews.get(String(body.previewId));
-    if (!entry || body.previewSha256 !== sha256Bytes(Buffer.from(JSON.stringify(entry.preview))))
-      throw new UiError(
-        "composer_preview_mismatch",
-        "Preview identity/hash was not found. Inspect any previous request UUID before making another draft",
-        409,
-      );
-    if (entry.receipt)
-      return {
-        ...entry.receipt,
-        previewId: entry.preview.previewId,
-        requestIds: entry.preview.children.map((x) => x.requestId),
-      };
-    if (entry.pending)
-      throw new UiError(
-        "composer_issue_pending",
-        "This exact preview is already being issued; inspect its original UUIDs",
-        409,
-      );
+      throw new UiError("composer_unconfigured", "Trusted composer is unavailable", 409);
     if (Date.parse(entry.preview.expiresAt) <= this.now().getTime())
       throw new UiError(
         "composer_preview_expired",
@@ -450,6 +474,31 @@ export class UiComposer {
           409,
         );
     }
+  }
+  async issue(input: unknown) {
+    if (!this.port)
+      throw new UiError("composer_unconfigured", "Issue transport is unavailable", 409);
+    const body = exact(input, ["previewId", "previewSha256"]);
+    const entry = this.previews.get(String(body.previewId));
+    if (!entry || body.previewSha256 !== sha256Bytes(Buffer.from(JSON.stringify(entry.preview))))
+      throw new UiError(
+        "composer_preview_mismatch",
+        "Preview identity/hash was not found. Inspect any previous request UUID before making another draft",
+        409,
+      );
+    if (entry.receipt)
+      return {
+        ...entry.receipt,
+        previewId: entry.preview.previewId,
+        requestIds: entry.preview.children.map((x) => x.requestId),
+      };
+    if (entry.pending)
+      throw new UiError(
+        "composer_issue_pending",
+        "This exact preview is already being issued; inspect its original UUIDs",
+        409,
+      );
+    await this.validatePreparation(entry);
     // A second request may have crossed the asynchronous catalogue read above.
     const cached = this.previews.get(String(body.previewId))?.receipt;
     if (cached)

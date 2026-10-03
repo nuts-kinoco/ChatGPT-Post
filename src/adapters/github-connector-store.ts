@@ -3,6 +3,7 @@ import { parseStrictJsonBytes } from "../contracts/task.js";
 import {
   type GitHubDatabasePort,
   GitHubGitStore,
+  type GitPublicationBinding,
   type GitSnapshot,
   transportPath,
 } from "./github-client.js";
@@ -211,5 +212,17 @@ export class GitHubConnectorStore extends GitHubGitStore {
     for (const path of files.keys())
       if (!path.startsWith(`${this.namespace}/`)) throw new Error("connector_path_denied");
     return super.append(new Map([...files].map(([p, b]) => [p, Buffer.from(b)])), message);
+  }
+  override async appendConditional(
+    files: ReadonlyMap<string, Uint8Array>,
+    message: string,
+    bindings: readonly GitPublicationBinding[],
+  ) {
+    for (const path of [
+      ...files.keys(),
+      ...bindings.flatMap((b) => [b.whenPresentPath, b.bindingPath]),
+    ])
+      if (!path.startsWith(`${this.namespace}/`)) throw new Error("connector_path_denied");
+    return super.appendConditional(files, message, bindings);
   }
 }

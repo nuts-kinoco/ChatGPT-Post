@@ -1,8 +1,10 @@
 /** Signed delivery grouping, separate from workflow execution authority. Each child keeps its own
  * approval, run, locks, timeout, immutable response and ACK. A blocked route cannot consume another.
  */
+
 import { isDeepStrictEqual } from "node:util";
 import { parseStrictJsonBytes, sha256Bytes } from "../contracts/task.js";
+import { applyFinalAppendGuard } from "./append-guard.js";
 import type { FanoutMessage, GitHubTaskBus, IssuedMessage } from "./github-transport.js";
 export interface FanoutInput {
   raw: Uint8Array;
@@ -29,7 +31,12 @@ export class GitHubFanout {
       throw new Error("fanout_id_invalid");
     return `${this.bus.prefix}/workflows/${fanoutId}.json`;
   }
-  async issue(fanoutId: string, requests: readonly FanoutInput[]): Promise<string> {
+  async issue(
+    fanoutId: string,
+    requests: readonly FanoutInput[],
+    finalAppendGuard?: () => void,
+    issuerPreparation?: Uint8Array,
+  ): Promise<string> {
     const path = this.path(fanoutId);
     if (requests.length < 2 || requests.length > 4) throw new Error("fanout_size_invalid");
     const files = new Map<string, Uint8Array>();
@@ -69,6 +76,16 @@ export class GitHubFanout {
     // One atomic Git commit publishes parent plus every child's JSON/MD/index; crash cannot leave
     // a half-published group. Retry uses identical UUIDs/bytes and never invokes either route.
     for (const issued of issuances) this.bus.assertPreparedIssueCurrent(issued);
+    const bindings = issuerPreparation
+      ? this.bus.attachIssuerPreparation(files, issuances, issuerPreparation)
+      : null;
+    if (bindings) {
+      const append = this.bus.git.appendConditional;
+      if (!append) throw new Error("issuer_conditional_append_unavailable");
+      applyFinalAppendGuard(finalAppendGuard);
+      return append.call(this.bus.git, files, `Bridge fanout ${fanoutId}`, bindings);
+    }
+    applyFinalAppendGuard(finalAppendGuard);
     return this.bus.git.append(files, `Bridge fanout ${fanoutId}`);
   }
   /** Bounded authenticated discovery. The next cursor is stable lexical order, not arrival time. */

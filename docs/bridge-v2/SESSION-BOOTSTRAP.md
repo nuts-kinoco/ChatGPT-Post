@@ -2,102 +2,128 @@
 
 ## Scope and current boundary
 
-Machine installation, model-session memory, and host approval policy are separate.
-Every **new Bridge-launched model session** needs a short versioned reminder. A genuinely
-resumed session may reuse its matching trusted receipt while its context is retained.
-A version change, missing receipt, expired receipt or possible compaction/context loss
-requires a short reconfirmation. There is no promise that arbitrary manually started
-Claude/Codex sessions receive Bridge instructions.
+The configured CLI broker now owns fresh-run reminder preparation and advisory ACK collection.
+Each run is a new Bridge-owned model session: `sessionId = runId`, the registered provider,
+`role = response_producer`, the exact task repo, and `contextEpoch = 1`. There are no resume flags,
+no live context/compaction detector, and no claim that installing Bridge makes other sessions
+remember instructions. The helper's retained-session API remains a separate, synthetic-tested
+facility; it is not a production resume route.
 
-`src/adapters/session-bootstrap.ts` implements pure JSON generation/validation and an
-optional bounded acknowledgement ledger. It invokes no CLI, model, browser, authentication
-or installation. It does not change TaskSpec, global settings, `CLAUDE.md` or `AGENTS.md`.
-The existing CLI launch adapter starts fresh per-run homes, Claude print mode with no
-session persistence, and Codex exec without resume. Treat every such run as a new model
-session. Native enforcing CLI supervision remains incomplete; a bootstrap never enables it.
+This integration does not invoke a CLI/model, install a provider tool, configure authentication,
+change authority or implement the missing native enforcing supervisor. Real source availability
+still depends on a separately installed, trusted runtime. Synthetic tests prove the portable
+broker/store/launch/collector wiring only. Ordinary Chat's browser renderer and the SDK fixed-echo
+protocol are unchanged.
 
-## Pure launch-plan helper
+## Required broker configuration and lifecycle
+
+`CliBrokerOptions.bootstrap` is required. Existing broker compositions must provide a separate,
+explicit private `dbPath`; there is no production `:memory:` fallback:
 
 ```ts
-const bootstrap = createSessionBootstrap({
-  sessionId: runId, // trusted host-generated model-session UUID
-  provider: "codex", // claude | codex | chatgpt
-  role: "issuer", // issuer | response_producer; Chat is response_producer only
-  repoId: "registered-repo",
-  contextEpoch: 1,
+const broker = new CliBrokerService({
+  executorId,
+  dbPath: "/private/bridge/broker.db",
+  bootstrap: {
+    dbPath: "/private/bridge/bootstrap.db",
+    maxSessions: 1024,
+    ttlMs: 7 * 24 * 60 * 60 * 1000,
+  },
+  installations,
+  runtime,
+  // Optional trusted synchronous function over already observed provenance:
+  selectBootstrapResponseSource: (acceptedTerminal) =>
+    registeredResponseSources.get(acceptedTerminal.identity.runId) ?? null,
 });
-// bootstrap.reminderJson is bounded strict JSON; preserve its exact bytes/hash.
-parseSessionBootstrap(Buffer.from(bootstrap.reminderJson), bootstrap.reminderSha256);
+// The service owner closes both broker and advisory handles through broker.close().
 ```
 
-Use the short `reminderJson` in the Bridge-owned startup prompt, keeping the existing
-verified task bytes and response-frame identity separate. A Claude/Codex executing a
-received task uses `response_producer`; one preparing a task for another endpoint uses
-`issuer`. Chat is the ordinary hosted response producer, not an invented local CLI.
-The helper only creates data. The host owns delivery, authenticated channel/session binding,
-and any extraction of an ACK from the response body.
+The source map above is illustrative host-owned provenance, not a new model-populated database.
+A missing/identical bootstrap path fails with `cli_broker_bootstrap_private_db_path_required`;
+an insecure path fails the store's private-path checks. The broker explicitly opens/closes the
+existing `SessionBootstrapStore`, closes it on constructor failure, and never substitutes another
+session store. Defaults remain 1,024 sessions and seven days; configured bounds are 1–10,000
+sessions and 1 ms–30 days. Limits bound rows/messages, not disk usage. The SQLite file and its
+parent must be private, owned, regular/non-symlink paths (0600 file, 0700 parent). This POSIX
+validation is not a Windows ACL implementation.
 
-Current version: `bridge-v2-session/1`. `bootstrapSha256` binds the version, fixed role-specific
-guidance and documentation paths. `reminderSha256` binds all exact generated reminder bytes,
-including session/context/challenge. Documentation paths point to the same trusted checkout;
-the hash is **not** a hash of entire documents or proof of an installed CLI's capabilities.
-Bump the bootstrap version when its protocol guidance changes; do not silently reuse an old
-version after a meaningful deployment change. Changed guidance also changes its hash.
+Before first dispatch, `prepare` durably saves the exact v1 pending reminder/challenge. The broker
+passes that plan into `createCliLaunchPlan` as its optional final host-only argument. The planner
+validates the complete plan, exact fresh identity, fixed guidance/docs, v1 version, challenge,
+ACK, hashes and exact JSON bytes before including it in stdin. It cannot fall back to a new plan
+if supplied validation fails. The durable launch record holds the same bytes dispatched to the
+runtime. Legacy callers that omit the argument retain the pure planner behavior and historical
+v1 bytes. Profile and reminder golden hashes are covered for Claude, Codex, Antigravity and ChatGPT.
 
-The reminder covers only this sequence:
+Preparation may leave an orphan pending reminder if later admission fails. That grants no
+execution authority. A persisted broker run is checked before preparation: restart, duplicate
+start, cancellation tombstones, expired/evicted/missing advisory state and uncertain dispatch
+never generate a replacement reminder, challenge, run, prompt send or start RPC. The persisted
+launch plan records what was dispatched even when advisory state is no longer available.
 
-1. Discover current capabilities, then shipped TaskSpec/result schemas
-2. Generate and validate JSON; preserve exact UUID, raw bytes and hashes
-3. Use only registered routes and configured authority
-4. Distinguish receiptACK, startReceipt, terminal result and resultACK
-5. Verify result/artifact binding, then acknowledge the exact result payload hash
-6. Reconcile unknown outcomes against the original identity; never automatically reexecute
+## Exact trusted source and versioned extraction
 
-Long documents remain on demand. Frame strings come from
-`src/contracts/response-frame.ts`; do not handwrite or memorize delimiters.
-The frame binds request UUID/task hash/attempt UUID and is transport evidence only.
-Ordinary Chat retains the separate `hosted-response-1` contract.
+The optional synchronous `selectBootstrapResponseSource` is a trusted host adapter. It must only
+read previously authenticated provenance for the newly accepted terminal observation. It must
+not perform a provider RPC, probe, query or start. It is never called during recovery. An absent,
+null or invalid source produces explicit advisory `unavailable`; there is no stdout filename,
+latest-message, arbitrary path or model-supplied-identity fallback.
 
-## Optional receipt ledger
+The strict `bridge-bootstrap-response-source-1` descriptor binds request ID, raw task-spec hash,
+run ID, fencing token, provider, host session ID and an exact artifact ID/hash/size/reference.
+A provider session ID is optional and may only be supplied when actually observed on the trusted
+channel; the broker never invents it from the run ID. The descriptor's full artifact reference
+must be among the independently accepted terminal result's artifacts.
 
-`new SessionBootstrapStore()` uses process-local memory. Pass a private host-local SQLite
-`dbPath` for restart durability. This is a small advisory ledger, not the task execution
-ledger or host approval-session policy. Never infer authority, success, model identity or
-process termination from a bootstrap receipt.
+The broker first commits the independently valid terminal observation and its verified artifact
+set. Only then does it select and persist a source descriptor. Extraction reads the immutable,
+already hash/size-verified broker cache, with another exact byte check; it never calls runtime
+artifact lookup during local projection/recovery. A crash before descriptor persistence leaves
+`source_not_captured`, which recovery cannot repair by choosing a different output.
 
-Call `prepare` with the trusted model-session identity, `bridgeLaunched:true`, matching
-startup mechanism (`claude-print-stdin`, `codex-exec-stdin`, or `ordinary-chat-prompt`),
-`mode:new|resume`, and `context:retained|lost`. `resume` also supplies the opaque `receiptId`
-previously returned by this store. Merely supplying a receipt-shaped object is insufficient.
+`bootstrap-extraction.ts` first validates the FULL existing response frame against the saved
+request/task hash/run. Inside its body it accepts exactly one whole root JSON paragraph or a
+root `json` fence. An accepted JSON fence must have blank separators from surrounding prose; a whole root JSON paragraph may end before a later non-JSON fence. The parsed strict object must
+exactly equal the saved v1 ACK. It rejects duplicate keys/candidates, malformed JSON candidates,
+wrong version/context/session/challenge/hash, extra fields and oversize ACKs. Quoted/indented
+blocks, nested echoed reminders/templates, substrings, other code languages and HTML containers
+are never mined for an ACK. Container openers are recognized even when they interrupt prose
+without a blank line. The conservative scanner may leave complicated Markdown unconfirmed;
+that is preferable to interpreting a quoted example as acknowledgement. No new reminder format
+or reserved v2 block is introduced, and raw provider/result bytes are never rewritten.
 
-- `confirm`: deliver the generated short reminder through the approved session channel
-- `alreadyPending:true`: the same challenge was already prepared; do not blindly inject it
-  again after an uncertain delivery. Inspect the original delivery/response first
-- `reuse`: the exact unexpired session/provider/role/repo/context/version/hash receipt matches
-- Before reporting context loss, increment `contextEpoch`; the old ACK then cannot acknowledge
-  the new context. Retain that epoch for subsequent calls. Missing reliable continuity evidence
-  means context must be considered lost
+## Advisory sidecar and local recovery
 
-When confirmation is requested, extract the exact `plan.ack` JSON object from **inside** the
-response-frame body and call `acknowledge(session, ackBytes)` on the authenticated session
-channel. Never ask for extra text outside the frame. No ACK extractor or model-resume detector
-is implied by this helper. If the current launcher does not collect bootstrap ACKs, it must not
-claim an acknowledged receipt or skip a future session's reminder.
+`broker.bootstrapStatus(identity)` returns `confirmed`, `unconfirmed`, `unavailable` or `pending`
+local projection. Diagnostic reasons use a finite, state-specific code allowlist; corrupted or
+unknown stored text is reported as `projection_invalid` and is never echoed. A confirmed `bridge-bootstrap-extraction-1` sidecar contains the exact source,
+accepted terminal payload SHA-256 (over `JSON.stringify` of the stored accepted ResultSpec), full
+raw-frame and normalized frame-body digests, and the advisory receipt. The receipt binds the
+host session/provider/role/repo/context, saved v1 version, reminder/profile hashes, challenge,
+receipt UUID and acknowledgement/expiry times. Sidecar reads strictly revalidate their full
+shape and digests against the original cached frame and saved launch plan.
 
-An ACK's exact version, bootstrap hash, challenge, session UUID and context epoch must match.
-Unknown fields, duplicate JSON keys, malformed/oversized input, cross-session reuse, stale
-ACKs, and changed hashes are rejected. Repeated matching ACKs return the same receipt.
-ACK is advisory evidence of confirmation only; a model echo does not prove understanding.
-The state is saved before delivery and before returning a receipt. An uncertain send remains
-pending; it never creates permission to resend a task or execute another attempt.
+The advisory store acknowledges idempotently. If receipt storage or sidecar persistence fails,
+the terminal result has already committed. A saved pending descriptor can be projected again
+locally over its immutable cached bytes, retaining the same already-written receipt UUID. No
+selector, runtime, model query, reminder, challenge or task execution is replayed. If its advisory
+row has expired, been evicted, changed or gone missing, it stays explicitly unavailable rather
+than being rebuilt. A previously confirmed sidecar is historical evidence only; its existence
+does not grant retained-session reuse. A missing descriptor remains unavailable across restarts.
 
-Default limits: 8 KiB reminder, 2 KiB ACK, 1,024 sessions, seven-day retention. Configurable
-store bounds are 1–10,000 sessions and at most 30 days. The ledger retains only each session's
-current pending reminder/receipt; eviction or expiry requires confirmation again. These are
-logical row/message limits, not a disk quota. The SQLite file and its parent must be private,
-owned, regular/non-symlink paths (0600 file, 0700 parent). Keep the state inaccessible to model
-output and untrusted processes. This POSIX path validation is not a Windows ACL implementation.
-The launcher must generate fresh session UUIDs and maintain a reliable monotonic context epoch.
+Missing, malformed or duplicated ACK is `unconfirmed`, never task failure. Store/source/sidecar
+failure never downgrades a terminal observation, changes execution receipts, grants authority,
+replaces delivery `resultACK`, or changes the cancellation/result winner. An exact matching ACK
+only proves that matching reminder bytes came back on the selected bound channel. It does not
+prove understanding or permission to skip result/evidence validation.
+
+## Standalone helper
+
+`createSessionBootstrap` remains a pure JSON planner; `parseSessionBootstrap` checks historical
+exact reminder bytes and generated shape. `SessionBootstrapStore()` without a path remains
+available only for helpers/tests. Its trusted retained-context APIs require exact matching
+provider/role/repo/session/context/version/hash and a live receipt; possible context loss requires
+a higher context epoch. None of those helper APIs adds an actual provider continuity detector.
 
 ## Official discovery, verified without invoking Claude or Codex
 
@@ -129,11 +155,15 @@ because a repository contains them.
 ## Synthetic verification
 
 ```sh
-npm test -- tests/unit/session-bootstrap.test.ts
+npm test -- tests/unit/session-bootstrap.test.ts tests/unit/cli-broker.test.ts
 npm run typecheck
+npm run lint
 ```
 
-Tests cover fresh sessions, trusted resume, restart persistence, version changes, lost context,
-stale/invalid ACKs, exact hashes, strict generated JSON, expiry/eviction, and private state paths.
-They prove helper behavior only, not real model compliance, live CLI integration, hosted Chat
-compaction detection, Windows isolation, authentication or result delivery.
+All provider/process/network observations in these tests are fake. Coverage includes exact v1
+golden bytes, durable preparation before dispatch, full supplied-plan validation, restart and
+same-run dedupe, expired/missing/evicted state without replacement, source identity/artifact
+tampering, strict extraction negatives, terminal-before-advisory ordering, local storage faults,
+receipt/sidecar replay idempotence without runtime calls, missing-source crash recovery and the
+cancellation/result race. No model CLI, account/authentication command, Windows task, native
+helper or live resume/compaction test is run by this slice.

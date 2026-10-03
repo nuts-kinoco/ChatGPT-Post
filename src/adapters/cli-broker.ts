@@ -1,10 +1,11 @@
 /** Host-local durable broker. The installed isolation supervisor is the process authority.
  * No UNKNOWN state, disconnect, or restart ever permits a second start RPC. */
 import { chmodSync, closeSync, lstatSync, openSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import {
+  parseStrictJsonBytes,
   sha256Bytes,
   taskResultArtifactRefs,
   validateTaskResult,
@@ -18,6 +19,16 @@ import type {
   TaskExecutor,
 } from "../state/task-executor.js";
 import type { RunIntent } from "../state/task-store.js";
+import {
+  type AcceptedBootstrapTerminal,
+  type BootstrapProjection,
+  type BootstrapResponseSource,
+  createBootstrapExtractionSidecar,
+  extractBootstrapAck,
+  isBootstrapUnavailableReason,
+  validateBootstrapExtractionSidecar,
+  validateBootstrapResponseSource,
+} from "./bootstrap-extraction.js";
 import { type CliIsolationRuntime, verifyIsolationCapabilities } from "./cli-isolation.js";
 import {
   type CliInstallation,
@@ -27,6 +38,11 @@ import {
   sameCliIdentity,
   validateInstallation,
 } from "./cli-launch.js";
+import {
+  SESSION_BOOTSTRAP_VERSION,
+  SessionBootstrapStore,
+  type SessionBootstrapStoreOptions,
+} from "./session-bootstrap.js";
 
 interface BrokerRow {
   identity: ExecutionIdentity;
@@ -43,6 +59,13 @@ export interface CliBrokerOptions {
   dbPath: string;
   installations: readonly CliInstallation[];
   runtime: CliIsolationRuntime;
+  /** Required private file-backed advisory store, owned/closed by this broker. No memory fallback. */
+  bootstrap: Omit<SessionBootstrapStoreOptions, "dbPath" | "now" | "version"> & { dbPath: string };
+  /** Trusted synchronous read-only selection from ALREADY observed provenance. No RPC/query/probe.
+   * Called once after committing a new terminal observation, never during recovery. */
+  selectBootstrapResponseSource?: (
+    accepted: AcceptedBootstrapTerminal,
+  ) => BootstrapResponseSource | null;
   now?: () => Date;
   rpcTimeoutMs?: number;
   maxArtifactBytes?: number;
@@ -56,13 +79,23 @@ export class CliBrokerService implements TaskExecutor {
   private readonly now: () => Date;
   private readonly timeout: number;
   private readonly maxArtifact: number;
+  private readonly bootstrap: SessionBootstrapStore;
+  private readonly selectBootstrapResponseSource: CliBrokerOptions["selectBootstrapResponseSource"];
   private recoveryTimer: ReturnType<typeof setInterval> | null = null;
   private recovering = false;
   constructor(options: CliBrokerOptions) {
+    if (
+      !options.bootstrap ||
+      typeof options.bootstrap.dbPath !== "string" ||
+      !options.bootstrap.dbPath ||
+      resolve(options.bootstrap.dbPath) === resolve(options.dbPath)
+    )
+      throw new Error("cli_broker_bootstrap_private_db_path_required");
     this.executorId = options.executorId;
     this.installations = structuredClone(options.installations);
     for (const install of this.installations) validateInstallation(install);
     this.runtime = options.runtime;
+    this.selectBootstrapResponseSource = options.selectBootstrapResponseSource;
     this.now = options.now ?? (() => new Date());
     this.timeout = options.rpcTimeoutMs ?? 10000;
     this.maxArtifact = options.maxArtifactBytes ?? 4 * 1024 * 1024;
@@ -91,27 +124,43 @@ export class CliBrokerService implements TaskExecutor {
     )
       throw new Error("cli_broker_state_file_not_private");
     this.db = new DatabaseSync(options.dbPath);
-    chmodSync(options.dbPath, 0o600);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
+    let bootstrap: SessionBootstrapStore | undefined;
+    try {
+      chmodSync(options.dbPath, 0o600);
+      bootstrap = new SessionBootstrapStore({
+        ...options.bootstrap,
+        version: SESSION_BOOTSTRAP_VERSION,
+        now: this.now,
+      });
+      this.bootstrap = bootstrap;
+      this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS cli_broker_runs (run_id TEXT PRIMARY KEY, request_id TEXT UNIQUE NOT NULL, row_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cli_broker_fences (resource TEXT PRIMARY KEY, fence INTEGER NOT NULL, active_run TEXT);
       CREATE TABLE IF NOT EXISTS cli_broker_artifacts (artifact_id TEXT PRIMARY KEY, ref_json TEXT NOT NULL, bytes BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS cli_broker_bootstrap (run_id TEXT PRIMARY KEY, projection_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cli_broker_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
-    const existing = this.db
-      .prepare("SELECT value FROM cli_broker_meta WHERE key='executor'")
-      .get();
-    if (existing && existing.value !== this.executorId) {
+      const existing = this.db
+        .prepare("SELECT value FROM cli_broker_meta WHERE key='executor'")
+        .get();
+      if (existing && existing.value !== this.executorId)
+        throw new Error("cli_broker_executor_changed");
+      this.db
+        .prepare("INSERT OR IGNORE INTO cli_broker_meta VALUES ('executor',?)")
+        .run(this.executorId);
+    } catch (error) {
+      bootstrap?.close();
       this.db.close();
-      throw new Error("cli_broker_executor_changed");
+      throw error;
     }
-    this.db
-      .prepare("INSERT OR IGNORE INTO cli_broker_meta VALUES ('executor',?)")
-      .run(this.executorId);
   }
   close(): void {
     if (this.recoveryTimer) clearInterval(this.recoveryTimer);
     this.recoveryTimer = null;
-    this.db.close();
+    try {
+      this.bootstrap.close();
+    } finally {
+      this.db.close();
+    }
   }
   /** The service owner calls this once after binding its authenticated socket. Deadlines are also
    * independently enforced by the supervisor; this loop handles restart reconciliation. */
@@ -132,6 +181,7 @@ export class CliBrokerService implements TaskExecutor {
       for (const row of rows) {
         const r = JSON.parse(String(row.row_json)) as BrokerRow;
         if (r.observation.kind !== "terminal") await this.status(r.identity);
+        else this.projectBootstrap(r.identity);
       }
     } finally {
       this.recovering = false;
@@ -230,7 +280,36 @@ export class CliBrokerService implements TaskExecutor {
       return this.status(identity);
     }
     if (intent.executorId !== this.executorId) throw new Error("cli_executor_mismatch");
-    const plan = createCliLaunchPlan(task, bytes, identity, intent, this.install(task), this.now());
+    const installation = this.install(task);
+    // Persist before any dispatch. Existing broker rows returned above NEVER prepare again.
+    const prepared = this.bootstrap.prepare({
+      session: {
+        sessionId: identity.runId,
+        provider: installation.agent,
+        role: "response_producer",
+        repoId: task.repo,
+        contextEpoch: 1,
+      },
+      bridgeLaunched: true,
+      startup:
+        installation.agent === "claude"
+          ? "claude-print-stdin"
+          : installation.agent === "codex"
+            ? "codex-exec-stdin"
+            : "antigravity-stream-stdin",
+      mode: "new",
+      context: "retained",
+    });
+    if (prepared.kind !== "confirm") throw new Error("bootstrap_fresh_plan_required");
+    const plan = createCliLaunchPlan(
+      task,
+      bytes,
+      identity,
+      intent,
+      installation,
+      this.now(),
+      prepared.plan,
+    );
     const resourceKeys = [
       ...new Set([...intent.resourceKeys, `repo:${task.repo}`, `worktree:${plan.cwd}`]),
     ];
@@ -280,7 +359,10 @@ export class CliBrokerService implements TaskExecutor {
   async status(identity: ExecutionIdentity): Promise<ExecutorObservation> {
     const r = this.row(identity);
     if (!r) return this.unknown(identity, "no_confirmed_run");
-    if (r.observation.kind === "terminal") return r.observation;
+    if (r.observation.kind === "terminal") {
+      this.projectBootstrap(identity);
+      return r.observation;
+    }
     if (
       r.cancelReason ||
       (r.deadlineAt !== null && this.now().getTime() >= Date.parse(r.deadlineAt))
@@ -323,7 +405,10 @@ export class CliBrokerService implements TaskExecutor {
       this.save(row);
       return row;
     });
-    if (r.observation.kind === "terminal") return r.observation;
+    if (r.observation.kind === "terminal") {
+      this.projectBootstrap(identity);
+      return r.observation;
+    }
     try {
       return await this.accept(
         identity,
@@ -357,7 +442,10 @@ export class CliBrokerService implements TaskExecutor {
       throw new Error("cli_observation_identity_mismatch");
     const r = this.row(identity);
     if (!r) throw new Error("cli_run_missing");
-    if (r.observation.kind === "terminal") return r.observation;
+    if (r.observation.kind === "terminal") {
+      this.projectBootstrap(identity);
+      return r.observation;
+    }
     if (observation.kind === "unknown") return this.unknown(identity, "supervisor_unknown");
     if (!r.task || !r.plan) return this.unknown(identity, "tombstone_registered_no_task");
     const oldProcess = r.observation.kind === "running" ? r.observation.process : null;
@@ -399,7 +487,8 @@ export class CliBrokerService implements TaskExecutor {
       if (!check.valid) throw new Error("cli_terminal_contract_invalid");
       for (const ref of taskResultArtifactRefs(result)) await this.cacheArtifact(ref);
     } else throw new Error("cli_observation_kind_invalid");
-    return this.transaction(() => {
+    let newlyTerminal = false;
+    const accepted = this.transaction(() => {
       const latest = this.row(identity);
       if (!latest) throw new Error("cli_run_missing");
       if (latest.observation.kind === "terminal") return latest.observation;
@@ -431,12 +520,163 @@ export class CliBrokerService implements TaskExecutor {
       }
       latest.observation = observation;
       this.save(latest);
-      if (observation.kind === "terminal")
+      if (observation.kind === "terminal") {
         this.db
           .prepare("UPDATE cli_broker_fences SET active_run=NULL WHERE active_run=?")
           .run(identity.runId);
+        // A crash before source capture is explicitly unavailable. Recovery cannot reselect.
+        newlyTerminal = true;
+      }
       return observation;
     });
+    // This is outside and AFTER the terminal+accepted-artifact commit. Advisory failures cannot
+    // roll it back, downgrade terminal status, change execution receipts or replace delivery ACK.
+    if (newlyTerminal && accepted.kind === "terminal") {
+      this.captureBootstrapSource(accepted, r.plan);
+      this.projectBootstrap(identity);
+    }
+    return accepted;
+  }
+  private saveBootstrapProjection(
+    identity: ExecutionIdentity,
+    projection: BootstrapProjection,
+  ): void {
+    this.db
+      .prepare(
+        "INSERT INTO cli_broker_bootstrap VALUES (?,?) ON CONFLICT(run_id) DO UPDATE SET projection_json=excluded.projection_json",
+      )
+      .run(identity.runId, JSON.stringify(projection));
+  }
+  /** Advisory only; reading this never contacts a provider, changes authority or creates a run. */
+  bootstrapStatus(identity: ExecutionIdentity): BootstrapProjection {
+    const row = this.row(identity);
+    if (!row?.plan) return { state: "unavailable", reason: "no_saved_launch_plan" };
+    const stored = this.db
+      .prepare("SELECT projection_json FROM cli_broker_bootstrap WHERE run_id=?")
+      .get(identity.runId);
+    if (!stored) return { state: "unavailable", reason: "source_not_captured" };
+    try {
+      const bytes = Buffer.from(String(stored.projection_json));
+      if (bytes.length > 16384 || row.observation.kind !== "terminal")
+        throw new Error("bootstrap_projection_invalid");
+      const projection = parseStrictJsonBytes(bytes) as BootstrapProjection;
+      const keys = Object.keys(projection ?? {})
+        .sort()
+        .join(",");
+      if (projection?.state === "confirmed" && keys === "sidecar,state")
+        return {
+          state: "confirmed",
+          sidecar: validateBootstrapExtractionSidecar(
+            projection.sidecar,
+            row.observation,
+            row.plan,
+            this.cachedArtifact(projection.sidecar.source.artifact),
+          ),
+        };
+      if (projection?.state === "pending" && keys === "source,state")
+        return {
+          state: "pending",
+          source: validateBootstrapResponseSource(projection.source, row.observation, row.plan),
+        };
+      if (
+        keys === "reason,state" &&
+        ((projection?.state === "unconfirmed" && projection.reason === "no_unique_bound_v1_ack") ||
+          (projection?.state === "unavailable" && isBootstrapUnavailableReason(projection.reason)))
+      )
+        return projection;
+      throw new Error("bootstrap_projection_invalid");
+    } catch {
+      return { state: "unavailable", reason: "projection_invalid" };
+    }
+  }
+  private captureBootstrapSource(terminal: AcceptedBootstrapTerminal, plan: CliLaunchPlan): void {
+    try {
+      if (!this.selectBootstrapResponseSource) {
+        this.saveBootstrapProjection(terminal.identity, {
+          state: "unavailable",
+          reason: "source_unavailable",
+        });
+        return;
+      }
+      const selected = this.selectBootstrapResponseSource(structuredClone(terminal));
+      if (selected === null) {
+        this.saveBootstrapProjection(terminal.identity, {
+          state: "unavailable",
+          reason: "source_unavailable",
+        });
+        return;
+      }
+      const source = validateBootstrapResponseSource(selected, terminal, plan);
+      this.cachedArtifact(source.artifact);
+      this.saveBootstrapProjection(terminal.identity, { state: "pending", source });
+    } catch {
+      // Includes source selection/validation/storage failures. Never reselect during recovery.
+      try {
+        this.saveBootstrapProjection(terminal.identity, {
+          state: "unavailable",
+          reason: "source_capture_failed",
+        });
+      } catch {
+        /* terminal is already durable */
+      }
+    }
+  }
+  private projectBootstrap(identity: ExecutionIdentity): void {
+    try {
+      const row = this.row(identity);
+      if (!row?.plan || row.observation.kind !== "terminal") return;
+      const projection = this.bootstrapStatus(identity);
+      if (projection.state !== "pending") return;
+      const source = validateBootstrapResponseSource(projection.source, row.observation, row.plan);
+      if (!this.bootstrap.inspect(row.plan.bootstrap)) {
+        this.saveBootstrapProjection(identity, {
+          state: "unavailable",
+          reason: "bootstrap_state_missing_expired_or_changed",
+        });
+        return;
+      }
+      let extracted: ReturnType<typeof extractBootstrapAck>;
+      try {
+        extracted = extractBootstrapAck(
+          row.plan,
+          source,
+          row.observation,
+          this.cachedArtifact(source.artifact),
+        );
+      } catch {
+        this.saveBootstrapProjection(identity, {
+          state: "unconfirmed",
+          reason: "no_unique_bound_v1_ack",
+        });
+        return;
+      }
+      const receipt = this.bootstrap.acknowledge(
+        row.plan.bootstrap.reminder.session,
+        extracted.ackBytes,
+      );
+      const sidecar = createBootstrapExtractionSidecar(
+        source,
+        row.observation,
+        row.plan,
+        extracted,
+        receipt,
+      );
+      this.saveBootstrapProjection(identity, { state: "confirmed", sidecar });
+    } catch {
+      // Pending local projection is recoverable over saved descriptor + immutable cached bytes.
+      // No runtime call, reminder, new challenge, task retry, or task-status change is permitted.
+    }
+  }
+  private cachedArtifact(ref: ArtifactRef): Uint8Array {
+    const existing = this.db
+      .prepare("SELECT ref_json,bytes FROM cli_broker_artifacts WHERE artifact_id=?")
+      .get(ref.artifact_id);
+    if (!existing || !isDeepStrictEqual(JSON.parse(String(existing.ref_json)), ref))
+      throw new Error("cli_artifact_not_collected");
+    const bytes = new Uint8Array(existing.bytes as Uint8Array);
+    if (bytes.length !== ref.size_bytes || sha256Bytes(bytes) !== ref.sha256)
+      throw new Error("cli_artifact_hash_mismatch");
+    return bytes;
   }
   private async cacheArtifact(ref: ArtifactRef): Promise<Uint8Array> {
     if (
@@ -454,7 +694,7 @@ export class CliBrokerService implements TaskExecutor {
     if (existing) {
       if (!isDeepStrictEqual(JSON.parse(String(existing.ref_json)), ref))
         throw new Error("cli_artifact_identity_conflict");
-      return new Uint8Array(existing.bytes as Uint8Array);
+      return this.cachedArtifact(ref);
     }
     const bytes = await this.bounded(this.runtime.readArtifact(ref));
     if (bytes.length !== ref.size_bytes || sha256Bytes(bytes) !== ref.sha256)
@@ -472,11 +712,6 @@ export class CliBrokerService implements TaskExecutor {
     return Uint8Array.from(bytes);
   }
   async readArtifact(ref: ArtifactRef): Promise<Uint8Array> {
-    const existing = this.db
-      .prepare("SELECT ref_json,bytes FROM cli_broker_artifacts WHERE artifact_id=?")
-      .get(ref.artifact_id);
-    if (!existing || !isDeepStrictEqual(JSON.parse(String(existing.ref_json)), ref))
-      throw new Error("cli_artifact_not_collected");
-    return new Uint8Array(existing.bytes as Uint8Array);
+    return this.cachedArtifact(ref);
   }
 }

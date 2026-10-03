@@ -72,6 +72,47 @@ afterEach(() => {
 
 describe("bounded model-session bootstrap", () => {
   it.each([
+    [
+      "claude",
+      "b4e20e1be0d364a4ffd918cb581a7b963a330051c7af71a7d025d3f8e0173cec",
+      "909fd353e91930db70a8f88a2748c2351206f20290af2fb5e5a00832130740d9",
+    ],
+    [
+      "codex",
+      "b4e20e1be0d364a4ffd918cb581a7b963a330051c7af71a7d025d3f8e0173cec",
+      "d834b8588b40b1bfbe67b27a38e66b9237cbe409f92408d9a19c8a8b3c966005",
+    ],
+    [
+      "antigravity",
+      "7d34b1bd830a0cfce52da5576b230a69e73ba029f2af1aa6eb4122257c2586c7",
+      "76a68cc4dca65055f4b357dbec6fc33d55799fcbce16f95e3ba2dda849d3a649",
+    ],
+    [
+      "chatgpt",
+      "b4e20e1be0d364a4ffd918cb581a7b963a330051c7af71a7d025d3f8e0173cec",
+      "8170976e8dd99009d5f916e6de3b11e17f9c64ca578e70266ca7bc526ab043d7",
+    ],
+  ] as const)(
+    "preserves the PR14 v1 %s profile and exact reminder golden bytes",
+    (provider, bootstrapHash, reminderHash) => {
+      const plan = createSessionBootstrap(
+        {
+          sessionId: "00000000-0000-4000-8000-000000000001",
+          provider,
+          role: "response_producer",
+          repoId: "fixture-repo",
+          contextEpoch: 1,
+        },
+        { challengeId: "00000000-0000-4000-8000-000000000002" },
+      );
+      expect(plan.bootstrapSha256).toBe(bootstrapHash);
+      expect(plan.reminderSha256).toBe(reminderHash);
+      expect(parseSessionBootstrap(Buffer.from(plan.reminderJson), reminderHash)).toEqual(
+        plan.reminder,
+      );
+    },
+  );
+  it.each([
     ["claude", "issuer"],
     ["codex", "issuer"],
     ["chatgpt", "response_producer"],
