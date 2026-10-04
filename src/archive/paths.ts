@@ -131,6 +131,17 @@ export function readOwnedFile(path: string, maxBytes: number, policy: PathPolicy
     closeSync(fd);
   }
 }
+/** A short write may progress; a nonprogressing write must never spin inside a transaction. */
+function writeAll(fd: number, bytes: Uint8Array): void {
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const remaining = bytes.byteLength - offset;
+    const written = writeSync(fd, bytes, offset, remaining);
+    if (!Number.isSafeInteger(written) || written <= 0 || written > remaining)
+      throw new ArchiveError("archive_write_verification_failed");
+    offset += written;
+  }
+}
 export function writeNewFile(path: string, bytes: Uint8Array, policy: PathPolicy = {}): void {
   if (bytes.byteLength > MAX_ARCHIVE_FILE_BYTES) throw new ArchiveError("archive_size_limit");
   checkedDirectory(dirname(path), policy, true);
@@ -142,9 +153,7 @@ export function writeNewFile(path: string, bytes: Uint8Array, policy: PathPolicy
     0o600,
   );
   try {
-    let offset = 0;
-    while (offset < bytes.byteLength)
-      offset += writeSync(fd, bytes, offset, bytes.byteLength - offset);
+    writeAll(fd, bytes);
     fsyncSync(fd);
   } finally {
     closeSync(fd);
@@ -162,11 +171,23 @@ export function probeOutputRoot(
   try {
     policy.beforeWrite?.(path);
     checkedDirectory(root, policy);
-    const fd = openSync(path, "wx", 0o600);
+    const fd = openSync(path, "wx+", 0o600);
     created = true;
     try {
-      writeSync(fd, "probe");
+      const probe = Buffer.from("probe");
+      writeAll(fd, probe);
       fsyncSync(fd);
+      const readback = Buffer.alloc(probe.length);
+      let offset = 0;
+      while (offset < readback.length) {
+        const remaining = readback.length - offset;
+        const read = readSync(fd, readback, offset, remaining, offset);
+        if (!Number.isSafeInteger(read) || read <= 0 || read > remaining)
+          throw new ArchiveError("archive_write_verification_failed");
+        offset += read;
+      }
+      if (!readback.equals(probe) || fstatSync(fd).size !== probe.length)
+        throw new ArchiveError("archive_write_verification_failed");
     } finally {
       closeSync(fd);
     }
