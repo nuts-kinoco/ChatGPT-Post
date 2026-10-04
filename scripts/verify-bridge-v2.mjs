@@ -6,10 +6,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   OFFLINE_VERIFICATION_ENV,
+  captureSourceStatus,
+  combinedSourceFields,
   parseTestSummary,
   phaseOutcome,
   repositoryRootIdentity,
+  runWithSourceEvidence,
   sourceMetadata,
+  verificationExitCode,
 } from "./verification-summary.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -60,8 +64,29 @@ phases.push(
     testSummary: true,
   },
 );
-const results = [];
-for (const phase of phases) {
+const gitOptions = {
+  cwd: root,
+  encoding: "utf8",
+  timeout: 10000,
+  maxBuffer: 4 * 1024 * 1024,
+  env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+};
+const captureSource = () => {
+  const identity = repositoryRootIdentity(
+    root,
+    spawnSync("git", ["rev-parse", "--show-toplevel"], gitOptions),
+    realpathSync,
+  );
+  return {
+    capturedAt: new Date().toISOString(),
+    ...sourceMetadata(
+      spawnSync("git", ["rev-parse", "HEAD"], gitOptions),
+      captureSourceStatus(root, output, (args) => spawnSync("git", args, gitOptions)),
+      identity,
+    ),
+  };
+};
+const runPhase = (phase) => {
   const cwd = phase.scope === "root" ? root : join(root, "gui");
   const start = new Date().toISOString();
   // Windows npm is an official .cmd launcher; the command and every argument are fixed literals.
@@ -79,7 +104,7 @@ for (const phase of phases) {
   const outcome = phaseOutcome(child.status, child.error?.code ?? null, phase.testSummary, summary);
   const log = `${phase.scope}-${phase.command}.log`;
   writeFileSync(join(output, log), text, { flag: "wx", mode: 0o600 });
-  results.push({
+  const result = {
     ...phase,
     startedAt: start,
     finishedAt: new Date().toISOString(),
@@ -87,34 +112,29 @@ for (const phase of phases) {
     signal: child.signal,
     ...outcome,
     log,
-  });
-  process.stdout.write(`${phase.scope} ${phase.command}: ${results.at(-1).state}\n`);
-}
+  };
+  process.stdout.write(`${phase.scope} ${phase.command}: ${result.state}\n`);
+  return result;
+};
+// The start snapshot is taken inside this call, before the first phase begins.
+const { sourceBefore, results, sourceAfter, evidence } = runWithSourceEvidence(phases, {
+  capture: captureSource,
+  runPhase,
+});
 const failed = results.some((item) => ["failed", "blocked"].includes(item.state));
 const skipped = results.some((item) => item.skipped > 0 || item.todo > 0);
-const gitOptions = {
-  cwd: root,
-  encoding: "utf8",
-  timeout: 10000,
-  maxBuffer: 4 * 1024 * 1024,
-  env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-};
-const identity = repositoryRootIdentity(
-  root,
-  spawnSync("git", ["rev-parse", "--show-toplevel"], gitOptions),
-  realpathSync,
-);
-const source = sourceMetadata(
-  spawnSync("git", ["rev-parse", "HEAD"], gitOptions),
-  spawnSync("git", ["status", "--porcelain"], gitOptions),
-  identity,
-);
 const report = {
-  schema: "bridge-verification-2",
+  schema: "bridge-verification-3",
   startedAt,
   finishedAt: new Date().toISOString(),
   environment: { platform: process.platform, node: process.version },
-  ...source,
+  // Schema-2 field names, now conservative: sourceHead is set only when the start and end
+  // snapshots agree, and sourceState/dirty are never cleaner than either snapshot.
+  ...combinedSourceFields(sourceBefore, sourceAfter),
+  sourceBefore,
+  sourceAfter,
+  // Phase pass/fail/skip stays separate from whether the results tie to one fixed head.
+  sourceEvidence: evidence,
   result: failed ? "failed_or_blocked" : skipped ? "passed_with_skips" : "passed",
   liveModelRun: false,
   testSelection: "offline_BRIDGE_LIVE_0",
@@ -125,4 +145,14 @@ writeFileSync(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n
   mode: 0o600,
 });
 process.stdout.write(`Report: ${join(output, "report.json")}\n`);
-process.exitCode = failed ? 1 : strict && skipped ? 2 : 0;
+process.stdout.write(
+  evidence.status === "established"
+    ? `Source evidence: established at ${evidence.pinnedHead}\n`
+    : `Source evidence: NOT established (${evidence.reasons.join(", ")}); results do not prove a fixed head\n`,
+);
+process.exitCode = verificationExitCode({
+  failed,
+  skipped,
+  strict,
+  evidenceEstablished: evidence.status === "established",
+});
