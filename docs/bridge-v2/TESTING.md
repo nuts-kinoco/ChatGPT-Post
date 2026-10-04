@@ -47,7 +47,7 @@ node scripts/verify-bridge-v2.mjs --strict
 
 ### ソース状態の記録（開始前と終了後）
 
-最初のフェーズを始める前と最後のフェーズが終わった後の 2 回、`sourceBefore` / `sourceAfter`（`capturedAt`、`sourceHead`、`dirty`、`sourceState`）を保存する。開始前の取得はどのフェーズよりも先に行う。evidence directory が repository の内側にある場合、その directory だけを dirty 判定から除く（自分のログで dirty にならないため。他のファイルは除かない）。
+最初のフェーズを始める前と最後のフェーズが終わった後の 2 回、`sourceBefore` / `sourceAfter`（`capturedAt`、`sourceHead`、`dirty`、`sourceState`）を保存する。開始前の取得はどのフェーズよりも先に行う。evidence directory が repository の内側にある場合、その directory 内の未追跡ログだけを dirty 判定から除く。別の tracked-only status で全 repository を確認するため、同じ directory 内でも追跡済みファイルの変更・削除・staged追加は除外しない。どちらかの status 取得が失敗した場合は dirty 不明とする。
 
 フェーズの結果（passed / failed / passed_with_skips / blocked）と、その結果を 1 つの固定 head に結び付けてよいか（`sourceEvidence`）は別に扱う。`sourceEvidence.status` は次のときだけ `established` で、`pinnedHead` に head が入る。
 

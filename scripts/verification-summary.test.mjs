@@ -282,3 +282,86 @@ test("the evidence directory inside the repository is excluded from the dirty ch
   ]);
   assert.deepEqual(sourceStatusArgs("/repo", "/repo-sibling/run"), ["status", "--porcelain"]);
 });
+
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { captureSourceStatus } from "./verification-summary.mjs";
+test("output exclusion preserves tracked changes and fails closed when either status is unavailable", () => {
+  for (const tracked of [
+    " D output/source.txt\n",
+    " M output/source.txt\n",
+    "A  output/new.txt\n",
+  ]) {
+    const responses = [
+      { status: 0, stdout: "" },
+      { status: 0, stdout: tracked },
+    ];
+    const status = captureSourceStatus("/repo", "/repo/output", () => responses.shift());
+    assert.equal(sourceMetadata({ status: 0, stdout: sha("a") }, status, "matched").dirty, true);
+  }
+  for (const failedIndex of [0, 1]) {
+    const responses = [
+      { status: 0, stdout: "" },
+      { status: 0, stdout: "" },
+    ];
+    responses[failedIndex] = { status: 128, stdout: "" };
+    const status = captureSourceStatus("/repo", "/repo/output", () => responses.shift());
+    assert.equal(sourceMetadata({ status: 0, stdout: sha("a") }, status, "matched").dirty, null);
+  }
+  const calls = [];
+  captureSourceStatus("/repo", "/outside/output", (args) => {
+    calls.push(args);
+    return { status: 0, stdout: "" };
+  });
+  assert.deepEqual(calls, [["status", "--porcelain"]]);
+});
+test("real Git cannot hide deleted tracked source under a newly created evidence directory", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "bridge-source-evidence-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (args) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  const checkedGit = (args) => {
+    const result = git(args);
+    assert.equal(result.status, 0, `fixture git ${args[0]} failed`);
+    return result;
+  };
+  checkedGit(["init", "-q"]);
+  const output = join(root, "evidence");
+  mkdirSync(output);
+  writeFileSync(join(output, "tracked.txt"), "synthetic source");
+  checkedGit(["add", "."]);
+  checkedGit([
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-qm",
+    "fixture",
+  ]);
+  const head = checkedGit(["rev-parse", "HEAD"]);
+  rmSync(output, { recursive: true });
+  mkdirSync(output); // The runner accepts a new output directory after the tracked one was removed.
+  writeFileSync(join(output, "run.log"), "synthetic evidence");
+  assert.equal(
+    checkedGit(sourceStatusArgs(root, output)).stdout,
+    "",
+    "the old exclusion hid the deletion",
+  );
+  const snapshot = sourceMetadata(head, captureSourceStatus(root, output, git), "matched");
+  assert.equal(snapshot.dirty, true);
+  assert.equal(sourceEvidence(snapshot, snapshot).status, "not_established");
+  checkedGit(["restore", "evidence/tracked.txt"]);
+  assert.equal(
+    sourceMetadata(head, captureSourceStatus(root, output, git), "matched").dirty,
+    false,
+    "untracked run logs alone stay excluded",
+  );
+  writeFileSync(join(output, "tracked.txt"), "changed synthetic source");
+  assert.equal(sourceMetadata(head, captureSourceStatus(root, output, git), "matched").dirty, true);
+  checkedGit(["restore", "evidence/tracked.txt"]);
+  writeFileSync(join(output, "new.txt"), "synthetic staged source");
+  checkedGit(["add", "evidence/new.txt"]);
+  assert.equal(sourceMetadata(head, captureSourceStatus(root, output, git), "matched").dirty, true);
+});
