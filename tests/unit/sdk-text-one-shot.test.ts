@@ -1,8 +1,10 @@
 /** Composition only: no real key generation, provider/auth process, connector or filesystem publication. */
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { sdkFixture } from "../helpers/sdk-text-fixture.js";
+import { sdkFixture, syntheticAbsolute } from "../helpers/sdk-text-fixture.js";
 
+const privateTrial = syntheticAbsolute("private", "trial");
 const s = vi.hoisted(() => ({
   config: undefined as unknown,
   exists: false,
@@ -91,12 +93,12 @@ beforeEach(() => {
   s.config = {
     schema: "sdk-text-one-shot-configuration-1",
     profile: f.profile,
-    privateRoot: "/private/trial",
+    privateRoot: privateTrial,
     requesterId: "requester",
     registry: {
       schema: "bridge-project-registry-1",
       revision: 1,
-      defaultOutputRoot: "/private/output",
+      defaultOutputRoot: syntheticAbsolute("private", "output"),
       projects: [
         {
           projectId: f.request.projectRegistration.projectId,
@@ -110,7 +112,7 @@ beforeEach(() => {
     },
   };
   vi.stubEnv("BRIDGE_SDK_TRIAL_APPROVAL", "one-haiku-query-and-two-ephemeral-signing-keys");
-  vi.stubEnv("BRIDGE_SDK_TRIAL_CONFIG", "/private/config.json");
+  vi.stubEnv("BRIDGE_SDK_TRIAL_CONFIG", syntheticAbsolute("private", "config.json"));
   const signals = new EventEmitter();
   vi.stubGlobal("process", {
     ...process,
@@ -119,12 +121,12 @@ beforeEach(() => {
     emit: signals.emit.bind(signals),
     argv: [
       "node",
-      "/bridge/dist/cli/sdk-text.js",
+      syntheticAbsolute("bridge", "dist", "cli", "sdk-text.js"),
       "--deployment",
-      "/bridge/examples/sdk-text-one-shot.mjs",
+      syntheticAbsolute("bridge", "examples", "sdk-text-one-shot.mjs"),
       "trial",
-      "/private/trial/trial-input/request.json",
-      "/private/trial/trial-input/task.md",
+      join(privateTrial, "trial-input", "request.json"),
+      join(privateTrial, "trial-input", "task.md"),
     ],
   });
   s.probe.mockResolvedValue({});
