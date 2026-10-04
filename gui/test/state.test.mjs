@@ -17,6 +17,47 @@ function heldDoctor(lock) {
   return { ok: false, items: [{ name: "lock", ok: false, detail: "held", ...(lock ? { lock } : {}) }] };
 }
 
+test("aggregateState keeps missing, malformed and unrecognized result statuses Unknown", () => {
+  for (const result of [{}, { status: null }, { status: 42 }, { status: {} }, { status: "" }, { status: "running" }, { status: "future_status" }, { error: { code: "AUTH_REQUIRED" } }]) {
+    const scanned = { ...request("request-unknown", 10), hasResult: true, result };
+    const state = aggregateState(heldDoctor({ requestId: "request-unknown" }), [scanned]);
+    assert.equal(state.requests[0].status, "Unknown", JSON.stringify(result));
+  }
+});
+
+test("aggregateState preserves recognized terminal results and blocked failures", () => {
+  const cases = [
+    [{ status: "completed" }, "Completed"],
+    [{ status: "manual_intervention_required" }, "Blocked"],
+    [{ status: "failed" }, "Failed"],
+    [{ status: "failed", error: { code: "INTERNAL_ERROR" } }, "Failed"],
+    [{ status: "failed", error: { code: "INVALID_REQUEST" } }, "Failed"],
+    ...["AUTH_REQUIRED", "CAPTCHA_OR_CHALLENGE", "RATE_LIMITED"].map(code => [{ status: "failed", error: { code } }, "Blocked"]),
+  ];
+  for (const [result, expected] of cases) {
+    const state = aggregateState(heldDoctor({ requestId: "request-terminal" }), [
+      { ...request("request-terminal", 10), hasResult: true, result },
+    ]);
+    assert.equal(state.requests[0].status, expected, JSON.stringify(result));
+  }
+});
+
+test("scanRequests and aggregateState do not invent failure from an incomplete result object", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "bridge-gui-result-status-"));
+  try {
+    const directory = path.join(root, "request-result");
+    await mkdir(directory);
+    await writeFile(path.join(directory, "request.json"), JSON.stringify({ requestId: "request-result" }));
+    await writeFile(path.join(directory, "result.json"), "{}");
+    const scanned = await scanRequests(root);
+    assert.equal(scanned.length, 1);
+    assert.equal(scanned[0].hasResult, true);
+    assert.equal(aggregateState(heldDoctor({ requestId: "request-result" }), scanned).requests[0].status, "Unknown");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("aggregateState prefers a matching structured lock requestId over newest result-less request", () => {
   const state = aggregateState(heldDoctor({ requestId: "request-old" }), [
     request("request-old", 10), request("request-new", 20),
