@@ -120,3 +120,26 @@ factory with zero arguments. The one-shot example checks it before work and afte
 initial probe, before any signing-key intent or key creation. In-probe process signals
 are observed as well. `deployment-startup.test.ts` and the mocked example tests exercise
 these timings without operational keys, login or provider execution.
+
+## Windows候補計画のオフライン検査
+
+`claude-sdk-windows-policy.test.ts` は、明示した架空パスだけでローカルWindowsパスの拒否、
+環境許可リスト、秘密/未知field・getter/proxyの拒否、入力順序に依存しないhash、返却値の
+不変性、Linux既存環境hash/純粋挙動の回帰を確認します。OSや認証を観測した試験ではありません。
+filesystem/registry/process/SDKに依存するimportとfetchを拒否する試験で、候補moduleのimportと
+計画生成がそれらを使わないことを検証します。Linux host probeや保存層の合格には加算しません。
+
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm exec vitest -- run tests/unit/claude-sdk-windows-policy.test.ts tests/unit/claude-sdk-text.test.ts tests/unit/sdk-text-contracts.test.ts
+npm run typecheck
+npm run lint
+```
+
+実行時の `BRIDGE_LIVE` は0を確認してください。Windows未対応のstorage/deployment/registry
+gateをmockやplatform偽装で解除して全往復を合格させません。既存service全往復がWindowsで
+`archive_windows_storage_unimplemented`になる場合は、その失敗と未検証部分をそのまま報告します。
+
+Windows実機でしか受け入れられない項目は、既存認証が候補環境で使えるか、必要なOS環境項目、
+実programFiles/registry設定源と固定CLIの対応、ACL継承・reparse/hardlink/alias・差し替え、
+保存中断後の回復、SQLite関連ファイルの保護です。この純粋APIのテストでは実施しません。
