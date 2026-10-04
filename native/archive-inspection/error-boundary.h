@@ -3,7 +3,8 @@
 #include <cstdint>
 
 namespace archive_inspection {
-// Codes are internal string literals. Constructing/throwing Failure needs no C++ heap.
+// Codes are internal literals; constructing Failure performs no C++ heap allocation.
+// Throwing can allocate in the C++ exception runtime; that allocation is not guaranteed.
 struct Failure {
   const char* code;
   uint32_t win32;
