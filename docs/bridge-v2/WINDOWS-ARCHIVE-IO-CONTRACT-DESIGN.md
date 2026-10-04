@@ -1,16 +1,13 @@
-# Operation-scoped Windows archive I/O contract (design draft)
+# Operation-scoped Windows archive IO contract (corrected candidate)
 
-Status: **design draft for review. No implementation, no native/runtime/OS/auth change.**
-Base: PR #28 head `4253bf373d4564667cf2966a8eaf9cd5b3e3af02` (stacked on PR #27
-`0e5e5a2f8474c9715e696bcf952c797cfb1db143`). PR #28 is an independent-review GO *candidate*;
-this document does not merge or activate it. Windows archive storage stays refused
-(`archive_windows_storage_unimplemented`) until every gate in section 8 passes.
+Status: **corrected design candidate; no native/runtime/OS/auth change or Windows activation.**
+Fixed correction base: PR29 `3765d023683bbb20df24f7f674f2585664be3dd2`, stacked on
+PR28 `4253bf373d4564667cf2966a8eaf9cd5b3e3af02` and PR27
+`0e5e5a2f8474c9715e696bcf952c797cfb1db143`. Existing Windows storage guards remain refused.
 
-Notation: **[F]** = fact in the checked-in source at the base above (file:line). **[P]** = proposal.
-**[V]** = behavior of Windows/NTFS assumed here and *not verified in this work*; it must be
-confirmed by the section 7 matrix on an authorized disposable host before it is relied on.
-Only public source and PR metadata were used. No Microsoft page was re-read for this draft, so
-every API behavior below is either quoted from the existing repo docs or marked [V].
+[F] means a checked-in fact at PR29; [P] is a proposed contract; [V] requires actual
+Windows measurement. Official pages in section 9 were re-read for this correction;
+documentation and fake tests are not integration evidence.
 
 ## 1. Existing facts
 
@@ -26,151 +23,129 @@ every API behavior below is either quoted from the existing repo docs or marked 
 | F8 | PR #27 re-observes each handle and an independently reopened name, but states the window is not atomic, cannot detect change-and-restore, and that observations are "historical, not handles suitable for subsequent secure content IO". It has no durability API. | `inspection.cpp:164-182`, `WINDOWS-ARCHIVE-INSPECTION.md:43-58` |
 | F9 | PR #28 is a pure predicate over that snapshot. Every result, including `candidate`, carries `basis: "historical-snapshot"` and `pathnameIoAuthorization: false`. It requires no reparse, link count 1, canonical single-volume chain, protected basic-ALLOW-only DACLs, explicit trusted SIDs and caller-supplied identity anchors. It has no token/AccessCheck, retained handle, anchor provenance or temporal stability. | `windows-snapshot-policy.ts:41-56,85`, `WINDOWS-ARCHIVE-SNAPSHOT-POLICY.md:35-39` |
 
-**Gap.** Between a PR #28 `candidate` and any later `open/read/write/rename` by pathname, nothing
-binds the checked objects to the objects actually touched. The contract below closes that gap
-for the duration of one operation only.
+**Gap.** PR28's historical candidate does not authorize later pathname IO and PR27
+closes its observation handles. The following model describes a future retained-handle
+contract; it does not implement that contract or authenticate adapter evidence.
 
-## 2. Principles [P]
+## 2. Authority and independent trust [P]
 
-1. **Handle-first.** Authority is a set of live handles, never a path and never a stored decision.
-2. **Same-object binding.** Every byte read or written, and every metadata decision, goes through
-   a handle whose identity tuple was verified. Pathnames are used only to *acquire* handles and are never trusted afterwards.
-3. **Operation scope.** One capability per operation (`read-file`, `create-file`, `publish-directory`,
-   `recover-scan`). It is single use, non-serializable, never cached or shared, and invalid after close.
-4. **Fail closed, report truthfully.** Unknown metadata, unsupported filesystem, or an unproven
-   durability tier is an error or an explicit tier label, never a silent success.
-5. **No new state.** Recovery relies on the existing content-hash idempotence (F5). No journal or marker files.
-6. **Bounded.** Every open, read, write and flush has a per-operation deadline; expiry is an error, never an unbounded wait or a hidden retry.
+One nonserializable operation owns symbolic references to a retained chain and its
+children. Every pre-existing chain member, including existing read/recovery leaves,
+requires an explicit Windows identity anchor with independent provenance. Root-only
+trust is insufficient. Copying the same observation into expected identities is not
+independent provenance. Missing trust refuses; there is no automatic POSIX-pin migration
+or snapshot-derived pin. The real provenance provider and Windows pin schema remain [V].
+Exclusive-created children bind to the live create result within that operation instead
+of pretending a prior identity anchor exists for them.
 
-## 3. Types and binding
+A policy decision must be computed from those same retained handles in the same operation.
+A stale PR28 candidate is rejected. Capability lifetime, anchor provenance and binding
+cannot be proven by plain JSON claims; fake references only simulate these requirements.
 
-```ts
-type ArchiveIdentity = {            // all from the same handle
-  volumeSerialBytes: string;        // as PR27, 16 hex chars (little-endian memory form)
-  fileId128: string;                // FILE_ID_INFO
-  kind: "file" | "directory";
-};
-type ArchiveHandleFacts = ArchiveIdentity & {
-  attributes: number; reparseTag: 0; links: number;     // links must be 1 for files
-  size: bigint | null; deletePending: false;
-  ownerSidHash: string; daclHash: string;               // hashes only; no SID/DACL echoed
-};
-```
+Acquisition uses a retained parent plus exactly one validated component, with no absolute
+open fallback. Root acquisition uses its explicit anchor. Noncanonical paths, UNC/device,
+ADS, dot/empty components, reserved/8.3/case aliases and mapped/subst identity mismatches
+are refused. `NtCreateFile` documents RootDirectory-relative names; exact options and
+required behavior on this host remain [V]. No privilege is enabled.
 
-- **Capability** = {live handle chain root→target, per-handle `ArchiveHandleFacts` taken *after* open,
-  PR #28 decision computed from a snapshot of those same retained handles, root anchor}.
-  A decision computed from an earlier, separate observation is not accepted: `historical-snapshot`
-  stays a label, and the contract adds the missing live retention. [P]
-- **Root anchor.** The existing `OwnedRootIdentity` (F6) gains a Windows variant
-  `{volumeSerialBytes, fileId128}` pinned at the user-triggered root configuration/probe. The first
-  pin is a user-trust action; this draft does not claim to authenticate it. [P]
-- **JS surface.** Handles never cross into JavaScript. The binding returns plain data
-  (bytes, facts hashes, fixed error code) and closes everything before returning, or exposes only
-  an operation object whose methods are the verbs in section 4 and a mandatory `close()`. [P]
-- **Needs a future native entry** (`openArchiveChain`) that returns retained handles plus the snapshot
-  from them. PR #27's `inspectChain` cannot be reused as is (F7, F8). This is a requirement, not an implementation. [P]
+Sharing protection is per held handle, never inherited from a leaf to ancestors.
+One sharing violation is `archive_io_busy`, with no internal retry or sharing relaxation.
+Share modes do not ensure owner/DACL/attributes are immutable, block every hardlink change,
+or detect change-and-restore. Actual sharing/open-child behavior remains [V].
 
-## 4. Acquisition and verification [P]
+## 3. Stable facts and planned transitions [P]
 
-1. **Pre-open (pure).** Reject non-canonical forms before any open: UNC/device/`\\?\`, ADS, DOS 8.3 aliases,
-   trailing dot/space, reserved names, case mismatch, mapped/`subst` drives (reuse PR #27's rules and
-   `portableFilename`, `paths.ts:26-37`).
-2. **Open chain.** Open the root handle, then each component. Preferred: relative-to-parent-handle
-   opens ([V] requires an NT-level API; open decision D1). Fallback: absolute opens in order, where
-   safety comes from step 3, not from the open. Every open uses `OPEN_EXISTING`,
-   `FILE_FLAG_OPEN_REPARSE_POINT`, noninheritable handles, no privilege enabled.
-3. **Verify on the handles, before any content I/O (checkpoint C0).** For each handle: identity equals the
-   anchor (chain, root pin); `GetFinalPathNameByHandle` equals the canonical path; no reparse tag; kind matches; delete-pending false;
-   links == 1 (files); attribute set within the PR #28 subset; owner/DACL equal what PR #28 evaluated;
-   then run the PR #28 predicate on the snapshot of those retained handles (`candidate` required, but never sufficient alone).
-4. **Sharing.** Content and ancestor handles held by an operation use the narrowest sharing that still lets
-   the operation run: files deny write and delete for others; directories deny delete/rename.
-   Protection is **per held handle**: every ancestor and the leaf is held and denies delete individually.
-   No propagation from a child handle to its parents is assumed ([V]: whether an open descendant also blocks
-   a parent rename is measured, not relied on). A sharing violation (AV, indexer, another process) is
-   `archive_io_busy`: no retry inside the operation.
-5. **Re-verify at checkpoints** C1 (before first byte), C2 (after last write and flush, or after last read),
-   C3 (after publication, before the caller commits): re-read the same facts from the same handle and compare the whole tuple.
-   Any difference is `archive_io_metadata_changed`. Limit: change-and-restore between checkpoints is not detectable
-   by comparison alone (F8); only the sharing denial in step 4 bounds it.
+Same-handle facts include volume serial / 128-bit file ID / kind, owner and DACL hashes,
+links, reparse tag, delete-pending, attributes, size and final path. No SID/DACL/path data
+is echoed by error results. Stable identity/security/link facts must match C0 throughout
+C1 (before bytes), C2 (after IO/flush) and C3 (after rename, before commit).
 
-## 5. Verbs
+Size and namespace spelling are phase-specific, not universally immutable:
 
-### 5.1 `read-file(max)`
-Acquire and verify (C0). Size from the handle's end-of-file, bounded by the existing limit. Read with explicit offsets
-until exactly that size, then confirm EOF and an unchanged size (parity with `paths.ts:119-127`). C2 re-check. Close.
-Never read through a path after acquisition.
+- Read: exact bounded size, offsets and EOF; size remains the opened size.
+- Exclusive create: new identity, file size 0, link count 1; writes advance to expected N.
+- Explicit planned write-attribute changes (for example archive marking) must be declared;
+  any unplanned attribute/security/link/reparse/delete-pending change refuses.
+- Rename: staged namespace prefix becomes the destination prefix, but the same retained
+  references and identity/security/link facts remain. No close/reopen substitution.
 
-### 5.2 `create-file(bytes)` (exclusive create + write + flush)
-1. Parent chain acquired and verified (C0). 2. `CREATE_NEW` for the leaf (the O_EXCL equivalent; an existing name is
-`archive_io_exists`, never an overwrite), noninheritable, explicit protected DACL granting only trusted principals and
-including the owner `READ_CONTROL|FILE_READ_ATTRIBUTES` grant that PR #28 requires ([V] attaching the descriptor at creation
-avoids an unprotected window; confirm). Requested rights include data read/write, `READ_CONTROL`, `FILE_READ_ATTRIBUTES`,
-and `DELETE` only when cleanup needs it. 3. Verify the new object on its handle (C0'): new identity not equal to any chain anchor,
-kind file, size 0, links 1, no reparse, final path as expected. 4. Bounded write loop with explicit offsets; zero or negative
-progress, or progress beyond the remainder, is an error (parity with `writeAll`). 5. Read back through the **same handle**, compare
-hash. 6. Flush the file handle (`FlushFileBuffers`); failure is `archive_io_flush_failed`. 7. C2 re-check; record the final tuple
-{identity, size, hash, daclHash, links}. 8. Close.
+Comparisons cannot detect a change followed by restoration between checkpoints. A sharing
+mask does not fix this ACL/attribute limitation. Candidate results make no tamper-prevention claim.
 
-### 5.3 `publish-directory` (stage, publish, verify)
-Keeps the existing shape (F4): `staging-<requestId>-<uuid>` under the verified parent, files created by 5.2.
-- **Binding across rename.** Windows is expected to refuse renaming a directory that has open child handles ([V]), so file handles
-  are closed before publication and the **post-publication reopen is the binding**: reopen every file via a fresh chain and require the
-  recorded tuple from 5.2 (identity, size, hash, daclHash, links = 1). The directory handle is retained through rename.
-- **No-replace publication.** Rename by handle to the destination with replace disabled so an existing destination fails atomically
-  ([V]: `SetFileInformationByHandle` / `FILE_RENAME_INFO` with `ReplaceIfExists = FALSE`, and whether a relative root handle is allowed;
-  open decision D3). This replaces the `existsSync` then `renameSync` race (F4). After rename, the retained directory handle's final path
-  and identity must equal the destination and the staged identity (C3). An existing destination is `archive_io_publish_conflict` (retryable by the caller, as today).
-- **Post-publication mismatch.** If the reopen verification fails (identity, size, hash, DACL hash, links), the caller must not commit.
-  The destination is preserved untouched and reported as `archive_io_post_publish_mismatch`; it is never deleted, repaired or
-  adopted. A later attempt finds the destination, re-verifies exact bytes, fails the same way and refuses (existing F5 behavior).
-  The window between closing file handles and reopening can therefore end in *detection*, not prevention. Whether a
-  POSIX-semantics rename (`FILE_RENAME_FLAG_POSIX_SEMANTICS`, [V]) could rename with file handles still held is part of D6.
-- **Caller commit order is unchanged.** The SQLite transaction (F4) still serializes cooperating publishers; the contract adds atomic no-replace on top of it, not instead of it.
+## 4. Verbs [P]
 
-### 5.4 `recover-scan(parent)`
-Read-only enumeration of one verified parent through its handle. Classify children by name pattern `staging-<requestId>-<uuid>`
-only. Never delete in the scan. Report per child: kind, identity, link/reparse facts, and whether every entry is in the expected set.
+`read-file(max)`: acquire/verify C0/C1; bounded explicit-offset reads; require exact size
+and EOF; C2 verification; return bytes only after verification and IO quiescence.
 
-## 6. Durability and crash recovery [P]
+`create-file(bytes)`: acquire parent C0/C1; relative exclusive create with protected trusted
+security descriptor [V]; bind its new retained handle at size 0; bounded write loop (positive
+short progress is allowed; zero/negative/over-progress fails); same-handle readback; file
+flush; C2 at size N. Standalone create/read then close only when no IO remains pending.
 
-Report a tier on every publication; do not claim more than was proven:
+`publish-directory`: create a unique stage under the retained parent and keep stage, files
+and all parents bound continuously. File close from standalone create is deferred inside
+publication. Require stage directory durability before rename. Candidate rename uses
+`FILE_RENAME_INFO` RootDirectory=retained parent, one relative destination component and
+ReplaceIfExists=FALSE. This is documented API shape, **not verified host behavior**.
+An existing destination (file/empty/nonempty directory) must conflict untouched. No
+check-then-rename, replace, absolute-path, or POSIX-flag workaround is allowed.
 
-| Tier | Meaning on Windows | Claimed? |
-|---|---|---|
-| D0 | none | n/a |
-| D1 | the OS reported completion of `FlushFileBuffers` on the file handle; device write-cache behavior is not controlled or claimed | yes, after 5.2 step 6 |
-| D2 | directory-entry/rename durability | **unproven** [V]: no documented directory-fsync equivalent is used here; `MOVEFILE_WRITE_THROUGH` is path-based and would break handle binding; volume flush needs elevation (prohibited) |
+If retained children/sharing cannot coexist with rename, publication is unsupported.
+After rename: C3 with planned new paths on the same references, same-handle content
+verification, file + directory/parent durability requirements, then candidate DB commit
+and ACK. Failed post-publication verification preserves destination; no commit, deletion,
+repair or adoption by that operation. SQLite serialization of cooperating publishers
+continues to be required; fake effects do not touch a DB.
 
-The contract therefore requires recovery to be correct **without** D2. Crash points and outcomes:
+`recover-scan(parent)`: bound readonly enumeration; never delete during scan. Existing
+staging is never implicitly adopted. Recovery remains the existing content-based protocol;
+operation identities are not persisted. A later same-bytes replacement cannot be promised
+rejected using the earlier operation's identity. Independently verified current chain +
+content may satisfy recovery without proving continuity with the prior operation. No new
+quarantine, journal, persisted identity record or repair protocol is introduced.
 
-| Crash after | Observable state | Recovery |
-|---|---|---|
-| nothing / stage dir created | empty or partial staging | preserve; `recover-scan` reports; cleanup only by 6.1 rules |
-| files written and flushed, not renamed | complete staging, no destination | preserve; republish creates a new staging; never adopt old staging implicitly |
-| rename done, DB not committed | destination exists | verify exact bytes by `read-file` (existing F5 behavior), then commit |
-| rename lost (D2 gap) | staging only | same as the previous row |
-| older orphan staging **and** a verified destination both exist | destination + `staging-*` | destination is authoritative once verified; the orphan is preserved, reported by `recover-scan`, never adopted or auto-deleted |
-| committed | destination + DB row | nothing |
+## 5. Durability and recovery [P]
 
-### 6.1 Failure and cleanup (applies to every verb)
-- Native RAII/`finally`: every handle is closed on every exit; an error never leaks a handle.
-- Errors are fixed codes plus a numeric Win32 code; no path, SID or DACL is echoed (PR #27 convention):
-  `archive_io_identity_changed`, `archive_io_reparse`, `archive_io_links`, `archive_io_metadata_changed`,
-  `archive_io_busy`, `archive_io_timeout`, `archive_io_exists`, `archive_io_flush_failed`, `archive_io_publish_conflict`,
-  `archive_io_post_publish_mismatch`,
-  `archive_io_cleanup_uncertain`, `archive_io_unsupported_filesystem`. They map into the existing `ArchiveError` shape.
-- Cleanup removes only objects **this operation created**, each re-verified on its own handle against the recorded identity
-  before deletion (delete by handle, [V]), bottom-up (files, then child directories, then staging). It never recurses, never
-  follows a reparse point, and never deletes anything it cannot identify. On any doubt it **preserves** and reports
-  `archive_io_cleanup_uncertain` with the staging *name* only (parity with `durable.ts:197`, `store.ts:502`). A cleanup failure never masks the original error.
+D1 means OS-reported file-flush completion only, not controlled device cache behavior.
+D2 means directory/namespace durability and remains unverified on Windows. Existing
+file **and** directory durability criteria are preserved, including barriers before and
+after publication. D1 alone cannot permit publication, DB commit or ACK. Without a proven
+D2 mechanism, actual Windows publication remains unsupported; fake barriers are assumptions.
+
+| Crash/evidence | Recovery |
+|---|---|
+| no destination, partial/complete staging | preserve staging; DB uncommitted; incomplete/no ACK; do not adopt old staging |
+| rename lost, staging only | same preservation row, **never** the destination-exists row; no candidate DB commit |
+| destination exists, DB uncommitted | independently verify full current chain + exact content + file/directory criteria before candidate commit |
+| verified destination plus orphan staging | destination may satisfy the content protocol; orphan preserved and reported |
+| DB committed, destination and contents still verified | candidate completion requires current content/trust/durability verification; DB alone is insufficient |
+| DB committed, rename/file lost, missing destination/file or content mismatch | incomplete/no ACK; preserve staging/evidence; no inferred completion or invented DB repair |
+
+Same-bytes cross-operation replacement remains a limit, including after a previous operation
+refused an identity mismatch. In-operation handle identity is not a durable next-operation pin.
+
+## 6. Deadline, pending IO and cleanup [P]
+
+A deadline is an application failure observation, **not IO completion evidence**.
+`CancelIoEx` requests cancellation and does not wait for completion; success or
+ERROR_NOT_FOUND alone does not prove quiescence. Cancellation can race with successful
+completion. While any issued request is pending: no cleanup, close, publication, DB commit
+or ACK, and resources remain retained. Eventual terminal completion permits finalization,
+not resumption of a timed-out operation. Physical drain latency remains [V].
+
+After quiescence, cleanup may delete only objects this operation exclusive-created and
+re-verified by the same retained references and stable facts, bottom-up, with no unknown
+entries, changed parent, reparse, untrusted identity or recursion. Anything uncertain is
+preserved. Published destinations and pre-existing/orphan staging are preserved. Cleanup
+failure never replaces the first operation error. Close all references only after quiescence;
+pending references are intentionally retained and must not be reported as closed/leak-free.
 
 ## 7. Negative-test matrix
 
-Layers: **U** = TypeScript unit with a deterministic fake native adapter (no OS); **W** = Windows integration on an
-authorized disposable host in owned fixtures only (no user data, no ACL change outside the fixture, no elevation).
-Every W row also asserts: handle count returns to baseline, fixture left byte-identical or preserved as stated.
-"Observe" rows record actual Windows behavior to confirm or refute a [V] assumption; they are not pass/fail until reviewed.
+N1-N29 below retain the original cases, with corrected expectations. A pure fake may represent
+every row; it checks the modeled boundary only. W rows are still unperformed Windows tests,
+not evidence that share modes, NT calls, handle counts or crash durability behave as modeled.
+N11's equality case demonstrates an undetectable comparison limit; it cannot be called prevention.
 
 | ID | Case | How injected | Expected | L |
 |---|---|---|---|---|
@@ -179,16 +154,16 @@ Every W row also asserts: handle count returns to baseline, fixture left byte-id
 | N3 | Target replaced (delete + recreate) between snapshot and open | owned helper process | `archive_io_identity_changed` | W |
 | N4 | Target replaced after open, before read/write | owned helper | blocked by sharing (observe) or C2 mismatch; no foreign bytes returned | W |
 | N5 | Existing hardlink (links 2) at open | `CreateHardLink` in fixture | `archive_io_links` | W |
-| N6 | Hardlink added while handle held | owned helper | blocked (observe) or C2/C3 `archive_io_links`; output quarantined | W |
+| N6 | Hardlink added while handle held | owned helper | blocked (observe) or C2/C3 `archive_io_links`; no ACK; preserve uncertain state; no new quarantine protocol | W |
 | N7 | DACL/owner changed between checkpoints | fixture-local `SetSecurityInfo` | `archive_io_metadata_changed` | W |
 | N8 | Attribute change (readonly, hidden, sparse, compressed, encrypted, offline) | fixture-local | `archive_io_metadata_changed` or PR #28 `attributes_unsupported` | W |
 | N9 | Size change by another writer / truncate / extend during read | helper with and without share | blocked (observe) or `archive_io_metadata_changed`; never a torn read | W |
 | N10 | Delete-pending set via another handle | delete disposition | rejected at C0 or C2 | W |
-| N11 | Change-and-restore of an ACL between checkpoints | helper | **documented undetectable by comparison**; sharing denial effect recorded (observe) | W |
+| N11 | Change-and-restore of an ACL between checkpoints | helper | **documented undetectable by comparison**; sharing does not guarantee ACL/attribute invariance | W |
 | N12 | Exclusive create over an existing file | pre-existing leaf | `archive_io_exists`; existing bytes and DACL untouched | W/U |
 | N13 | Publish onto an existing destination (file, empty directory, non-empty directory) | pre-existing; the empty-directory case confirms or refutes the [V] no-replace behavior | `archive_io_publish_conflict`; destination untouched; staging preserved or cleaned per 6.1 | W/U |
 | N14 | Two concurrent publishers, same destination | two owned processes | exactly one wins; the loser is conflict; no mixed content | W |
-| N15 | Short, zero and over-progress write | fake adapter | error, no loop, cleanup per 6.1 | U |
+| N15 | Short, zero and over-progress write | fake adapter | positive short progress advances bounded loop; zero/negative/over-progress errors; cleanup only after quiescence | U |
 | N16 | Flush failure and read-back mismatch | fake adapter | `archive_io_flush_failed` / hash mismatch; no publication | U |
 | N17 | Crash at each phase (before create, mid-write, after flush, before/after rename, before commit) | kill the owned child process | outcomes exactly as the section 6 table; recovery idempotent | W |
 | N18 | Cleanup after parent swapped to a junction | helper | nothing deleted through it; `archive_io_cleanup_uncertain` | W |
@@ -196,40 +171,36 @@ Every W row also asserts: handle count returns to baseline, fixture left byte-id
 | N20 | Path forms: ADS, 8.3 alias, trailing dot/space, device names, UNC, `\\?\`, case variants, `subst`/mapped drive | inputs | rejected before any open | U/W |
 | N21 | File ID reuse after delete/recreate of the same name | fixture loop | record whether identities differ; if reuse occurs, the held handle (not the ID) must be the binding | W observe |
 | N22 | Unsupported filesystem (no 128-bit ID: FAT/exFAT, network, removable) | volume fixture | `archive_io_unsupported_filesystem` | W |
-| N23 | Sharing violation, oplock holder or slow AV-like reader on the file/ancestor | helper holding it with no share, with an oplock, or reading slowly | `archive_io_busy` or `archive_io_timeout`, single attempt, no retry, no hang past the deadline | W |
+| N23 | Sharing violation, oplock holder or slow AV-like reader on the file/ancestor | helper holding it with no share, with an oplock, or reading slowly | one attempt, no sharing relaxation; timeout is pending/no ACK until IO completes, with no cleanup/close/commit | W |
 | N24 | Denied `READ_CONTROL` / unreadable DACL | fixture ACL | fixed error, no fallback | W |
 | N25 | Oversize file/total/entry count | inputs at and over each limit | existing size-limit errors, nothing written past the limit | U |
 | N26 | Handle leak on every error path above | baseline handle count | no growth | W |
 | N27 | PR #28 `candidate` + stale snapshot (opened earlier) | pass an older decision | rejected: decision not computed from the retained chain | U |
-| N28 | File replaced or altered after close, before the post-publication reopen | helper in the window | `archive_io_post_publish_mismatch`; destination preserved; retry refuses | W |
+| N28 | Continuous binding unavailable / later-operation same-bytes replacement | helper in the window | publication unsupported without continuous binding; in-operation mismatch refuses; later content-only recovery does not guarantee identity rejection | W/U |
 | N29 | Orphan staging plus verified destination | fixture | destination verified, orphan preserved and reported | W/U |
 
-## 8. Gates and sequence
+## 8. Conservative decisions, gates and limits
 
-1. **Design review of this document** (current). No implementation starts before it is closed.
-2. **Interface + fake adapter + U rows** (pure TypeScript, deterministic fault injection). Windows storage still refused.
-3. **Native `openArchiveChain` and verbs** on an authorized disposable host, `/W4 /WX`, existing tooling only.
-4. **W rows N1-N24 and N26-N29**, evidence recorded without SIDs/DACLs/paths. All [V] items are resolved or rejected explicitly.
-5. **Activation** only by an explicit later decision; default remains refusal.
+D1: retained-parent-relative single components only. D2: one busy failure, no relaxed
+sharing/retry. D3: RootDirectory + ReplaceIfExists FALSE is only a candidate pending host
+measurement. D4: preserve file + directory criteria, with no D1 downgrade. D5: independent
+provenance for **every** pre-existing chain member, missing trust refuses, no automatic
+pin migration. D6: continuous children/parent binding through rename; otherwise publication
+unsupported, with no post-reopen/POSIX workaround.
 
-Out of scope here: runtime/supervisor/issuer binding, authentication or ACL changes, any native I/O code, a durability claim stronger than D1.
+Sequence: docs consistency review, then a separate pure state-machine/fake-test commit;
+future native implementation and authorized W measurements only by another explicit task.
+Activation needs a later explicit decision and verified Windows gates. No native dependency,
+real FS adapter, OS ACL/auth change, model call or runtime guard change is part of this work.
 
-## 9. Open decisions for reviewers
+PR29's recorded AGY/Claude review is historical and was not rerun. Its close/reopen and D1
+suggestions are superseded by sections 4-6. No current assertion relies on that review as
+host evidence. A fake model cannot authenticate anchor provenance or adapter assertions,
+prove NTFS race resistance, certify directory durability or enable Windows storage.
 
-- **D1** Relative opens through an NT-level API versus absolute opens plus handle verification (section 4 step 2).
-- **D2** Exact sharing masks and expected AV/indexer interference (section 4 step 4); is `archive_io_busy` without retry acceptable operationally?
-- **D3** Rename primitive and no-replace semantics (section 5.3).
-- **D4** Is D1 durability plus recovery-without-D2 acceptable, or must the activation gate require a proven directory-durability method?
-- **D5** Root anchor provenance and the pin schema change for Windows (section 3).
-- **D6** Whether the post-rename reopen (detection, not prevention) is an acceptable binding, or file handles must be kept open (a different publication shape, possibly POSIX-semantics rename).
+## 9. Official references re-read for this correction
 
-## 10. Second-opinion record
-
-One review pass by `gemini-3.8-flash-low` via the AGY CLI (`--mode plan`, existing authentication, no tools requested), given only this draft and five
-questions. The tool returned no model name; the requested model is the only evidence of what ran. Findings were checked against the source and the
-[V] labels, not accepted wholesale.
-
-- **Adopted:** post-publication tamper handling (5.3, N28); orphan staging next to a verified destination (section 6, N29); D1 reworded to OS-reported completion only;
-  oplock/slow-reader case and per-operation deadlines (principle 6, N23); per-handle (not propagated) sharing protection (section 4).
-- **Kept as [V], not as fact:** the claim that `ReplaceIfExists=FALSE` can overwrite an empty destination directory is unsupported here; N13 now tests it explicitly.
-- **Already in the draft:** strict identity match on reopen (F9/5.3).
+- [NtCreateFile](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile): RootDirectory-relative ObjectName; chosen single-component restriction is stricter.
+- [FILE_RENAME_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info): relative RootDirectory and ReplaceIfExists fields; continuous-child/sharing behavior remains unverified.
+- [CancelIoEx](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex): request cancellation, not completion waiting.
+- [MS-FSA FileRenameInformation](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/87f86c9b-6c2a-4803-84b7-131a74a434fa): reference object-store rename algorithm, not target-host evidence.
