@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { createUiStopSignalQueue, runUiCli } from "../../src/cli/ui.js";
+import { syntheticAbsolute } from "../helpers/sdk-text-fixture.js";
+
+const stateDir = syntheticAbsolute("tmp", "bridge-ui-cli-test");
 
 describe("product UI CLI", () => {
   it("defaults to production, prints the private launch URL, and closes on stop", async () => {
@@ -8,7 +11,7 @@ describe("product UI CLI", () => {
     const options: unknown[] = [];
     let closed = 0;
     const exit = await runUiCli([], {
-      env: { CHATGPT_BRIDGE_RUNTIME_DIR: "/tmp/bridge-ui-cli-test" },
+      env: { CHATGPT_BRIDGE_RUNTIME_DIR: stateDir },
       stdout: (text) => output.push(text),
       start: async (value) => {
         options.push(value);
@@ -22,9 +25,7 @@ describe("product UI CLI", () => {
       waitForStop: async () => {},
     });
     expect(exit).toBe(0);
-    expect(options).toEqual([
-      { profile: "production", port: 0, stateDir: "/tmp/bridge-ui-cli-test" },
-    ]);
+    expect(options).toEqual([{ profile: "production", port: 0, stateDir }]);
     expect(output.join("")).toContain("#token=private");
     expect(closed).toBe(1);
   });

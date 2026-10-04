@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
-import {describeChild,readMarker} from './child-diagnostics.mjs';
+import {describeChild,readMarker,waitForChild} from './child-diagnostics.mjs';
 const root=await mkdtemp(join(process.cwd(),'.issuer-cli-'));
 const id='00000000-0000-4000-8000-000000000001';
 let count=0;
@@ -34,10 +34,9 @@ export async function openDeployment(){state.opened++;save();if(process.env.ISSU
     const marker=join(root,`case-${count}.json`),args=[resolve('dist/cli/bus.js'),'--deployment',module,command,...(mode==='extra-arg'?['/not-allowed']:[])];
     const child=spawn(process.execPath,args,{cwd:process.cwd(),env:{...process.env,ISSUER_TEST_MARKER:marker,ISSUER_TEST_MODE:mode??'',...(mode==='unconfigured'?{ISSUER_TEST_UNCONFIGURED:'1'}:{})},stdio:['pipe','pipe','pipe']});
     let stdout='',stderr='';child.stdout.on('data',b=>{stdout+=b;});child.stderr.on('data',b=>{stderr+=b;});
-    let timedOut=false;const timeout=setTimeout(()=>{timedOut=true;child.kill('SIGKILL');},8000);
-    const ended=new Promise(resolve=>{child.once('error',spawnError=>resolve({spawnError}));child.once('close',(code,signal)=>resolve({code,signal}));});
+    const waiting=waitForChild(child);
     child.stdin.on('error',()=>{});child.stdin.end(input===undefined?'':typeof input==='string'?input:JSON.stringify(input));
-    const result=await ended;clearTimeout(timeout);
+    const result=await waiting.result,timedOut=result.timedOut;
     // Read the marker only after the child has ended; report the first cause before any assertion hides it.
     const markerRead=await readMarker(marker),expectedCode=method&&mode!=='close-error'?0:1;
     if(result.spawnError||timedOut||result.signal!==null||result.code!==expectedCode||markerRead.state!=='ok')throw new Error(describeChild({label:`${command}/${mode??method??'invalid-input'}`,spawnError:result.spawnError,code:result.code,signal:result.signal,timedOut,marker:markerRead,stderr}));
