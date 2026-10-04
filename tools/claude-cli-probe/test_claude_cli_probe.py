@@ -32,6 +32,7 @@ class OfflineTests(unittest.TestCase):
         popen.assert_not_called()
         self.assertEqual(code, 0)
         summary = json.loads(out)
+        self.assertTrue(summary['diagnostic_success'])
         self.assertEqual(summary['mode'], 'offline_fixture')
         self.assertEqual(summary['launch_attempts'], 0)
         self.assertEqual(summary['requested_model'], 'sonnet')
@@ -130,6 +131,62 @@ class LiveTests(unittest.TestCase):
                 code, _ = run_main(argv)
                 self.assertEqual(code, 1, over)
         run.assert_not_called()
+
+    def test_exit_contract_preserves_failure_json_and_private_evidence(self):
+        cases = [
+            ('success', 'exited', 0, '{"result":"PONG"}', 0),
+            ('timeout', 'timeout', -9, '{"result":"PONG"}', 1),
+            ('timeout_zero', 'timeout', 0, '{"result":"PONG"}', 1),
+            ('spawn_error', 'error', None, '', 1),
+            ('child_nonzero', 'exited', 7, '{"result":"PONG"}', 1),
+            ('missing_stdout', 'exited', 0, None, 1),
+            ('malformed_json', 'exited', 0, 'PRIVATE MALFORMED', 1),
+            ('json_null', 'exited', 0, 'null', 1),
+            ('json_array', 'exited', 0, '["PONG"]', 1),
+            ('missing_result', 'exited', 0, '{}', 1),
+            ('nonstring_result', 'exited', 0, '{"result":7}', 1),
+            ('response_mismatch', 'exited', 0, '{"result":"PONG "}', 1),
+            ('missing_exit_code', 'exited', None, '{"result":"PONG"}', 1),
+            ('boolean_exit_code', 'exited', False, '{"result":"PONG"}', 1),
+        ]
+        for name, status, child_code, raw, expected_code in cases:
+            with self.subTest(name=name):
+                run_dir = self.parent / name
+                run_dir.mkdir()
+                if raw is not None:
+                    (run_dir / 'stdout.txt').write_text(raw, encoding='utf-8')
+                (run_dir / 'stderr.txt').write_text('PRIVATE STDERR', encoding='utf-8')
+                record = {'status': status, 'exit_code': child_code, 'pid': 4242,
+                          'direct_child_reaped': True, 'elapsed_seconds': 1.5}
+                (run_dir / 'result.json').write_text(json.dumps(record), encoding='utf-8')
+                with patch.object(tool.probe_once, 'run_once', return_value=(run_dir, record)) as run, \
+                        patch.object(tool.probe_once.subprocess, 'Popen') as popen:
+                    code, out = run_main(self.argv())
+                run.assert_called_once()
+                popen.assert_not_called()
+                self.assertEqual(code, expected_code)
+                summary = json.loads(out)
+                self.assertEqual(summary['diagnostic_success'], expected_code == 0)
+                self.assertEqual(summary['status'], status)
+                self.assertEqual(summary['exit_code'], child_code)
+                self.assertEqual(summary['timed_out'], status == 'timeout')
+                report = json.loads((run_dir / 'report.json').read_text())
+                for key, value in summary.items():
+                    self.assertEqual(report[key], value)
+                self.assertEqual(json.loads((run_dir / 'result.json').read_text()), record)
+                if raw is not None:
+                    self.assertEqual((run_dir / 'stdout.txt').read_text(), raw)
+                self.assertEqual((run_dir / 'stderr.txt').read_text(), 'PRIVATE STDERR')
+                self.assertNotIn('PRIVATE', out)
+                self.assertNotIn(str(run_dir), out)
+
+    def test_diagnostic_exception_is_nonzero_and_redacted(self):
+        with patch.object(tool, 'offline', side_effect=OSError('PRIVATE VALUE')), \
+                patch.object(tool.probe_once, 'run_once') as run:
+            code, out = run_main([])
+        run.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(out), {'status': 'diagnostic_error', 'error_type': 'OSError'})
 
     def test_live_single_call_argv_and_private_report(self):
         with patch.object(tool.probe_once, 'run_once', side_effect=self.fake_run) as run:

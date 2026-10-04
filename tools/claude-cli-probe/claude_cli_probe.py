@@ -23,14 +23,20 @@ def build_summary(payload, record, requested_model, expected_response,
     result = payload.get('result') if isinstance(payload, dict) else None
     num_turns = _int_turns(payload.get('num_turns')) if isinstance(payload, dict) else None
     status = record.get('status')
+    exit_code = record.get('exit_code')
+    response_exact_match = isinstance(result, str) and result == expected_response
+    # Child success alone is insufficient: the requested response must be present.
+    diagnostic_success = (status == 'exited' and type(exit_code) is int
+                          and exit_code == 0 and response_exact_match)
     return {
         'requested_model': usage['requested_model'],
         'actual_models': usage['actual_models'],
         'resolved': usage['resolved'],
         'status': status,
         'timed_out': status == 'timeout',
-        'exit_code': record.get('exit_code'),
-        'response_exact_match': isinstance(result, str) and result == expected_response,
+        'exit_code': exit_code,
+        'response_exact_match': response_exact_match,
+        'diagnostic_success': diagnostic_success,
         'elapsed_seconds': record.get('elapsed_seconds'),
         'timeout_seconds': timeout_seconds,
         'launch_attempts': launch_attempts,
@@ -143,7 +149,7 @@ def main(argv=None):
         print(json.dumps({'status': 'diagnostic_error', 'error_type': type(exc).__name__}))
         return 1
     print(json.dumps(summary, indent=2))
-    return 0
+    return 0 if summary['diagnostic_success'] else 1
 
 
 if __name__ == '__main__':
