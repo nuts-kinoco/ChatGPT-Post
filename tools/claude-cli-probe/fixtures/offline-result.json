@@ -1,0 +1,23 @@
+{
+  "note": "Fictional payload. Not produced by any real run.",
+  "requested_model": "sonnet",
+  "expected_response": "PONG-FICTIONAL",
+  "max_turns": 5,
+  "timeout_seconds": 60,
+  "launch_attempts": 1,
+  "record": {
+    "status": "exited",
+    "exit_code": 0,
+    "elapsed_seconds": 4.2
+  },
+  "payload": {
+    "type": "result",
+    "result": "PONG-FICTIONAL",
+    "num_turns": 2,
+    "session_id": "00000000-0000-4000-8000-000000000000",
+    "modelUsage": {
+      "fictional-model-b": {"inputTokens": 1},
+      "fictional-model-a": {"inputTokens": 2}
+    }
+  }
+}

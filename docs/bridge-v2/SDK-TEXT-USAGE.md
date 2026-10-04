@@ -159,3 +159,36 @@ SDK追加はTaskSpec、普通Chatのmodel選択、renderer policyの意味を変
 生成した試験 request の有効期限は 5 分です。設定・必要な許可・認証の確認を先に終えてから generate し、未確定 dispatch を別 ID で隠さないでください。
 
 同梱 `sdk-text-one-shot.mjs` は一回の trial 専用で、終了後に同じ module を使って status/reconcile/collect はできません。後続コマンド用の再利用可能な host とは別です。終了後は元の証拠・UUID/hash を保存し、元の署名権限が利用できなければ ACK は pending/blocked のままにします。マーカー削除、鍵再生成、新規 request、追加 query を回復手順にしないでください。通常の再利用可能な認可済み host なら、既存レコードの読取り・再検証・配送だけを行えます。
+
+## Windows候補計画の純粋API
+
+`planWindowsSdkCandidatePolicy` (`src/adapters/claude-sdk-windows-policy.ts`) は、明示した
+`executable` / `cwd` / `home` / `configDirectory` / `systemRoot` / `programFiles` の6パスから
+不変の候補データを作ります。filesystem、registry、CLI、SDK、ネットワークを使いません。
+Windows実行profileとして登録・接続されておらず、既存Windows停止条件はすべて維持します。
+
+パスは大文字driveから始まるbackslash区切りの正規化済みローカル絶対パスに限定し、
+drive-relative、UNC/device、ADS、予約名、末尾dot/space、不正文字、1024文字超を拒否します。
+executableは `.exe` 候補です。字面の検証はファイルの存在・同一性・信頼を保証しません。
+case/8.3 alias、reparse/hardlink、owner/ACL、空cwdは後続の実機検証事項です。
+
+候補環境は固定制御値と明示パスから作り、`SystemRoot` / `WINDIR` / `USERPROFILE` / `HOME` /
+`CLAUDE_CONFIG_DIR` を含みます。任意env、秘密入力field、ambient env継承は受け付けず、PATHも
+推測しません。実際のCLI/SDKがこの候補環境で動作するかは未検証です。既存Linux環境とhashは
+変更していません。
+
+managed設定の確認対象は、明示programFiles配下の `ClaudeCode`、`managed-settings.json`、
+`managed-settings.d`、`managed-mcp.json` とHKLM/HKCUの `SOFTWARE\Policies\ClaudeCode` / `Settings`
+です。これは観測対象の一覧で、存在や不在を判定した結果ではありません。
+[Windows設定仕様](https://code.claude.com/docs/en/settings) と
+[managed設定仕様](https://code.claude.com/docs/en/managed-settings) に基づく候補で、固定CLI版との
+一致は後続で確認します。`settingSources: []`でもmanaged設定を無効とみなしません。
+
+`claude-sdk-windows-candidate-policy-1` の `policySha256` は固定順のJSON候補データを識別する
+hashです。承認・認証・保存完了・実行可否の証拠には使いません。返却データにはhostパスが
+含まれるため私有データとして扱い、そのまま公開ログやGitへ送らないでください。
+入力不正時のError.messageは固定codeのみで、入力値を含めません。
+
+候補計画だけではWindows Bridgeは開通しません。私有保存/DBのACL・同一性・永続化、信頼済み
+deployment読込、Windows probe、固定SDK/CLI互換性、署名付き全往復は別の実装・受入事項です。
+固定経路はCLI2.1.288 / SDK0.3.287を維持し、自動更新・fallback・認証変更を導入しません。
