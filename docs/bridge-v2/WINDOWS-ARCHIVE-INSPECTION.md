@@ -96,6 +96,41 @@ not been verified. Replacement between calls is not a concurrent-race proof.
 ACL policy, actual archive reads/writes, durable publication and runtime activation
 are outside these unit checks. This candidate does not complete or pass Bridge v2.
 
+## PR27 exception-boundary correction
+
+Review found that allocating `std::string`/`std::to_string` inside a catch handler
+could itself throw beyond the callback. `Failure` now contains only a literal code
+pointer and a numeric Win32 error. A shared `noexcept` boundary covers the entire
+callback and module initialization; its handlers format errors in a fixed stack
+buffer without C++ heap allocation. The callback's `noexcept` property also has a
+compile-time assertion.
+
+The boundary first checks for a pending JS exception and preserves it. Otherwise
+it checks `napi_throw_error` and confirms the pending state before returning.
+If the exception state cannot be queried, or throwing an error leaves no exception
+pending, it calls `napi_fatal_error` with a fixed diagnostic. This irrecoverable case
+terminates the current Node process; it cannot silently return success/undefined.
+No exception is cleared and no raw metadata is included in these diagnostics.
+
+Use the same build command with `-BuildBoundaryTests`, then run
+`node scripts/test-archive-inspection-boundary.mjs`. The standalone executable uses
+the exact production boundary header with a mock N-API adapter; fault switches and
+the test allocator are never compiled into the addon. Nine boundary cases passed:
+normal return, allocation-denied typed failure with maximum uint32 formatting,
+an actual C++ operator-new failure with stack cleanup, preservation of an existing
+JS exception, failed error notification with an exception nevertheless pending,
+initial and post-notification pending-query failures, failed notification without
+a pending exception, and successful notification without a pending exception.
+The last four cases require an explicit failure exit from owned test processes.
+The production binding was rebuilt with `/W4 /WX` and the original 9 cases / 148
+assertions passed again.
+
+This is deterministic C++ allocator/status injection, not actual V8 or OS memory
+exhaustion. The fatal adapter is replaced by a nonzero exit sentinel in the tests;
+the real `napi_fatal_error` path was not invoked. C++ exception-runtime allocation,
+SEH/access violations, stack overflow, and arbitrary memory corruption are not
+simulated. The archive race/durability limitations above remain unchanged.
+
 ## Primary references
 
 - [GetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo): same-handle security metadata, READ_CONTROL and race limitation.
@@ -103,3 +138,4 @@ are outside these unit checks. This candidate does not complete or pass Bridge v
 - [GetFileInformationByHandleEx](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex).
 - [FILE_ID_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_info).
 - [Node 24.16.0 checksums](https://nodejs.org/download/release/v24.16.0/SHASUMS256.txt).
+- [Node 24.16.0 Node-API errors](https://nodejs.org/download/release/v24.16.0/docs/api/n-api.html#exceptions): status handling, pending exceptions, and fatal errors.

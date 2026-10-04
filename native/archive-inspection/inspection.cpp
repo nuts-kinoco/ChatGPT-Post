@@ -4,18 +4,22 @@
 #include <aclapi.h>
 #include <sddl.h>
 #include <node_api.h>
+#include "error-boundary.h"
 #include <algorithm>
 #include <cstdint>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 // An observation only. No permission decision, content IO, or retained handle.
 namespace {
-struct Failure : std::runtime_error {
-  DWORD win32;
-  explicit Failure(const char* code, DWORD error = 0) : std::runtime_error(code), win32(error) {}
+using archive_inspection::Failure;
+struct NativeErrorApi {
+  static napi_status pending(napi_env env, bool* result) noexcept { return napi_is_exception_pending(env, result); }
+  static napi_status throwError(napi_env env, const char* code, const char* message) noexcept { return napi_throw_error(env, code, message); }
+  [[noreturn]] static void fatal(const char* reason) noexcept {
+    napi_fatal_error("archive_inspection_error_boundary", NAPI_AUTO_LENGTH, reason, NAPI_AUTO_LENGTH);
+  }
 };
 void check(napi_status status) { if (status != napi_ok) throw Failure("archive_inspection_napi_error"); }
 struct Handle {
@@ -146,8 +150,8 @@ napi_value string(napi_env env, const std::string& text) { napi_value v; check(n
 napi_value wide(napi_env env, const std::wstring& text) { napi_value v; check(napi_create_string_utf16(env, reinterpret_cast<const char16_t*>(text.data()), text.size(), &v)); return v; }
 napi_value number(napi_env env, uint32_t n) { napi_value v; check(napi_create_uint32(env, n, &v)); return v; }
 napi_value boolean(napi_env env, bool b) { napi_value v; check(napi_get_boolean(env, b, &v)); return v; }
-napi_value inspect(napi_env env, napi_callback_info info) {
-  try {
+napi_value inspect(napi_env env, napi_callback_info info) noexcept {
+  return archive_inspection::boundary<NativeErrorApi>(env, [&]() -> napi_value {
     size_t count = 2; napi_value args[2]; check(napi_get_cb_info(env, info, &count, args, nullptr, nullptr));
     napi_valuetype type;
     if (count != 1) throw Failure("archive_inspection_invalid_argument");
@@ -199,16 +203,15 @@ napi_value inspect(napi_env env, napi_callback_info info) {
     }
     property(env, result, "entries", entries);
     return result;
-  } catch (const Failure& error) {
-    const auto message = std::string(error.what()) + " (win32=" + std::to_string(error.win32) + ")";
-    napi_throw_error(env, error.what(), message.c_str());
-  } catch (...) { napi_throw_error(env, "archive_inspection_internal_error", "archive_inspection_internal_error"); }
-  return nullptr;
+  });
 }
+static_assert(noexcept(inspect(nullptr, nullptr)), "Node-API callback must not throw C++ exceptions");
 }
 NAPI_MODULE_INIT() {
-  napi_value fn;
-  if (napi_create_function(env, "inspectChain", NAPI_AUTO_LENGTH, inspect, nullptr, &fn) != napi_ok ||
-      napi_set_named_property(env, exports, "inspectChain", fn) != napi_ok) return nullptr;
-  return exports;
+  return archive_inspection::boundary<NativeErrorApi>(env, [&]() -> napi_value {
+    napi_value fn;
+    check(napi_create_function(env, "inspectChain", NAPI_AUTO_LENGTH, inspect, nullptr, &fn));
+    check(napi_set_named_property(env, exports, "inspectChain", fn));
+    return exports;
+  });
 }

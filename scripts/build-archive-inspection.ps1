@@ -3,7 +3,8 @@ param(
   [Parameter(Mandatory)][string]$NodeImportLibrary,
   [Parameter(Mandatory)][string]$MsvcDirectory,
   [Parameter(Mandatory)][string]$WindowsSdkDirectory,
-  [Parameter(Mandatory)][string]$WindowsSdkVersion
+  [Parameter(Mandatory)][string]$WindowsSdkVersion,
+  [switch]$BuildBoundaryTests
 )
 $ErrorActionPreference = 'Stop'
 if (-not [Environment]::Is64BitProcess -or $env:OS -ne 'Windows_NT') { throw 'Windows x64 build required' }
@@ -16,16 +17,17 @@ foreach ($required in @($compiler, $NodeImportLibrary, (Join-Path $NodeIncludeDi
   if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw 'Missing existing build input' }
 }
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
-$arguments = @('/nologo', '/std:c++17', '/EHsc', '/MD', '/LD', '/W4', '/WX',
+$compileArguments = @('/nologo', '/std:c++17', '/EHsc', '/MD', '/W4', '/WX',
   '/D_WIN32_WINNT=0x0A00', '/DNAPI_VERSION=8',
   "/I$NodeIncludeDirectory", "/I$(Join-Path $MsvcDirectory 'include')")
 foreach ($include in @('ucrt', 'shared', 'um')) {
-  $arguments += "/I$(Join-Path $WindowsSdkDirectory "Include/$WindowsSdkVersion/$include")"
+  $compileArguments += "/I$(Join-Path $WindowsSdkDirectory "Include/$WindowsSdkVersion/$include")"
 }
-$arguments += @("/Fo$(Join-Path $outputDirectory 'inspection.obj')", $source, '/link', '/INCREMENTAL:NO',
+$linkArguments = @('/INCREMENTAL:NO',
   "/LIBPATH:$(Join-Path $MsvcDirectory 'lib/x64')",
   "/LIBPATH:$(Join-Path $WindowsSdkDirectory "Lib/$WindowsSdkVersion/ucrt/x64")",
-  "/LIBPATH:$(Join-Path $WindowsSdkDirectory "Lib/$WindowsSdkVersion/um/x64")",
+  "/LIBPATH:$(Join-Path $WindowsSdkDirectory "Lib/$WindowsSdkVersion/um/x64")")
+$arguments = $compileArguments + @('/LD', "/Fo$(Join-Path $outputDirectory 'inspection.obj')", $source, '/link') + $linkArguments + @(
   $NodeImportLibrary, 'Advapi32.lib', 'Kernel32.lib',
   "/IMPLIB:$(Join-Path $outputDirectory 'archive-inspection.lib')",
   "/OUT:$(Join-Path $outputDirectory 'archive-inspection.node')")
@@ -34,5 +36,13 @@ try {
   $env:PATH = "$compilerDirectory;$previousPath"
   & $compiler @arguments
   if ($LASTEXITCODE -ne 0) { throw 'Archive observation build failed' }
+  if ($BuildBoundaryTests) {
+    $testArguments = $compileArguments + @(
+      "/Fo$(Join-Path $outputDirectory 'error-boundary-test.obj')",
+      "/Fe$(Join-Path $outputDirectory 'error-boundary-test.exe')",
+      (Join-Path $repository 'native/archive-inspection/error-boundary-test.cpp'), '/link') + $linkArguments
+    & $compiler @testArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Archive error-boundary test build failed' }
+  }
 } finally { $env:PATH = $previousPath }
 Write-Output 'Built dist/archive-inspection/archive-inspection.node'
