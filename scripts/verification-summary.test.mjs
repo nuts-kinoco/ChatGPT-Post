@@ -130,3 +130,155 @@ test("only the canonical script repository root can supply source identity", () 
   );
   assert.equal(sourceMetadata(head, clean).sourceState, "unavailable");
 });
+
+import {
+  combinedSourceFields,
+  runWithSourceEvidence,
+  sourceEvidence,
+  sourceStatusArgs,
+  verificationExitCode,
+} from "./verification-summary.mjs";
+const sha = (c) => c.repeat(40);
+const snap = (head, status, identity = "matched") =>
+  sourceMetadata(
+    head === null ? { status: 128, stdout: "" } : { status: 0, stdout: `${head}\n` },
+    status === null ? { status: 128, stdout: "" } : { status: 0, stdout: status },
+    identity,
+  );
+const clean = (c = "a") => snap(sha(c), "");
+test("the same clean HEAD before and after is the only established fixed-head evidence", () => {
+  const evidence = sourceEvidence(clean(), clean());
+  assert.equal(evidence.status, "established");
+  assert.equal(evidence.pinnedHead, sha("a"));
+  assert.deepEqual(evidence.reasons, []);
+  assert.deepEqual(combinedSourceFields(clean(), clean()), {
+    sourceHead: sha("a"),
+    dirty: false,
+    sourceState: "clean",
+  });
+});
+test("a different HEAD after the run is not fixed-head evidence", () => {
+  const evidence = sourceEvidence(clean("a"), clean("b"));
+  assert.equal(evidence.status, "not_established");
+  assert.equal(evidence.pinnedHead, null);
+  assert.deepEqual(evidence.reasons, ["head_changed"]);
+  assert.deepEqual(combinedSourceFields(clean("a"), clean("b")), {
+    sourceHead: null,
+    dirty: false,
+    sourceState: "head_changed",
+  });
+});
+test("a dirty tree at the start or at the end is not fixed-head evidence", () => {
+  const dirty = snap(sha("a"), " M file\n");
+  assert.deepEqual(sourceEvidence(dirty, clean()).reasons, ["dirty_before"]);
+  assert.deepEqual(sourceEvidence(clean(), dirty).reasons, ["dirty_after"]);
+  assert.deepEqual(sourceEvidence(dirty, dirty).reasons, ["dirty_before", "dirty_after"]);
+  assert.equal(sourceEvidence(dirty, dirty).status, "not_established");
+  assert.deepEqual(combinedSourceFields(dirty, clean()), {
+    sourceHead: sha("a"),
+    dirty: true,
+    sourceState: "dirty",
+  });
+});
+test("Git information missing on one side never counts as clean or matching", () => {
+  const unavailable = snap(null, null);
+  const headOnly = snap(sha("a"), null);
+  assert.deepEqual(sourceEvidence(clean(), unavailable).reasons, ["git_unavailable_after"]);
+  assert.deepEqual(sourceEvidence(unavailable, clean()).reasons, ["git_unavailable_before"]);
+  assert.deepEqual(sourceEvidence(clean(), headOnly).reasons, ["dirty_unknown_after"]);
+  assert.equal(sourceEvidence(headOnly, headOnly).status, "not_established");
+  assert.equal(sourceEvidence(undefined, clean()).status, "not_established");
+  assert.deepEqual(combinedSourceFields(clean(), unavailable), {
+    sourceHead: null,
+    dirty: null,
+    sourceState: "unavailable",
+  });
+  assert.deepEqual(combinedSourceFields(clean(), headOnly), {
+    sourceHead: sha("a"),
+    dirty: null,
+    sourceState: "head_only",
+  });
+});
+test("a repository root mismatch on either side is not fixed-head evidence", () => {
+  const mismatch = snap(sha("a"), "", "mismatch");
+  assert.deepEqual(sourceEvidence(mismatch, clean()).reasons, ["root_mismatch_before"]);
+  assert.deepEqual(sourceEvidence(clean(), mismatch).reasons, ["root_mismatch_after"]);
+  assert.equal(combinedSourceFields(clean(), mismatch).sourceState, "root_mismatch");
+  assert.equal(combinedSourceFields(clean(), mismatch).sourceHead, null);
+});
+test("matching start and end snapshots do not claim whole-run immutability", () => {
+  // A checkout that changes and returns, or a content edit inside an already-dirty tree, leaves
+  // the two observations identical. The evidence carries its own limited scope.
+  const evidence = sourceEvidence(clean(), clean());
+  assert.equal(evidence.scope, "start_and_end_snapshots_only");
+  const dirtyBefore = snap(sha("a"), " M file\n");
+  const dirtyAfter = snap(sha("a"), " M file\n M other\n");
+  assert.equal(sourceEvidence(dirtyBefore, dirtyAfter).status, "not_established");
+});
+test("the start snapshot is taken before any phase begins and the end one after the last", () => {
+  const events = [];
+  const heads = [sha("a"), sha("b")]; // start snapshot, then end snapshot
+  const out = runWithSourceEvidence(["p1", "p2"], {
+    capture: () => {
+      events.push("capture");
+      return snap(heads.shift(), "");
+    },
+    runPhase: (phase) => {
+      events.push(phase);
+      return { phase };
+    },
+  });
+  assert.deepEqual(events, ["capture", "p1", "p2", "capture"]);
+  assert.deepEqual(out.results, [{ phase: "p1" }, { phase: "p2" }]);
+  assert.equal(out.sourceBefore.sourceHead, sha("a"));
+  assert.equal(out.sourceAfter.sourceHead, sha("b"));
+  assert.deepEqual(out.evidence.reasons, ["head_changed"]);
+});
+test("a HEAD change during the run is reported even when every phase passed", () => {
+  let current = sha("a");
+  const out = runWithSourceEvidence(["p1", "p2", "p3"], {
+    capture: () => snap(current, ""),
+    runPhase: (phase) => {
+      if (phase === "p2") current = sha("b");
+      return { phase, state: "passed" };
+    },
+  });
+  assert.equal(
+    out.results.every((r) => r.state === "passed"),
+    true,
+  );
+  assert.equal(out.evidence.status, "not_established");
+  assert.equal(
+    verificationExitCode({
+      failed: false,
+      skipped: false,
+      strict: true,
+      evidenceEstablished: out.evidence.status === "established",
+    }),
+    3,
+  );
+});
+test("exit values keep 0/1/2 and add 3 only for strict runs without source evidence", () => {
+  const code = (failed, skipped, strict, evidenceEstablished) =>
+    verificationExitCode({ failed, skipped, strict, evidenceEstablished });
+  assert.equal(code(false, false, true, true), 0);
+  assert.equal(code(true, false, false, true), 1);
+  assert.equal(code(true, true, true, false), 1, "a failed phase stays 1");
+  assert.equal(code(false, true, true, true), 2);
+  assert.equal(code(false, true, true, false), 2, "skips are reported before missing evidence");
+  assert.equal(code(false, false, true, false), 3);
+  assert.equal(code(false, false, false, false), 0, "non-strict exit values are unchanged");
+  assert.equal(code(false, true, false, true), 0);
+});
+test("the evidence directory inside the repository is excluded from the dirty check only", () => {
+  assert.deepEqual(sourceStatusArgs("/repo", "/other/run"), ["status", "--porcelain"]);
+  assert.deepEqual(sourceStatusArgs("/repo", "/repo"), ["status", "--porcelain"]);
+  assert.deepEqual(sourceStatusArgs("/repo", "/repo/runtime/verification/x"), [
+    "status",
+    "--porcelain",
+    "--",
+    ".",
+    ":(exclude,literal)runtime/verification/x",
+  ]);
+  assert.deepEqual(sourceStatusArgs("/repo", "/repo-sibling/run"), ["status", "--porcelain"]);
+});

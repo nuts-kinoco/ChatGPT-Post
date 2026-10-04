@@ -41,9 +41,38 @@ node scripts/verify-bridge-v2.mjs --strict
 ```
 
 結果は新しい `runtime/verification/<timestamp>/report.json` と command 別ログ。
-終了 0=全検査成功かつ skipなし、1=失敗/実行block、2=strictでskip残存。
-既存 evidence directory は上書きしない。report schema は `bridge-verification-2`。
+終了 0=全検査成功かつ skipなし、1=失敗/実行block、2=strictでskip残存、3=strictでsource証拠が不成立（下記）。
+既存 evidence directory は上書きしない。report schema は `bridge-verification-3`。
 `.sourceHead`、`.dirty`、`.sourceState` を確認し、汚れた checkout や Git 情報のない source copy の結果を公開済み commit の検証と誤認しない。Git 不明や別の親 repository は null/unavailable または root_mismatch、test summary 不明は blocked であり、0 skips にしない。cloud で 56 browser skip が残る場合は strict の終了 2 が正しい。todo も未実行として扱う。
+
+### ソース状態の記録（開始前と終了後）
+
+最初のフェーズを始める前と最後のフェーズが終わった後の 2 回、`sourceBefore` / `sourceAfter`（`capturedAt`、`sourceHead`、`dirty`、`sourceState`）を保存する。開始前の取得はどのフェーズよりも先に行う。evidence directory が repository の内側にある場合、その directory だけを dirty 判定から除く（自分のログで dirty にならないため。他のファイルは除かない）。
+
+フェーズの結果（passed / failed / passed_with_skips / blocked）と、その結果を 1 つの固定 head に結び付けてよいか（`sourceEvidence`）は別に扱う。`sourceEvidence.status` は次のときだけ `established` で、`pinnedHead` に head が入る。
+
+- 開始前と終了後の両方で `sourceState` が `clean`（repository root 一致、Git 情報が揃っている）
+- 開始前と終了後の `sourceHead` が同一
+
+それ以外は `not_established` で、`reasons` に次を入れる。フェーズがすべて passed でも、`not_established` なら固定 head の検証が成立したとは言えない。
+
+| reason | 意味 |
+|---|---|
+| `head_changed` | 開始前と終了後で HEAD が違う（前半のフェーズ結果は終了時 HEAD のものではない可能性がある） |
+| `dirty_before` / `dirty_after` | その時点で未コミットの変更または未追跡ファイルがある |
+| `dirty_unknown_before` / `dirty_unknown_after` | HEAD は取れたが `git status` が取れない（clean とは扱わない） |
+| `git_unavailable_before` / `git_unavailable_after` | HEAD も取れない |
+| `root_mismatch_before` / `root_mismatch_after` | 親 repository など、スクリプトの repository root と違う Git を見ている |
+
+限界: これは 2 時点の比較であり、実行期間全体で変わらなかったことの証明ではない。途中で変更して元に戻した場合や、すでに dirty な tree の中身が変わった場合は検知できない（`sourceEvidence.scope` は `start_and_end_snapshots_only`）。各フェーズの観測を増やす場合は別の限定拡張として提案する。native な監視は含めない。
+
+### schema と終了値の互換性
+
+- schema は `bridge-verification-3`。`bridge-verification-2` の項目名はすべて残す。追加項目は `sourceBefore`、`sourceAfter`、`sourceEvidence`。
+- 旧項目の意味は保守的に変わった。`sourceHead` は開始前と終了後が同じときだけ入り、違うときは null。`sourceState` は両方の状態のうち悪い方（`root_mismatch` > `unavailable` > `head_changed` > `dirty` > `head_only` > `clean`）。`dirty` はどちらかが true なら true、どちらかが不明なら null、両方 false のときだけ false。旧項目だけを読む処理でも、成立していない証拠を clean と読まない。
+- `result` はフェーズ集計のままで、source 証拠は含まない。固定 head の検証として扱うには `sourceEvidence.status` も見る。実行の最後に `Source evidence: ...` を 1 行出す。
+- 終了値 0/1/2 の意味は変えない。3 を新設し、`--strict` で、失敗とskipがなく、source 証拠が `not_established` のときだけ返す（優先順は 1、2、3）。`--strict` なしの終了値は従来どおりで、source 証拠が不成立でも 0 になり得るため、`sourceEvidence` と標準出力で確認する。
+- 過去の `bridge-verification-1` / `-2` の report は書き換えない。旧 head の件数を新しい head の件数として転記しない（読み取る側は schema で分岐する）。
 
 旧 `bridge-verification-1` の skipped フィールドは Vitest の Test Files 数を誤って数える場合がある。過去の evidence は書換えず、その raw log の Tests 行を照合するか v2 で再検査する。root/GUI/compiled/focused の再実行件数を合算して検証件数を水増ししない。
 

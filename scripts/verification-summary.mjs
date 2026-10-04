@@ -1,4 +1,5 @@
 /** Parse named runner summaries only; never confuse skipped files with skipped tests. */
+import { isAbsolute, relative, sep } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 const count = (value) =>
   /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
@@ -157,3 +158,68 @@ export const OFFLINE_VERIFICATION_ENV = Object.freeze({
   FORCE_COLOR: "0",
   BRIDGE_LIVE: "0",
 });
+/**
+ * Start/end source snapshots. This compares two observations only: it cannot see a checkout that
+ * changed and was restored mid-run, nor a content change inside an already-dirty tree.
+ */
+const SIDE_REASON = {
+  root_mismatch: "root_mismatch",
+  unavailable: "git_unavailable",
+  head_only: "dirty_unknown",
+  dirty: "dirty",
+};
+export function sourceEvidence(before, after) {
+  const reasons = [];
+  for (const [side, snapshot] of [
+    ["before", before],
+    ["after", after],
+  ]) {
+    const state = snapshot?.sourceState;
+    if (state === "clean") continue;
+    reasons.push(`${SIDE_REASON[state] ?? "git_unavailable"}_${side}`);
+  }
+  const headsKnown = Boolean(before?.sourceHead) && Boolean(after?.sourceHead);
+  if (headsKnown && before.sourceHead !== after.sourceHead) reasons.push("head_changed");
+  const established = reasons.length === 0 && headsKnown;
+  return {
+    status: established ? "established" : "not_established",
+    pinnedHead: established ? before.sourceHead : null,
+    reasons,
+    scope: "start_and_end_snapshots_only",
+  };
+}
+const STATE_RANK = ["root_mismatch", "unavailable", "head_changed", "dirty", "head_only", "clean"];
+/** Conservative values for the schema-2 top-level fields; never cleaner than either snapshot. */
+export function combinedSourceFields(before, after) {
+  const sameHead =
+    before?.sourceHead && before.sourceHead === after?.sourceHead ? before.sourceHead : null;
+  const states = [before?.sourceState ?? "unavailable", after?.sourceState ?? "unavailable"];
+  if (before?.sourceHead && after?.sourceHead && !sameHead) states.push("head_changed");
+  const sourceState = STATE_RANK.find((state) => states.includes(state)) ?? "unavailable";
+  const dirtyValues = [before?.dirty ?? null, after?.dirty ?? null];
+  const dirty = dirtyValues.includes(true) ? true : dirtyValues.includes(null) ? null : false;
+  return { sourceHead: sameHead, dirty, sourceState };
+}
+/** git status arguments that skip this run's own evidence directory when it is inside the repo. */
+export function sourceStatusArgs(root, output) {
+  const rel = relative(root, output);
+  const inside = rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  return inside
+    ? ["status", "--porcelain", "--", ".", `:(exclude,literal)${rel.split(sep).join("/")}`]
+    : ["status", "--porcelain"];
+}
+/** The start snapshot is taken before any phase starts; the end snapshot after the last one ends. */
+export function runWithSourceEvidence(phases, { capture, runPhase }) {
+  const sourceBefore = capture();
+  const results = [];
+  for (const phase of phases) results.push(runPhase(phase));
+  const sourceAfter = capture();
+  return { sourceBefore, results, sourceAfter, evidence: sourceEvidence(sourceBefore, sourceAfter) };
+}
+/** 0 ok, 1 failed/blocked, 2 strict + skips, 3 strict + source evidence not established. */
+export function verificationExitCode({ failed, skipped, strict, evidenceEstablished }) {
+  if (failed) return 1;
+  if (strict && skipped) return 2;
+  if (strict && !evidenceEstablished) return 3;
+  return 0;
+}
