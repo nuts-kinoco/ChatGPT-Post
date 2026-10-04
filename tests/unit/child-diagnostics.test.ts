@@ -1,10 +1,11 @@
 /** Test-only helper regression: diagnostics are structured, bounded and never echo secrets. */
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ALLOWED_ERROR_CODES,
   DIAGNOSTIC_LIMIT,
@@ -214,6 +215,94 @@ describe("child wait ordering", () => {
       expect(await readMarker(dir)).toEqual({ state: "unreadable" });
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("spawn-failure grace timer", () => {
+  const fakeChild = () =>
+    Object.assign(new EventEmitter(), {
+      pid: undefined as number | undefined,
+      exitCode: null,
+      signalCode: null,
+      kill: () => true,
+    });
+  const timeouts = () =>
+    process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+  it("real spawn failure resolves only after close, reads the marker after close, and leaves no timer", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "child-grace-"));
+    try {
+      const marker = join(dir, "marker.json");
+      const child = spawn(join(tmpdir(), "definitely-not-an-executable-xyz"), []);
+      const events: string[] = [];
+      child.on("error", () => events.push("error"));
+      child.on("close", () => {
+        events.push("close");
+        writeFileSync(marker, '{"writtenOnClose":true}'); // exists only once close has fired
+      });
+      const before = timeouts();
+      const result = await waitForChild(child, {
+        timeoutMs: 60_000,
+        spawnFailureGraceMs: 60_000,
+      }).result.then((r: unknown) => {
+        events.push("settled");
+        return r;
+      });
+      expect(events).toEqual(["error", "close", "settled"]);
+      expect((result as { spawnError: { code: string } }).spawnError.code).toBe("ENOENT");
+      expect(await readMarker(marker)).toEqual({ state: "ok", value: { writtenOnClose: true } });
+      expect(timeouts()).toBeLessThanOrEqual(before); // neither the 60 s timeout nor grace timer remains
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  it("clears the pending grace timer when close arrives after the error", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      const waiting = waitForChild(child as never, {
+        timeoutMs: 60_000,
+        spawnFailureGraceMs: 5_000,
+      });
+      child.emit("error", Object.assign(new Error("x"), { code: "ENOENT" }));
+      expect(vi.getTimerCount()).toBe(2); // timeout + grace
+      child.emit("close", -2, null);
+      await waiting.result;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("dispose clears the grace timer too", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      const waiting = waitForChild(child as never, {
+        timeoutMs: 60_000,
+        spawnFailureGraceMs: 5_000,
+      });
+      child.emit("error", Object.assign(new Error("x"), { code: "ENOENT" }));
+      expect(vi.getTimerCount()).toBe(2);
+      waiting.dispose();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("does not arm a grace timer when close already happened", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild();
+      const waiting = waitForChild(child as never, {
+        timeoutMs: 60_000,
+        spawnFailureGraceMs: 5_000,
+      });
+      child.emit("close", -2, null);
+      await waiting.result;
+      child.emit("error", Object.assign(new Error("late"), { code: "ENOENT" }));
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

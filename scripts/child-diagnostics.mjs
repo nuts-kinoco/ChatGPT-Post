@@ -87,6 +87,8 @@ export function waitForChild(child, { timeoutMs = 8000, spawnFailureGraceMs = 20
   let spawnError;
   let timedOut = false;
   let ended = false;
+  let graceTimer;
+  let closed = false;
   const timer = setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null && !ended) {
       timedOut = true;
@@ -99,19 +101,27 @@ export function waitForChild(child, { timeoutMs = 8000, spawnFailureGraceMs = 20
   const settled = new Promise((resolve) => {
     child.once("error", (error) => {
       spawnError = error;
-      if (child.pid === undefined) {
+      if (child.pid === undefined && !closed) {
         ended = true;
-        setTimeout(() => resolve({ code: null, signal: null }), spawnFailureGraceMs);
+        graceTimer = setTimeout(() => resolve({ code: null, signal: null }), spawnFailureGraceMs);
       }
     });
-    child.once("close", (code, signal) => resolve({ code, signal }));
+    child.once("close", (code, signal) => {
+      closed = true;
+      clearTimeout(graceTimer);
+      resolve({ code, signal });
+    });
   });
   return {
     result: settled.then((r) => {
       clearTimeout(timer);
+      clearTimeout(graceTimer);
       return { ...r, spawnError, timedOut };
     }),
     failed: () => ended || spawnError !== undefined,
-    dispose: () => clearTimeout(timer),
+    dispose: () => {
+      clearTimeout(timer);
+      clearTimeout(graceTimer);
+    },
   };
 }
