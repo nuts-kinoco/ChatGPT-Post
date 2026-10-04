@@ -189,13 +189,16 @@ describe("Windows IO fake contract (never enables storage)", () => {
         files: Array.from({ length: 129 }, (_, i) => ({ ...first, name: `f${i}`, bytes: [] })),
       }).firstError,
     ).toBe("archive_size_limit");
+    // Reuse the sparse payload: the contract sums each file's declared length,
+    // so separate backing arrays only add hundreds of MiB of test-runner pressure.
+    const fullSizeBytes = new Array(16 * 1024 * 1024);
     expect(
       beginWindowsIoModel({
         ...p,
         files: Array.from({ length: 5 }, (_, i) => ({
           ...first,
           name: `f${i}`,
-          bytes: new Array(16 * 1024 * 1024),
+          bytes: fullSizeBytes,
         })),
       }).firstError,
     ).toBe("archive_size_limit");

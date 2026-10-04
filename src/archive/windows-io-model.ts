@@ -88,6 +88,7 @@ export interface ModelCommand {
 export interface ModelReply {
   readonly operation: symbol;
   readonly error?: string;
+  /** Explicit newly owned references, retained for close even on failed/late completion. */
   readonly bound?: readonly ModelBound[];
   readonly policy?: {
     readonly status: "candidate" | "rejected";
@@ -134,7 +135,8 @@ export type ModelEvent =
 
 const FILE_LIMIT = 16 * 1024 * 1024,
   TOTAL_LIMIT = 64 * 1024 * 1024,
-  ENTRY_LIMIT = 128;
+  ENTRY_LIMIT = 128,
+  ANCESTOR_LIMIT = 128;
 // These checks validate fake data only. Symbols and labels cannot authenticate a real adapter.
 function record(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -414,7 +416,7 @@ function beginValidatedPlan(plan: ModelPlan): ModelState {
     ...plan,
     anchors: Object.freeze(
       plan.anchors
-        .slice(0, ENTRY_LIMIT + 1)
+        .slice(0, ANCESTOR_LIMIT + 1)
         .map((a) => Object.freeze({ ...a, facts: Object.freeze({ ...a.facts }) })),
     ),
     files: Object.freeze(
@@ -453,7 +455,7 @@ function beginValidatedPlan(plan: ModelPlan): ModelState {
   if (oversize) return fail(s, "archive_size_limit");
   if (
     !copy.anchors.length ||
-    copy.anchors.length > ENTRY_LIMIT ||
+    copy.anchors.length > ANCESTOR_LIMIT ||
     copy.anchors.some((a) => a.provenance !== "independent" || typeof a.record !== "symbol")
   )
     return fail(s, "archive_io_trust_missing");
@@ -590,7 +592,16 @@ export function advanceWindowsIoModel(s: ModelState, input: unknown): ModelState
           ackCandidate: false,
         })
       : fail(s, "archive_io_timeout");
-  if (event.type === "cancel-returned") return s; // CancelIoEx return is never a completion.
+  // Cancellation intent stops forward progress, but its return never drains pending IO.
+  if (event.type === "cancel-returned")
+    return s.cancellationRequested
+      ? s
+      : Object.freeze({
+          ...s,
+          firstError: s.firstError ?? "archive_io_cancelled",
+          cancellationRequested: true,
+          ackCandidate: false,
+        });
   if (event.type === "close") return s.pending ? s : s.phase === "closed" ? s : issue(s, "close");
   if (!s.pending || event.request !== s.pending.request || event.reply.operation !== s.operation)
     return Object.freeze({
@@ -601,7 +612,7 @@ export function advanceWindowsIoModel(s: ModelState, input: unknown): ModelState
   const phase = s.pending.kind,
     reply = event.reply;
   // Remember owned late-acquisition references before abort finalization; never forget
-  // handles simply because an application deadline expired during acquire/create.
+  // handles simply because an application deadline expired during acquire/create/scan. Recovery evidence alone never conveys ownership.
   const received = reply.bound ?? [];
   let next: ModelState = Object.freeze({
     ...s,
@@ -610,7 +621,11 @@ export function advanceWindowsIoModel(s: ModelState, input: unknown): ModelState
       [
         ...s.bound,
         ...received
-          .filter((b) => !s.bound.some((old) => old.ref === b.ref))
+          .filter(
+            (b, i) =>
+              !s.bound.some((old) => old.ref === b.ref) &&
+              !received.slice(0, i).some((old) => old.ref === b.ref),
+          )
           .map((b) => ({ ...b, created: false })),
       ].map((b) => Object.freeze({ ...b, facts: Object.freeze({ ...b.facts }) })),
     ),
@@ -618,14 +633,15 @@ export function advanceWindowsIoModel(s: ModelState, input: unknown): ModelState
     dbCommitted: s.dbCommitted || (phase === "db-commit" && reply.done === true),
   });
   if (phase === "close")
-    return received.length === 0 &&
+    return reply.error === undefined &&
+      received.length === 0 &&
       reply.done === true &&
       reply.closedReferences?.length === s.bound.length &&
       s.bound.every((b, i) => reply.closedReferences?.[i] === b.ref)
       ? Object.freeze({ ...next, phase: "closed", bound: Object.freeze([]), ackCandidate: false })
       : fail(next, "archive_io_close_failed");
   if (s.firstError) return fail(next, s.firstError);
-  if (received.length && !["acquire", "create-stage", "create-file"].includes(phase))
+  if (received.length && !["acquire", "create-stage", "create-file", "scan"].includes(phase))
     return fail(next, "archive_io_binding_lost");
   if (reply.error)
     return fail(
@@ -849,13 +865,76 @@ export function advanceWindowsIoModel(s: ModelState, input: unknown): ModelState
       return reply.done === true
         ? finish(Object.freeze({ ...next, dbCommitted: true }))
         : fail(next, "archive_io_db_commit_failed");
-    case "scan":
-      return reply.recovery
-        ? finish(Object.freeze({ ...next, recovery: classifyWindowsRecoveryModel(reply.recovery) }))
-        : fail(next, "archive_io_scan_invalid");
+    case "scan": {
+      const matches = recoveryMatchesScan(s, reply);
+      next = Object.freeze({
+        ...next,
+        recovery: classifyWindowsRecoveryModel(matches ? reply.recovery : null),
+      });
+      return matches ? finish(next) : fail(next, "archive_io_scan_invalid");
+    }
     default:
       return fail(next, "archive_io_transition_invalid");
   }
+}
+
+// Bind current-content evidence to this symbolic scan, not to a previous process identity.
+function recoveryMatchesScan(s: ModelState, reply: ModelReply): boolean {
+  const e = reply.recovery;
+  const acquired = reply.bound ?? [];
+  if (
+    !e ||
+    e.destinationPath !== join(s.plan.acquisitionPath, s.plan.destination) ||
+    e.requiredFiles.length !== s.plan.files.length ||
+    s.plan.files.some((file, i) => e.requiredFiles[i] !== file.name) ||
+    !policyMatches(
+      s,
+      reply,
+      e.currentChain.map((item) => item.observed.ref),
+    ) ||
+    e.currentChain.length !== s.bound.length + acquired.length ||
+    new Set(acquired.map((b) => b.ref)).size !== acquired.length ||
+    acquired.some((b, i) => {
+      const observed = e.currentChain[s.bound.length + i]?.observed;
+      return (
+        !observed ||
+        b.created ||
+        b.fileIndex !== undefined ||
+        s.bound.some((old) => old.ref === b.ref) ||
+        b.ref !== observed.ref ||
+        b.observation !== observed.observation ||
+        !!stable(b.facts, observed.facts) ||
+        b.facts.path !== observed.facts.path ||
+        b.facts.size !== observed.facts.size ||
+        b.facts.attributes !== observed.facts.attributes
+      );
+    }) ||
+    (e.destination === "verified-content" &&
+      (e.currentChain.length !== s.bound.length + 1 + s.plan.files.length ||
+        e.currentChain[s.bound.length]?.expected.facts.kind !== "directory" ||
+        e.currentChain[s.bound.length]?.expected.facts.path !== e.destinationPath))
+  )
+    return false;
+  return s.plan.anchors.every((anchor, i) => {
+    const item = e.currentChain[i],
+      retained = s.bound[i];
+    return (
+      !!item &&
+      !!retained &&
+      item.expected.record === anchor.record &&
+      item.expected.component === anchor.component &&
+      item.expected.provenance === anchor.provenance &&
+      !stable(anchor.facts, item.expected.facts) &&
+      item.expected.facts.path === anchor.facts.path &&
+      item.expected.facts.size === anchor.facts.size &&
+      item.expected.facts.attributes === anchor.facts.attributes &&
+      item.observed.ref === retained.ref &&
+      !stable(retained.facts, item.observed.facts) &&
+      item.observed.facts.path === retained.facts.path &&
+      item.observed.facts.size === retained.facts.size &&
+      item.observed.facts.attributes === retained.facts.attributes
+    );
+  });
 }
 
 export interface RecoveryEvidence {
@@ -925,7 +1004,14 @@ function completeRecoveryFiles(e: RecoveryEvidence): boolean {
   );
 }
 function independentRecoveryChain(chain: RecoveryEvidence["currentChain"]): boolean {
-  if (!chain.length || chain.length > ENTRY_LIMIT) return false;
+  // Publication retains up to ANCESTOR_LIMIT ancestors, one destination, and ENTRY_LIMIT files.
+  if (
+    !chain.length ||
+    chain.length > ANCESTOR_LIMIT + 1 + ENTRY_LIMIT ||
+    chain.filter((item) => item.expected.facts.kind === "directory").length > ANCESTOR_LIMIT + 1 ||
+    chain.filter((item) => item.expected.facts.kind === "file").length > ENTRY_LIMIT
+  )
+    return false;
   const records = chain.map((item) => item.expected.record);
   if (
     new Set(records).size !== chain.length ||

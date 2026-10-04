@@ -43,17 +43,14 @@ export function plan(verb: ModelPlan["verb"] = "publish-directory"): ModelPlan {
     verb,
     anchors,
     acquisitionPath: paths.at(-1) ?? "",
-    files:
-      verb === "recover-scan"
-        ? []
-        : [
-            {
-              name: "result.txt",
-              bytes: [1, 2, 3],
-              initialAttributes: 0x80,
-              finalAttributes: 0x20,
-            },
-          ],
+    files: [
+      {
+        name: "result.txt",
+        bytes: [1, 2, 3],
+        initialAttributes: 0x80,
+        finalAttributes: 0x20,
+      },
+    ],
     stage: "staging-unique",
     destination: "published",
     createdSecurity: { ownerHash: "2".repeat(64), daclHash: "3".repeat(64) },
@@ -112,7 +109,7 @@ export function observations(
 export class WindowsIoFake {
   readonly commands: ModelCommand[] = [];
   chunk = 2;
-  recoveryEvidence = recovery();
+  recoveryEvidence: RecoveryEvidence | undefined;
   reply(s: ModelState): ModelReply {
     const c = s.pending;
     if (!c) throw new Error("fake has no pending command");
@@ -186,8 +183,15 @@ export class WindowsIoFake {
         };
       case "close":
         return { ...base, closedReferences: s.bound.map((b) => b.ref) };
-      case "scan":
-        return { ...base, recovery: this.recoveryEvidence };
+      case "scan": {
+        const evidence = this.recoveryEvidence ?? scanRecovery(s);
+        return {
+          ...base,
+          recovery: evidence,
+          bound: evidence.currentChain.slice(s.bound.length).map((item) => item.observed),
+          policy: policy(evidence.currentChain.map((item) => item.observed)),
+        };
+      }
       default:
         return base;
     }
@@ -202,4 +206,40 @@ export class WindowsIoFake {
     if (s.pending && s.phase !== phase) throw new Error("fake exceeded bounded steps");
     return s;
   }
+}
+
+/** A valid scan fixture preserves acquired ancestor records and references. */
+export function scanRecovery(s: ModelState): RecoveryEvidence {
+  const destinationPath = `${s.plan.acquisitionPath}\\${s.plan.destination}`;
+  const currentChain = s.plan.anchors.map((expected, i) => {
+    const observed = s.bound[i];
+    if (!observed) throw new Error("scan fixture requires acquired ancestors");
+    return { expected, observed };
+  });
+  const paths = [
+    destinationPath,
+    ...s.plan.files.map((file) => `${destinationPath}\\${file.name}`),
+  ];
+  for (const [i, path] of paths.entries()) {
+    const f = facts(1000 + i, path, i > 0, i > 0 ? (s.plan.files[i - 1]?.bytes.length ?? 0) : 0);
+    currentChain.push({
+      expected: {
+        component: path.slice(path.lastIndexOf("\\") + 1),
+        facts: f,
+        provenance: "independent",
+        record: Symbol("scan-anchor"),
+      },
+      observed: {
+        ref: Symbol("scan-retained"),
+        observation: Symbol("scan-observed"),
+        facts: { ...f },
+        created: false,
+      },
+    });
+  }
+  return recovery({
+    destinationPath,
+    requiredFiles: s.plan.files.map((file) => file.name),
+    currentChain,
+  });
 }
