@@ -76,3 +76,42 @@ export function describeChild({ label, spawnError, code, signal, timedOut, marke
   const text = parts.join(" ");
   return text.length <= DIAGNOSTIC_LIMIT ? text : `${text.slice(0, DIAGNOSTIC_LIMIT - 1)}…`;
 }
+
+/**
+ * Wait for a spawned child. The outcome is settled only after `close` (stdio drained, process ended), so a
+ * final marker read can never race a still-running child. A spawn `error` is kept, not thrown, and never
+ * replaces the close wait; only when no process was ever created (pid undefined) is `close` given a short
+ * grace before the kept error is reported. `failed()` is a non-blocking early-failure probe for readiness loops.
+ */
+export function waitForChild(child, { timeoutMs = 8000, spawnFailureGraceMs = 2000 } = {}) {
+  let spawnError;
+  let timedOut = false;
+  let ended = false;
+  const timer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null && !ended) {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }
+  }, timeoutMs);
+  child.once("exit", () => {
+    ended = true;
+  });
+  const settled = new Promise((resolve) => {
+    child.once("error", (error) => {
+      spawnError = error;
+      if (child.pid === undefined) {
+        ended = true;
+        setTimeout(() => resolve({ code: null, signal: null }), spawnFailureGraceMs);
+      }
+    });
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  return {
+    result: settled.then((r) => {
+      clearTimeout(timer);
+      return { ...r, spawnError, timedOut };
+    }),
+    failed: () => ended || spawnError !== undefined,
+    dispose: () => clearTimeout(timer),
+  };
+}

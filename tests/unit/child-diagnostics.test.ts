@@ -1,5 +1,6 @@
 /** Test-only helper regression: diagnostics are structured, bounded and never echo secrets. */
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import {
   DIAGNOSTIC_LIMIT,
   describeChild,
   readMarker,
+  waitForChild,
   // @ts-expect-error Plain .mjs test helper without declarations.
 } from "../../scripts/child-diagnostics.mjs";
 
@@ -127,5 +129,91 @@ describe("child CLI diagnostics", () => {
     expect(
       describeChild({ label: "spawn", spawnError: error, marker: { state: "missing" } }),
     ).toContain("spawn=ENOENT");
+  });
+});
+
+describe("child wait ordering", () => {
+  it("does not settle on a kept error until close, then reads the final marker", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4242,
+      exitCode: null,
+      signalCode: null,
+      kill: () => true,
+    });
+    const order: string[] = [];
+    const waiting = waitForChild(child as never, { timeoutMs: 60_000 });
+    const settled = waiting.result.then((r: unknown) => {
+      order.push("settled");
+      return r;
+    });
+    child.emit("error", Object.assign(new Error("late"), { code: "EPERM" }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(order).toEqual([]); // error alone must not end the wait
+    expect(waiting.failed()).toBe(true); // but readiness can see the failure
+    order.push("close");
+    child.emit("close", 1, null);
+    const result = await settled;
+    expect(order).toEqual(["close", "settled"]);
+    expect(result).toMatchObject({ code: 1, signal: null, timedOut: false });
+    expect((result as { spawnError: { code: string } }).spawnError.code).toBe("EPERM");
+    waiting.dispose();
+  });
+  it("reports a spawn failure with no process after a bounded grace even without close", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: undefined,
+      exitCode: null,
+      signalCode: null,
+      kill: () => true,
+    });
+    const waiting = waitForChild(child as never, { timeoutMs: 60_000, spawnFailureGraceMs: 20 });
+    child.emit("error", Object.assign(new Error("x"), { code: "ENOENT" }));
+    const result = await waiting.result;
+    expect((result as { spawnError: { code: string } }).spawnError.code).toBe("ENOENT");
+    waiting.dispose();
+  });
+  it("real spawn failure: error is kept and close is still awaited", async () => {
+    const child = spawn(join(tmpdir(), "definitely-not-an-executable-xyz"), []);
+    const events: string[] = [];
+    child.on("error", () => events.push("error"));
+    child.on("close", () => events.push("close"));
+    const result = await waitForChild(child).result;
+    expect((result as { spawnError: { code: string } }).spawnError.code).toBe("ENOENT");
+    expect(events[0]).toBe("error");
+  });
+  it("real timeout: kill happens, and the result is settled only after the process closed", async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let closed = false;
+    child.once("close", () => {
+      closed = true;
+    });
+    const result = await waitForChild(child, { timeoutMs: 300 }).result;
+    expect(result.timedOut).toBe(true);
+    expect(closed).toBe(true);
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  });
+  it("real early exit: failed() sees it before close is awaited; marker is read after close", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "child-wait-"));
+    try {
+      const child = spawn(process.execPath, ["-e", "process.exit(5)"], { stdio: "ignore" });
+      const waiting = waitForChild(child);
+      for (let i = 0; i < 500 && !waiting.failed(); i++)
+        await new Promise((r) => setTimeout(r, 10));
+      expect(waiting.failed()).toBe(true);
+      const result = await waiting.result;
+      expect(result).toMatchObject({ code: 5, timedOut: false });
+      expect(await readMarker(join(dir, "never-written.json"))).toEqual({ state: "missing" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  it("unreadable marker (a directory in its place) is classified without touching permissions", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "child-unread-"));
+    try {
+      expect(await readMarker(dir)).toEqual({ state: "unreadable" });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
