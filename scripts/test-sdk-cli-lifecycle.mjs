@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {spawn} from "node:child_process";
 import {mkdtemp,readFile,writeFile,rm} from "node:fs/promises";
 import {join,resolve} from "node:path";
+import {describeChild,readMarker} from "./child-diagnostics.mjs";
 const root=await mkdtemp(join(process.cwd(),".sdk-cli-lifecycle-"));
 const id="00000000-0000-4000-8000-000000000001",hash="a".repeat(64);
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
@@ -32,14 +33,19 @@ export async function openDeployment(){state.opens++;save();
    const args=[resolve(`dist/cli/${entry}.js`),...(entry==="main"?["sdk-text"]:[]),"--deployment",deployment,"start",id,hash];
    const child=spawn(process.execPath,args,{cwd:process.cwd(),env:{...process.env,SDK_TEST_MARKER:marker,SDK_TEST_MODE:mode},stdio:["ignore","pipe","pipe"]});
    let output="",errors="";child.stdout.on("data",b=>{output+=b;});child.stderr.on("data",b=>{errors+=b;});
-   const ended=new Promise((resolve,reject)=>{child.once("error",reject);child.once("close",(code,signal)=>resolve({code,signal}));});
-   const timeout=setTimeout(()=>{if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");},8000);
+   let exited=false,timedOut=false;
+   const ended=new Promise(resolve=>{child.once("error",spawnError=>{exited=true;resolve({spawnError});});child.once("close",(code,signal)=>{exited=true;resolve({code,signal});});});
+   const timeout=setTimeout(()=>{if(child.exitCode===null&&child.signalCode===null){timedOut=true;child.kill("SIGKILL");}},8000);
+   const diagnose=(result,markerRead)=>describeChild({label:`${entry}/${mode}`,spawnError:result.spawnError,code:result.code,signal:result.signal,timedOut,marker:markerRead,stderr:errors});
    try{
     if(mode!=="pending"){
-     let ready=false;for(let i=0;i<200;i++){try{ready=JSON.parse(await readFile(marker,"utf8")).started;}catch{}if(ready)break;await pause(10);}
-     assert(ready,"synthetic start readiness");assert(child.kill(mode));
+     let ready=false;for(let i=0;i<200&&!exited;i++){try{ready=JSON.parse(await readFile(marker,"utf8")).started;}catch{}if(ready)break;await pause(10);}
+     if(!ready){if(!exited)child.kill("SIGKILL");const early=await ended;throw new Error(`synthetic start readiness: ${diagnose(early,await readMarker(marker))}`);}
+     assert(child.kill(mode));
     }
-    const result=await ended,state=JSON.parse(await readFile(marker,"utf8"));
+    const result=await ended,markerRead=await readMarker(marker);
+    if(result.spawnError||timedOut||result.signal!==null||markerRead.state!=="ok")throw new Error(diagnose(result,markerRead));
+    const state=markerRead.value;
     assert.equal(result.signal,null,`${entry}/${mode} did not retain signal handler`);assert.equal(state.opens,1,"same runtime retained");
     assert.equal(state.settled,true,"must wait for controlled settlement");assert.equal(state.closed,true,"same runtime must close after settlement");
     if(mode==="pending"){assert(state.closes>=2);assert(errors.includes("sdk_text_drain_pending"));}

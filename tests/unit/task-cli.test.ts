@@ -1,10 +1,13 @@
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { main } from "../../src/cli/main.js";
 import { type LedgerRead, runTaskCli, type TaskCliDependencies } from "../../src/cli/task.js";
 import { sha256Bytes } from "../../src/contracts/task.js";
 import type { TaskResult, TaskSpec } from "../../src/contracts/task-types.js";
+import { syntheticAbsolute } from "../helpers/sdk-text-fixture.js";
 
 const id = "00000000-0000-4000-8000-000000000001";
+const offlineRuntimeDir = syntheticAbsolute("offline", "runtime");
 const taskBytes = Buffer.from("Offline test fixture; do not execute.\n");
 function spec(): TaskSpec {
   return {
@@ -96,7 +99,7 @@ function harness(extra: TaskCliDependencies = {}) {
     },
     readBytes: reads,
     readLedger: ledger,
-    runtimeDir: "/offline/runtime",
+    runtimeDir: offlineRuntimeDir,
     ...extra,
   };
   return {
@@ -224,7 +227,7 @@ describe("Bridge v2 task CLI without executors", () => {
     const h = harness();
     expect(await h.run(["status", id])).toBe(4);
     expect(h.json().code).toBe("ledger_not_initialized");
-    expect(h.ledger).toHaveBeenCalledWith("/offline/runtime/jobs.db", id);
+    expect(h.ledger).toHaveBeenCalledWith(join(offlineRuntimeDir, "jobs.db"), id);
   });
   it("reports missing UUID and preserves the original request", async () => {
     const h = harness({ readLedger: async () => ({ kind: "missing-request" }) });

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join, parse, resolve } from "node:path";
 import type { ClaudeSdkHostProfile } from "../../src/adapters/claude-sdk-profile.js";
 import { prepareSdkTextPlan, sdkProfileDigest } from "../../src/adapters/claude-sdk-text.js";
 import { encodeResponseFrame } from "../../src/contracts/response-frame.js";
@@ -11,7 +12,11 @@ import {
 } from "../../src/contracts/sdk-text-inference.js";
 import { sha256Bytes } from "../../src/contracts/task.js";
 export const json = (v: unknown) => Buffer.from(JSON.stringify(v));
+/** Synthetic absolute path that is canonical on this platform (POSIX `/a/b`, Windows `X:\a\b`). Never touched on disk. */
+export const syntheticAbsolute = (...segments: string[]) =>
+  resolve(parse(process.cwd()).root, ...segments);
 export function sdkFixture(now = Date.now()) {
+  const home = syntheticAbsolute("private", "home");
   const profile: ClaudeSdkHostProfile = {
     schema: "claude-sdk-host-profile-1",
     profileId: 1,
@@ -21,12 +26,12 @@ export function sdkFixture(now = Date.now()) {
     recipientId: "recipient",
     approverId: "operator",
     policySha256: "a".repeat(64),
-    executable: "/trusted/claude",
+    executable: syntheticAbsolute("trusted", "claude"),
     binarySha256: "b".repeat(64),
     cliVersion: "2.1.288",
-    cwd: "/private/empty",
-    home: "/private/home",
-    configDirectory: "/private/home/.claude",
+    cwd: syntheticAbsolute("private", "empty"),
+    home,
+    configDirectory: join(home, ".claude"),
     approvedAuthContextId: "existing-context",
     providerRouteId: "claude-first-party-existing-subscription",
     authMethod: "claude.ai",
