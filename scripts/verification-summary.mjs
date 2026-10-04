@@ -208,6 +208,17 @@ export function sourceStatusArgs(root, output) {
     ? ["status", "--porcelain", "--", ".", `:(exclude,literal)${rel.split(sep).join("/")}`]
     : ["status", "--porcelain"];
 }
+/** Exclude this run's untracked logs, but never tracked changes inside its output directory. */
+export function captureSourceStatus(root, output, runGit) {
+  const args = sourceStatusArgs(root, output);
+  const status = runGit(args);
+  if (args.length === 2) return status;
+  const tracked = runGit(["status", "--porcelain", "--untracked-files=no"]);
+  // Either failed observation makes the dirty state unknown, even if the other one was clean.
+  if (status.status !== 0 || typeof status.stdout !== "string") return status;
+  if (tracked.status !== 0 || typeof tracked.stdout !== "string") return tracked;
+  return { status: 0, stdout: status.stdout + tracked.stdout };
+}
 /** The start snapshot is taken before any phase starts; the end snapshot after the last one ends. */
 export function runWithSourceEvidence(phases, { capture, runPhase }) {
   const sourceBefore = capture();

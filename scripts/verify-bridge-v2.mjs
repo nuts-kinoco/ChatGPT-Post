@@ -6,13 +6,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   OFFLINE_VERIFICATION_ENV,
+  captureSourceStatus,
   combinedSourceFields,
   parseTestSummary,
   phaseOutcome,
   repositoryRootIdentity,
   runWithSourceEvidence,
   sourceMetadata,
-  sourceStatusArgs,
   verificationExitCode,
 } from "./verification-summary.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -81,7 +81,7 @@ const captureSource = () => {
     capturedAt: new Date().toISOString(),
     ...sourceMetadata(
       spawnSync("git", ["rev-parse", "HEAD"], gitOptions),
-      spawnSync("git", sourceStatusArgs(root, output), gitOptions),
+      captureSourceStatus(root, output, (args) => spawnSync("git", args, gitOptions)),
       identity,
     ),
   };
