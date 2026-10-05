@@ -1,7 +1,17 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { NotificationControlsView } from "../../src/ui/notification-runtime.js";
-import { mountNotificationPreferences } from "../../src/ui/public/notification-view.js";
+import { mountNotificationPreferences as mountWithRecovery } from "../../src/ui/public/notification-view.js";
+
+// Older preference/action fixtures supply an empty durable receipt list; recovery behavior is tested separately below.
+const mountNotificationPreferences = (options) =>
+  mountWithRecovery({
+    ...options,
+    api: (path, ...args) =>
+      path.endsWith("/credentials/actions")
+        ? Promise.resolve({ actions: [] })
+        : options.api(path, ...args),
+  });
 
 const html = readFileSync(
   new URL("../../src/ui/public/notification-panel.html", import.meta.url),
@@ -540,5 +550,152 @@ describe("separate one-shot notification action UI", () => {
     }
     for (const id of ["test", "credentials", "action-refresh"])
       expect(html).toMatch(new RegExp(`id="notification-${id}" type="button"`));
+  });
+});
+
+describe("v2 metadata-only credential recovery and cancellation UI", () => {
+  const receipt = (state = "sending", actionId = "11111111-2222-4333-8444-555555555555") => ({
+    actionId,
+    destinationId: "work-email",
+    kind: "credential",
+    state,
+  });
+  it("reload recovers a completed save whose admission response was lost without posting", async () => {
+    const { document, node } = dom();
+    const saved = receipt("saved");
+    const api = vi.fn(async (path, _body) =>
+      path.endsWith("/credentials/actions") ? { actions: [saved] } : activeResponse(),
+    );
+    const panel = mountWithRecovery({ document, api });
+    await panel.open();
+    expect(node("action-state").textContent).toContain("保存済み");
+    expect(node("credentials").disabled).toBe(false);
+    expect(api.mock.calls.every(([, body]) => body === undefined)).toBe(true);
+    panel.destroy();
+  });
+  it("polls pending GETs every second only while visible and resumes with durable receipts", async () => {
+    vi.useFakeTimers();
+    const { document, node } = dom();
+    let state = "sending";
+    const pending = receipt();
+    const api = vi.fn(async (path) =>
+      path.endsWith("/credentials/actions")
+        ? { actions: [{ ...pending, state }] }
+        : path.includes("/actions/")
+          ? { action: { ...pending, state } }
+          : activeResponse(),
+    );
+    const panel = mountWithRecovery({ document, api });
+    try {
+      await panel.open();
+      expect(node("credentials").disabled).toBe(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(api.mock.calls.filter(([path]) => path.includes("/actions/")).length).toBe(1);
+      panel.close();
+      const count = api.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(api).toHaveBeenCalledTimes(count);
+      state = "saved";
+      await panel.open();
+      expect(node("action-state").textContent).toContain("保存済み");
+      const final = api.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(api).toHaveBeenCalledTimes(final);
+    } finally {
+      panel.destroy();
+      vi.useRealTimers();
+    }
+  });
+  it("keeps repeated clicks inert and cancels by exact immutable action ID", async () => {
+    const { document, node } = dom();
+    let sent: ActionInput | undefined;
+    const api = vi.fn(async (path, body) => {
+      if (path.endsWith("/credentials/actions")) return { actions: [] };
+      if (path.endsWith("/credentials")) {
+        sent = body;
+        return actionResponse(body, "sending", "credential");
+      }
+      if (path.endsWith("/credentials/cancel"))
+        return { action: { ...receipt("cancelled", body.actionId) } };
+      return activeResponse();
+    });
+    const panel = mountWithRecovery({ document, api });
+    await panel.open();
+    await node("credentials").emit("click");
+    await node("credentials").emit("click");
+    expect(api.mock.calls.filter(([path]) => path.endsWith("/credentials"))).toHaveLength(1);
+    await node("action-cancel").emit("click");
+    expect(api.mock.calls.at(-1)).toEqual([
+      "/api/settings/notifications/credentials/cancel",
+      { actionId: sent.actionId },
+    ]);
+    expect(node("action-state").textContent).toContain("取り消し済み");
+    expect(node("enabled").checked).toBe(false);
+    panel.destroy();
+  });
+  it("fences a delayed POST behind close, reopen, recovery and explicit cancel", async () => {
+    const { document, node } = dom();
+    const delayed = deferred<ReturnType<typeof actionResponse>>();
+    let sent: ActionInput | undefined;
+    const api = vi.fn(async (path, body) => {
+      if (path.endsWith("/credentials/actions"))
+        return { actions: sent ? [{ ...receipt("sending", sent.actionId) }] : [] };
+      if (path.endsWith("/credentials")) {
+        sent = body;
+        return delayed.promise;
+      }
+      if (path.endsWith("/credentials/cancel"))
+        return { action: receipt("cancelled", body.actionId) };
+      return activeResponse();
+    });
+    const panel = mountWithRecovery({ document, api });
+    await panel.open();
+    const posting = node("credentials").emit("click");
+    panel.close();
+    await panel.open();
+    await node("action-cancel").emit("click");
+    delayed.resolve(actionResponse(sent, "saved", "credential"));
+    await posting;
+    expect(node("action-state").textContent).toContain("取り消し済み");
+    expect(api.mock.calls.filter(([path]) => path.endsWith("/credentials"))).toHaveLength(1);
+    panel.destroy();
+  });
+  it("late pending status GET cannot replace a newer cancellation receipt", async () => {
+    const { document, node } = dom();
+    const pending = receipt();
+    const delayed = deferred<{ action: ReturnType<typeof receipt> }>();
+    const api = vi.fn(async (path, _body) =>
+      path.endsWith("/credentials/actions")
+        ? { actions: [pending] }
+        : path.endsWith("/credentials/cancel")
+          ? { action: receipt("cancelled") }
+          : path.includes("/actions/")
+            ? delayed.promise
+            : activeResponse(),
+    );
+    const panel = mountWithRecovery({ document, api });
+    await panel.open();
+    const reading = node("action-refresh").emit("click");
+    await node("action-cancel").emit("click");
+    delayed.resolve({ action: pending });
+    await reading;
+    expect(node("action-state").textContent).toContain("取り消し済み");
+    expect(node("credentials").disabled).toBe(false);
+    panel.destroy();
+  });
+  it("fails closed on malformed recovery without displaying foreign response fields", async () => {
+    const { document, node } = dom();
+    const api = vi.fn(async (path) =>
+      path.endsWith("/credentials/actions")
+        ? { actions: [{ ...receipt(), token: "SYNTHETIC_SECRET" }] }
+        : activeResponse(),
+    );
+    const panel = mountWithRecovery({ document, api });
+    await panel.open();
+    expect(node("credentials").disabled).toBe(true);
+    expect(node("message").textContent).not.toContain("SYNTHETIC_SECRET");
+    await node("credentials").emit("click");
+    expect(api.mock.calls.every(([, body]) => body === undefined)).toBe(true);
+    panel.destroy();
   });
 });

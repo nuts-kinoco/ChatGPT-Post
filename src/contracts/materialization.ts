@@ -1,5 +1,5 @@
 /** Strict portable delivery and supplemental receipt contracts. No signing, filesystem, or execution authority. */
-import { parseStrictJsonBytes } from "./task.js";
+import { parseStrictJsonBytes } from "./raw-bytes.js";
 
 const MAX_ARCHIVE_ENTRIES = 128;
 const MAX_ARCHIVE_FILE_BYTES = 16 * 1024 * 1024;

@@ -13,7 +13,11 @@ export type NotificationSendOutcome = "delivered" | "not_sent_retryable" | "not_
 
 export interface PreparedNotificationTransport {
   readonly deadlineAt?: number;
-  send(text: string, signal: AbortSignal): Promise<NotificationSendOutcome>;
+  send(
+    text: string,
+    signal: AbortSignal,
+    mayStartEffect?: () => boolean,
+  ): Promise<NotificationSendOutcome>;
 }
 
 export type NotificationTextInput =
@@ -434,4 +438,58 @@ export async function prepareDiscordNotificationTransport(
     scope.close();
     return null;
   }
+}
+
+/** Outer prepared handles retain identity/resolvers only. Secret-bearing preparation is bounded
+ * inside send and is followed by a new synchronous authority check immediately before effect. */
+export function prepareLeasedNotificationTransport(
+  options: {
+    isCurrent(): boolean;
+    prepare(
+      signal: AbortSignal,
+      remainingMs: number,
+    ): Promise<PreparedNotificationTransport | null>;
+    leaseSignal: AbortSignal;
+    totalTimeoutMs?: number;
+  },
+  signal: AbortSignal,
+): PreparedNotificationTransport | null {
+  const scope = budget(signal, options.totalTimeoutMs);
+  if (!scope) return null;
+  scope.link(options.leaseSignal);
+  let used = false;
+  return Object.freeze({
+    deadlineAt: scope.deadlineAt,
+    async send(
+      text: string,
+      sendSignal: AbortSignal,
+      mayStartEffect?: () => boolean,
+    ): Promise<NotificationSendOutcome> {
+      if (used) return "not_sent";
+      used = true;
+      scope.link(sendSignal);
+      const allowed = () => {
+        try {
+          return !scope.expired && options.isCurrent() && mayStartEffect?.() === true;
+        } catch {
+          return false;
+        }
+      };
+      try {
+        if (!safeText(text) || !allowed()) return "not_sent";
+        const remaining = Math.floor(scope.deadlineAt - Date.now());
+        if (remaining < 1) return "not_sent";
+        const inner = await scope.run(() => options.prepare(scope.controller.signal, remaining));
+        if (!inner || !allowed()) return "not_sent";
+        // No await between the final gate and the inner adapter's synchronous invocation.
+        const sending = inner.send(text, scope.controller.signal);
+        const result = await scope.run(() => sending);
+        return result && isOutcome(result) && !scope.expired ? result : "uncertain";
+      } catch {
+        return "uncertain";
+      } finally {
+        scope.close();
+      }
+    },
+  });
 }

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArchiveDeliveryPersistence } from "../../src/archive/materialization-store.js";
 import type { VerifiedDeliveryMaterializationV1 } from "../../src/archive/materializer.js";
 import { RouteArtifactArchive } from "../../src/archive/route-store.js";
@@ -15,6 +16,22 @@ import {
 import { sha256Bytes } from "../../src/contracts/task.js";
 import { ProjectRegistry } from "../../src/state/project-registry.js";
 
+const writeFault = vi.hoisted(() => ({ enabled: false, calls: 0 }));
+vi.mock("node:fs", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...real,
+    writeSync: (...args: unknown[]) => {
+      if (writeFault.enabled) {
+        // The guard bounds reproduction on the old nonprogressing write loop.
+        if (++writeFault.calls > 1) throw new Error("unexpected_second_write");
+        return 0;
+      }
+      return Reflect.apply(real.writeSync, real, args);
+    },
+  };
+});
+
 const dirs: string[] = [],
   closers: (() => void)[] = [];
 function directory() {
@@ -23,6 +40,8 @@ function directory() {
   return p;
 }
 afterEach(() => {
+  writeFault.enabled = false;
+  writeFault.calls = 0;
   for (const fn of closers.splice(0).reverse()) fn();
   for (const p of dirs.splice(0)) rmSync(p, { recursive: true, force: true });
 });
@@ -194,7 +213,15 @@ function setup(
     receiptBytes,
     receiptSha256: sha256Bytes(receiptBytes),
   };
-  return { root, registry, archive, pin, input, sink: new ArchiveDeliveryPersistence(archive) };
+  return {
+    state,
+    root,
+    registry,
+    archive,
+    pin,
+    input,
+    sink: new ArchiveDeliveryPersistence(archive),
+  };
 }
 describe("real requester pinned-root durability, synthetic upstream proof only", () => {
   it.each(["local_execution", "hosted_delivery"] as const)(
@@ -233,6 +260,47 @@ describe("real requester pinned-root durability, synthetic upstream proof only",
     fail = false;
     expect((await x.sink.persistVerified(x.input)).state).toBe("durable");
   });
+  it.each(["local_execution", "hosted_delivery"] as const)(
+    "%s zero-progress write rolls back its receipt and recovers with the same identity",
+    async (kind) => {
+      const x = setup(kind),
+        original = structuredClone(x.input);
+      const db = new DatabaseSync(join(x.state, "route-archive.db"), { readOnly: true });
+      closers.push(() => db.close());
+      const receipts = () => db.prepare("SELECT * FROM archive2_materializations").all();
+      writeFault.enabled = true;
+      await expect(x.sink.persistVerified(x.input)).rejects.toThrow(
+        "archive_write_verification_failed",
+      );
+      expect(writeFault.calls).toBe(1);
+      expect(receipts()).toEqual([]);
+      const destination = join(
+        x.root,
+        x.pin.relativeDirectory,
+        "materialized",
+        x.input.receiptSha256,
+      );
+      expect(existsSync(destination)).toBe(false);
+      writeFault.enabled = false;
+      expect(await x.sink.persistVerified(x.input)).toEqual({
+        state: "durable",
+        receiptSha256: original.receiptSha256,
+      });
+      expect(structuredClone(x.input)).toEqual(original);
+      expect(x.archive.pin(original.binding.requestId)).toEqual(x.pin);
+      expect(receipts()).toEqual([
+        {
+          request_id: original.binding.requestId,
+          event_id: original.binding.terminalEventId,
+          receipt_hash: original.receiptSha256,
+          body: Buffer.from(original.receiptBytes).toString("utf8"),
+        },
+      ]);
+      expect(readFileSync(join(destination, "results/result.json"))).toEqual(
+        Buffer.from(original.payloadBytes),
+      );
+    },
+  );
   it("root revisions do not change the requester's existing materialization destination", async () => {
     const x = setup(),
       other = directory();

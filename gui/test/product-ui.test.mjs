@@ -93,3 +93,21 @@ test("explicit production deployment module reaches the shared product server", 
   assert.equal(options.deploymentModule, "/trusted/deployment.mjs");
   assert.equal(options.profile, "production");
 });
+
+test("actual provider fallback is forwarded unchanged without activation and omitted in demo", async () => {
+  let calls=0, received;
+  const factory=() => {calls++;throw new Error("must remain lazy");};
+  const load=async()=>({startUiServer:async options=>{received=options;return server;}});
+  const result=await startProductUi(path.resolve("checkout"),{},load,factory);
+  assert.equal(result,server);assert.equal(received.notificationProviderFactory,factory);assert.equal(calls,0);
+  await startProductUi(path.resolve("checkout"),{CHATGPT_BRIDGE_DEPLOYMENT_MODULE:"/trusted/deployment.mjs"},load,factory);
+  assert.equal(received.notificationProviderFactory,factory);assert.equal(calls,0);
+  await startProductUi(path.resolve("checkout"),{CHATGPT_BRIDGE_UI_PROFILE:"demo"},load,factory);
+  assert.equal("notificationProviderFactory" in received,false);assert.equal(calls,0);
+});
+
+test("native lock lifecycle capability is preserved on the product server object", async () => {
+  let locked=0;const native={...server,lockNotificationCredentials(){locked++;}};
+  const received=await startProductUi(path.resolve("checkout"),{},async()=>({startUiServer:async()=>native}));
+  received.lockNotificationCredentials();assert.equal(locked,1);assert.equal(received,native);
+});

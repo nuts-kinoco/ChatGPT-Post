@@ -64,9 +64,17 @@ describe("real loopback settings + durable direct lifecycle + fake alert sink", 
           generation === binding.generation &&
           revision === binding.revision,
         list: async () => [binding],
-        beginCredentialInteraction: async () => {
+        credentialProtocol: "bridge-notification-credentials-2",
+        beginCredentialInteractionV2: (session) => {
+          session.complete("saved", {});
+        },
+        commitCredentialCandidate: () => {
           binding = { ...binding, generation: "binding-two", revision: 2 };
-          return "saved";
+          return {
+            generation: binding.generation,
+            revision: binding.revision,
+            activatedAt: binding.activatedAt,
+          };
         },
       },
       authorizeSend: () => true,
@@ -199,11 +207,18 @@ describe("real loopback settings + durable direct lifecycle + fake alert sink", 
       ).status,
     ).toBe(409);
     now += 60000;
+    const credentialActionId = randomUUID();
     const setup = await api("/api/settings/notifications/credentials", {
       ...input,
-      actionId: randomUUID(),
+      actionId: credentialActionId,
     });
-    expect((await setup.json()).action.state).toBe("saved");
+    expect(setup.status).toBe(202);
+    expect((await setup.json()).action.state).toBe("sending");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(
+      (await (await api(`/api/settings/notifications/actions/${credentialActionId}`)).json()).action
+        .state,
+    ).toBe("saved");
     expect(send).toHaveBeenCalledTimes(1);
     const settings = await (await api("/api/settings/notifications")).json();
     expect(settings.notifications.preferences.authBlocked.enabled).toBe(false);

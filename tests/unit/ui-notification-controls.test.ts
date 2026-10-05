@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NotificationPreferencesStore } from "../../src/ui/notification-preferences.js";
 import {
   type NotificationControlsView,
+  type NotificationCredentialSessionV2,
   NotificationRuntime,
 } from "../../src/ui/notification-runtime.js";
 import { UiNotificationSettings } from "../../src/ui/notification-settings.js";
@@ -34,9 +35,9 @@ describe("explicit host notification controls facade", () => {
     stores.push(store);
     let generation = "initial";
     const send = vi.fn(async () => "delivered" as const);
-    const interact = vi.fn(async () => {
-      generation = "rotated";
-      return "saved" as const;
+    const candidate = {};
+    const interact = vi.fn((session: NotificationCredentialSessionV2) => {
+      session.complete("saved", candidate);
     });
     const list = vi.fn(async () => {
       const leaseGeneration = generation;
@@ -59,7 +60,13 @@ describe("explicit host notification controls facade", () => {
         list,
         isCurrent: (_actor, _id, value, revision) =>
           value === generation && revision === (generation === "initial" ? 1 : 2),
-        beginCredentialInteraction: interact,
+        credentialProtocol: "bridge-notification-credentials-2",
+        beginCredentialInteractionV2: interact,
+        commitCredentialCandidate: (value) => {
+          expect(value).toBe(candidate);
+          generation = "rotated";
+          return { generation, revision: 2, activatedAt: "2026-10-03T00:00:00.000Z" };
+        },
       },
       authorizeSend: () => true,
       now: () => NOW,
@@ -131,16 +138,21 @@ describe("explicit host notification controls facade", () => {
     expect(await f.settings.credentials(input)).toMatchObject({
       actionId: input.actionId,
       kind: "credential",
-      state: "saved",
+      state: "sending",
     });
+    expect(f.interact).not.toHaveBeenCalled();
+    f.settings.activateCredentialInteraction(input.actionId);
+    await vi.waitFor(() => expect(f.settings.actionStatus(input.actionId)?.state).toBe("saved"));
     expect(await f.settings.credentials(input)).toMatchObject({ state: "saved" });
     expect(f.interact).toHaveBeenCalledOnce();
-    expect(f.interact).toHaveBeenCalledWith({
-      actorId: "alice",
-      destinationId: "work-email",
-      actionId: input.actionId,
-      signal: expect.any(AbortSignal),
-    });
+    expect(f.interact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: "alice",
+        destinationId: "work-email",
+        actionId: input.actionId,
+        signal: expect.any(AbortSignal),
+      }),
+    );
     expect(f.send).not.toHaveBeenCalled();
     expect(f.store.snapshot("alice").authBlocked.enabled).toBe(false);
   });

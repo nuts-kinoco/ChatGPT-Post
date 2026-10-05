@@ -34,19 +34,50 @@ WindowsのCLIは既存インストールを確認し、未検証のauthや更新
 
 ## 2 A: 全 portable 検査
 
-依存関係の準備後、LLM 担当は次の固定スクリプトでも実行できる。モデル/認証/GitHub書込みは起動しない。
+root と gui 両方の依存関係を先に準備する（`npm ci --ignore-scripts --no-audit --no-fund` をそれぞれの directory で実行）。次の固定スクリプトは root/GUI typecheck・lint・build・test、集計 parser の回帰、compiled issuer と SDK lifecycle の fake 検査を行う。インストール・モデル・認証・GitHub 書込みは行わず、子プロセスの BRIDGE_LIVE を 0 に固定する。
 
 ```powershell
 node scripts/verify-bridge-v2.mjs --strict
 ```
 
 結果は新しい `runtime/verification/<timestamp>/report.json` と command 別ログ。
-終了 0=全検査成功かつ skipなし、1=失敗/実行block、2=strictでskip残存。
-既存 evidence directory は上書きしない。`.sourceHead` と `.dirty` を確認し、汚れたcheckoutの結果を
-公開済みcommitの検証と誤認しない。cloudで56 browser skipが残る場合はstrictの終了2が正しい。
+終了 0=全検査成功かつ skipなし、1=失敗/実行block、2=strictでskip残存、3=strictでsource証拠が不成立（下記）。
+既存 evidence directory は上書きしない。report schema は `bridge-verification-3`。
+`.sourceHead`、`.dirty`、`.sourceState` を確認し、汚れた checkout や Git 情報のない source copy の結果を公開済み commit の検証と誤認しない。Git 不明や別の親 repository は null/unavailable または root_mismatch、test summary 不明は blocked であり、0 skips にしない。cloud で 56 browser skip が残る場合は strict の終了 2 が正しい。todo も未実行として扱う。
+
+### ソース状態の記録（開始前と終了後）
+
+最初のフェーズを始める前と最後のフェーズが終わった後の 2 回、`sourceBefore` / `sourceAfter`（`capturedAt`、`sourceHead`、`dirty`、`sourceState`）を保存する。開始前の取得はどのフェーズよりも先に行う。evidence directory が repository の内側にある場合、その directory 内の未追跡ログだけを dirty 判定から除く。別の tracked-only status で全 repository を確認するため、同じ directory 内でも追跡済みファイルの変更・削除・staged追加は除外しない。どちらかの status 取得が失敗した場合は dirty 不明とする。
+
+フェーズの結果（passed / failed / passed_with_skips / blocked）と、その結果を 1 つの固定 head に結び付けてよいか（`sourceEvidence`）は別に扱う。`sourceEvidence.status` は次のときだけ `established` で、`pinnedHead` に head が入る。
+
+- 開始前と終了後の両方で `sourceState` が `clean`（repository root 一致、Git 情報が揃っている）
+- 開始前と終了後の `sourceHead` が同一
+
+それ以外は `not_established` で、`reasons` に次を入れる。フェーズがすべて passed でも、`not_established` なら固定 head の検証が成立したとは言えない。
+
+| reason | 意味 |
+|---|---|
+| `head_changed` | 開始前と終了後で HEAD が違う（前半のフェーズ結果は終了時 HEAD のものではない可能性がある） |
+| `dirty_before` / `dirty_after` | その時点で未コミットの変更または未追跡ファイルがある |
+| `dirty_unknown_before` / `dirty_unknown_after` | HEAD は取れたが `git status` が取れない（clean とは扱わない） |
+| `git_unavailable_before` / `git_unavailable_after` | HEAD も取れない |
+| `root_mismatch_before` / `root_mismatch_after` | 親 repository など、スクリプトの repository root と違う Git を見ている |
+
+限界: これは 2 時点の比較であり、実行期間全体で変わらなかったことの証明ではない。途中で変更して元に戻した場合や、すでに dirty な tree の中身が変わった場合は検知できない（`sourceEvidence.scope` は `start_and_end_snapshots_only`）。各フェーズの観測を増やす場合は別の限定拡張として提案する。native な監視は含めない。
+
+### schema と終了値の互換性
+
+- schema は `bridge-verification-3`。`bridge-verification-2` の項目名はすべて残す。追加項目は `sourceBefore`、`sourceAfter`、`sourceEvidence`。
+- 旧項目の意味は保守的に変わった。`sourceHead` は開始前と終了後が同じときだけ入り、違うときは null。`sourceState` は両方の状態のうち悪い方（`root_mismatch` > `unavailable` > `head_changed` > `dirty` > `head_only` > `clean`）。`dirty` はどちらかが true なら true、どちらかが不明なら null、両方 false のときだけ false。旧項目だけを読む処理でも、成立していない証拠を clean と読まない。
+- `result` はフェーズ集計のままで、source 証拠は含まない。固定 head の検証として扱うには `sourceEvidence.status` も見る。実行の最後に `Source evidence: ...` を 1 行出す。
+- 終了値 0/1/2 の意味は変えない。3 を新設し、`--strict` で、失敗とskipがなく、source 証拠が `not_established` のときだけ返す（優先順は 1、2、3）。`--strict` なしの終了値は従来どおりで、source 証拠が不成立でも 0 になり得るため、`sourceEvidence` と標準出力で確認する。
+- 過去の `bridge-verification-1` / `-2` の report は書き換えない。旧 head の件数を新しい head の件数として転記しない（読み取る側は schema で分岐する）。
+
+旧 `bridge-verification-1` の skipped フィールドは Vitest の Test Files 数を誤って数える場合がある。過去の evidence は書換えず、その raw log の Tests 行を照合するか v2 で再検査する。root/GUI/compiled/focused の再実行件数を合算して検証件数を水増ししない。
 
 
-ルートで実行。ログは checkout 外または未追跡のローカル検査 directory に保存する。
+ルートで実行。手動で test を実行するときも BRIDGE_LIVE は未設定または 0 にする（PowerShell は `$env:BRIDGE_LIVE = "0"`）。ログは checkout 外または未追跡のローカル検査 directory に保存する。
 
 ```powershell
 npm ci --ignore-scripts --no-audit --no-fund
@@ -70,7 +101,15 @@ npm test 2>&1 | Tee-Object gui-tests.log
 cd ..
 ```
 
-期待: runnable な typecheck/lint/build/unit/GUI checks はすべて終了 0。
+手動経路では build 後に次も実行する（固定集計スクリプトには含まれる）:
+
+```powershell
+node --test scripts/verification-summary.test.mjs
+node scripts/test-issuer-cli.mjs
+npm run test:sdk-cli-lifecycle
+```
+
+期待: runnable な typecheck/lint/build/unit/GUI/compiled fake checks はすべて終了 0。
 ブラウザ fixture の skipped 数は必ず別記する。56 skipped は56件成功ではない。
 `--ignore-scripts` では Electron binary の setup は行わないので、GUIの native 起動成功とは別。
 既存のブラウザ fixture はインストール済み Chrome または Playwright Chromium が必要。
@@ -243,12 +282,26 @@ npx vitest run tests/unit/ui-pro-counter*.test.ts tests/unit/ui-notification*.te
 | archive / registry | 受付時pinとhistorical revisionが不変。root変更は次jobから。old messageをexact IDsで取得し、latest replyへすり替えない |
 | 出力契約 | 明示host text-only契約+正しいframe/declaration+矛盾なしのsource proofが揃う。DOM不在からゼロを推測しない。未知inventoryは停止 |
 | quota / Pro | Codex以外へCodex quotaを適用しない。manualはunknown。fallback有限。Proは観測済みとpossibleを分け、transport/ACK再試行で増えない |
-| UI / notifications | collapseでdraft/job継続。新結果で勝手に展開しない。OFFは通知停止。Email/Discord preference保存は送信せず未実装表示 |
+| UI / notifications | collapseでdraft/job継続。新結果で勝手に展開しない。OFFは通知停止。preference Saveだけでは送信しない。runtime未設定では送信/秘密情報設定/Test Sendが無効。configured runtimeの合成試験では登録binding・明示Test Send・状態表示・dedupeを確認し、実配送とは分ける |
 | 診断 | explicit exportだけがファイル作成。prompt/body/path/secret/raw error除外。確認後の共有は別判断 |
 
 ソース例の確認: USAGE.md の prepare-request.mjs を新規の一時作業用 checkout で検証し、
 local と hosted template の両方が validator を通ること、2回目は existing_request_keep_identity で停止することを確認する。
 これは認証・署名・送信を一切含まない。実登録を捏造せず、検査は fixture の template を使う。
+
+## 通知 credential provider の追加 portable 検査
+
+[NOTIFICATION-CREDENTIAL-PROVIDER.md](NOTIFICATION-CREDENTIAL-PROVIDER.md) と承認済み v2 design の fake matrix を使う。native cipher / dialog / DNS / transport は必ず注入 fake とし、既存の鍵・秘密情報・OS store を読まない。
+
+- default/demo/status/list/prepare で native API・dialog・送信が 0 回
+- 初回 target consent、同一 webhook ID rotation、別 target 拒否、保存だけで ON/Test Send にならない
+- legacy/unknown credential protocol は admission 前に拒否し、callback 0 回。既存の unrelated send は維持
+- generation / preference / owner / content / deadline / Lock が async preparation 中に変わると effect 0 回
+- cipher/action receipt の atomic commit、保存応答消失、restart locked、cancel/Lock/expiry 後の遅延 callback で lease が復活しない
+- native window の sender/session/frame/URL・資源 method を固定し、通常 renderer/HTTP/diagnostics に synthetic secret が含まれない
+- Windows の fake cipher が available と言っても private-state gate を迂回しない。通知 settings の unavailable 表示と monitor 継続を分ける
+
+GUI・OS keychain の実挙動、実 credential 入力や配送はこの合成試験の成功から推定しない。実機/実送信は別途許可された一回の手順と返却物が必要。
 
 ## 11 新しい担当 LLM への最短引継ぎ
 

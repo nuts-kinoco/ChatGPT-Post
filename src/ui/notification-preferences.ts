@@ -69,6 +69,13 @@ function corrupt(): never {
 function hash(value: unknown): string {
   return sha256Bytes(Buffer.from(JSON.stringify(value)));
 }
+const VERIFIED_STORES = new WeakMap<NotificationPreferencesStore, string>();
+/** Only the verified opener can mint this host-private storage proof. */
+export function verifiedNotificationStorePath(
+  store: NotificationPreferencesStore,
+): string | undefined {
+  return VERIFIED_STORES.get(store);
+}
 export class NotificationPreferencesStore {
   /** Canonical local store scope, not an account identity. In-memory stores cannot own a durable sink. */
   readonly runtimeScopeId: string | null;
@@ -249,6 +256,11 @@ export class NotificationPreferencesStore {
       throw error;
     }
   }
+  /** Synchronous host-only reads also work inside an existing transaction. */
+  withRuntimeRead<T>(operation: (database: DatabaseSync) => T): T {
+    if (this.closed) throw new Error("notification_store_closed");
+    return operation(this.db);
+  }
   /** Trusted local notification runtime only. This never crosses the HTTP boundary.
    * Keeping preferences, outbox claims and rate reservations in one DB gives cross-process CAS. */
   withRuntimeTransaction<T>(operation: (database: DatabaseSync) => T): T {
@@ -322,5 +334,7 @@ export async function openNotificationPreferencesStore(options: {
       "Private notification state file is required",
       409,
     );
-  return new NotificationPreferencesStore(path, options.profile, options.now);
+  const store = new NotificationPreferencesStore(path, options.profile, options.now);
+  VERIFIED_STORES.set(store, path);
+  return store;
 }

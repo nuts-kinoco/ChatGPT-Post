@@ -352,7 +352,7 @@ describe("closed preinstalled build verification", () => {
         if (
           typeof file === "number" &&
           typeof openedPath === "string" &&
-          openedPath.endsWith(`/${path}`) &&
+          openedPath.replaceAll("\\", "/").endsWith(`/${path}`) &&
           Buffer.isBuffer(raw)
         ) {
           const changed = Buffer.from(raw);

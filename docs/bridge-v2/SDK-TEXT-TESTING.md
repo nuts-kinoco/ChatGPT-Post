@@ -65,7 +65,7 @@ SDK/CLIのこの固定組合せは実試験で互換性を確認する候補で�
 - 仲介方式ならBridgeの操作を実コネクタへ正確に転送。手製の結果/ACKは作らない
 - 結果は同じrequest/attempt/hash、実際のHaikuモデル、許可されたSDK観測を示す
 - Git結果を受信側が署名/全固定ファイルhashで検証し、保存・readback後にACKする
-- 同じファイル/IDでstatus/reconcile/collectを確認。追加queryは0件
+- 再利用可能な trusted deployment では同じ ID/hash で status/reconcile/collect を確認し、追加 query が 0 件であることを確かめる。一回限りの sdk-text-one-shot.mjs は trial 専用で、終了後の status/reconcile/collect には使えない。終了/切断後は元の私有証拠と公開済み ID/hash を保持する。再実行・新規鍵・新規 ID で回復を偽装せず、元の署名権限を使う認可済み回復 host がなければ配送待ち/blocked として返す
 
 異常時は別IDを生成せず、unknownを保存してください。停止要求はSDKへの要求であり、OSの
 確実な終了とは報告しません。SDK iteratorが未決なら所有権を保持し、DB closeも失敗を
@@ -120,3 +120,26 @@ factory with zero arguments. The one-shot example checks it before work and afte
 initial probe, before any signing-key intent or key creation. In-probe process signals
 are observed as well. `deployment-startup.test.ts` and the mocked example tests exercise
 these timings without operational keys, login or provider execution.
+
+## Windows候補計画のオフライン検査
+
+`claude-sdk-windows-policy.test.ts` は、明示した架空パスだけでローカルWindowsパスの拒否、
+環境許可リスト、秘密/未知field・getter/proxyの拒否、入力順序に依存しないhash、返却値の
+不変性、Linux既存環境hash/純粋挙動の回帰を確認します。OSや認証を観測した試験ではありません。
+filesystem/registry/process/SDKに依存するimportとfetchを拒否する試験で、候補moduleのimportと
+計画生成がそれらを使わないことを検証します。Linux host probeや保存層の合格には加算しません。
+
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+npm exec vitest -- run tests/unit/claude-sdk-windows-policy.test.ts tests/unit/claude-sdk-text.test.ts tests/unit/sdk-text-contracts.test.ts
+npm run typecheck
+npm run lint
+```
+
+実行時の `BRIDGE_LIVE` は0を確認してください。Windows未対応のstorage/deployment/registry
+gateをmockやplatform偽装で解除して全往復を合格させません。既存service全往復がWindowsで
+`archive_windows_storage_unimplemented`になる場合は、その失敗と未検証部分をそのまま報告します。
+
+Windows実機でしか受け入れられない項目は、既存認証が候補環境で使えるか、必要なOS環境項目、
+実programFiles/registry設定源と固定CLIの対応、ACL継承・reparse/hardlink/alias・差し替え、
+保存中断後の回復、SQLite関連ファイルの保護です。この純粋APIのテストでは実施しません。

@@ -73,6 +73,10 @@ that a person read the message, that an email reached the inbox, or that task de
 Lost action responses can be checked with the same action ID; changed inputs with that ID reject.
 Unknown credential interactions are never reopened automatically.
 
+## Native setup in the standard GUI
+
+The standard production GUI can provide an initially empty Discord slot and an explicit trusted local setup dialog. It does not initialize native encryption, unlock or send on startup. First target consent, same-ID token rotation, bounded unlocked sessions and the tray Lock control are described in [Local notification credentials](NOTIFICATION-CREDENTIAL-PROVIDER.md). A custom deployment retains its explicit external/native/disabled choice; the CLI has no native window by default. Windows notification storage remains unavailable until its missing private-state verifier is implemented, while the monitor can still show an explanatory settings view.
+
 ## Trusted deployment composition
 
 The host supplies a `NotificationRuntime` alongside the UI deployment. Use a private
@@ -95,8 +99,9 @@ checks in the final transaction. A host unable to establish exact current bindin
 sending. Native cancellation/rejection reconciliation never restores a lower binding revision.
 
 No HTTP body may supply a registry, actor, recipient, generation, secret reference or transport.
-`beginCredentialInteraction` receives only the bound actor/destination/action ID and abort signal;
-it returns a bounded status. `authorizeSend` is a synchronous host gate representing already
+Credential setup requires the exact `credentialProtocol:"bridge-notification-credentials-2"` and `beginCredentialInteractionV2` capability. The legacy callback is never invoked; unrelated prebound legacy send paths remain available. The v2 host session carries bound actor/destination/action, generation/preference fences, deadline/abort and one-shot completion capabilities. Ciphertext, registration and saved-action receipt commit together; HTTP admission returns promptly and subsequent status/cancel/recent-receipt reads contain metadata only. No secret or commit callback crosses HTTP or the ordinary product preload.
+
+`authorizeSend` is a synchronous host gate representing already
 approved destination/data category and recurring or explicit-test authority. It has no permissive
 default. Credential save invalidates pending work before native interaction and never enables alerts.
 Actual account or recurring-message authorization must exist before configuring these host ports.
@@ -106,7 +111,7 @@ proxy-free HTTPS agent, validates public DNS answers and pins them into the conn
 normal TLS hostname/certificate validation, rejects redirects and bounds total time/output. It
 emits fixed text with mentions disabled. The email adapter wraps a prebound approved sender,
 without accepting a raw recipient or arbitrary SMTP/HTTP host. Both helpers retain one total
-monotonic deadline across preparation and send and have no automatic transport retries.
+monotonic deadline across preparation and send and have no automatic transport retries. The native provider keeps outer prepared handles secret-free, resolves a scoped memory lease only inside an admitted send, and rechecks the complete runtime authority and original deadline after inner asynchronous preparation immediately before effect. Transient in-flight token copies cannot be guaranteed erased or recalled.
 
 Each lifecycle source durably seals its notification namespace to one target store and direct-actor
 mapping before consumption. The target identity includes its canonical local path/principal/profile

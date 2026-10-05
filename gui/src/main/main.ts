@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, net, Tray, nativeImage, protocol, screen, shell, type MessageBoxOptions } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, net, Tray, nativeImage, powerMonitor, protocol, safeStorage, screen, shell, type MessageBoxOptions } from "electron";
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, open, readFile } from "node:fs/promises";
@@ -17,10 +17,14 @@ import * as fs from "node:fs/promises";
 import { createProductShutdown } from "./product-shutdown.js";
 import { initialProductAnchor, productBounds } from "./product-geometry.js";
 import { ProductWindowState, isProductAction } from "./product-window-state.js";
-import { isTrustedProductFrame, productNavigation, productStartupError, productUrl, startProductUi, type ProductUiServer } from "./product-ui.js";
+import { isTrustedProductFrame, productNavigation, productStartupError, productUrl, startProductUi, type ProductNotificationProviderFactory, type ProductUiServer } from "./product-ui.js";
+import { createNotificationSafeStorageCipher } from "./notification-safe-storage.js";
+import { createNotificationCredentialDialog } from "./notification-credential-window.js";
+import { NOTIFICATION_CREDENTIAL_SCHEME } from "./notification-credential-controller.js";
 
 protocol.registerSchemesAsPrivileged([
   { scheme: RENDERER_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+  { scheme: NOTIFICATION_CREDENTIAL_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: false, corsEnabled: false } },
 ]);
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -105,11 +109,26 @@ function actOnProduct(action: "expand"|"collapse"|"hide"|"restore"|"minimize"|"s
 async function ensureProductServer(): Promise<ProductUiServer> {
   if (productServer) return productServer;
   if (!bridgePaths.ok) throw new Error(bridgePaths.error);
-  productStarting ??= startProductUi(bridgePaths.root, process.env);
+  const root = bridgePaths.root;
+  // This fallback is only invoked by startUiServer after its native/external/disabled decision.
+  // Loading the selected root module and constructing these facades never calls safeStorage.
+  const notificationProviderFactory: ProductNotificationProviderFactory = async input => {
+    try {
+      const provider = await import(pathToFileURL(path.join(root, "dist", "ui", "notification-secret-provider.js")).href);
+      if (typeof provider.createNotificationProviderHost !== "function") throw new Error("notification_provider_unavailable");
+      return await provider.createNotificationProviderHost({...input, native: {
+        cipher: createNotificationSafeStorageCipher({getSafeStorage: () => safeStorage, isReady: () => app.isReady(), platform: process.platform}),
+        dialog: createNotificationCredentialDialog({createWindow: options => new BrowserWindow(options), ipcMain,
+          preloadPath: path.join(__dirname, "notification-credential-preload.cjs")}),
+      }});
+    } catch { throw new Error("notification_provider_unavailable"); }
+  };
+  productStarting ??= startProductUi(root, process.env, undefined, notificationProviderFactory);
   try {
     const started = await productStarting;
     if (productServer) return productServer;
     productServer = started;
+    updateTrayMenu();
     if (productServer.presentation) {
       productWindows.applyPreferences(productServer.presentation.snapshot().values);
       productPreferencesUnsubscribe = productServer.presentation.subscribe(snapshot => productWindows.applyPreferences(snapshot.values));
@@ -173,6 +192,24 @@ async function prepareProductResident(): Promise<BrowserWindow> {
 }
 
 function toggleProductDock() { actOnProduct(productWindows.snapshot().mode === "hidden" ? "restore" : "hide"); }
+
+function lockNotificationCredentials() {
+  // Invocation fences leases synchronously; settlement failures never reverse the in-memory lock.
+  try { void Promise.resolve(productServer?.lockNotificationCredentials?.()).catch(() => undefined); }
+  catch { /* The provider already fenced its leases. No credential/error detail is displayed. */ }
+}
+function updateTrayMenu() {
+  tray?.setContextMenu(Menu.buildFromTemplate([
+    { label: "Bridge v2 を表示", click: () => actOnProduct("restore") },
+    { label: "常駐バーへ畳む", click: () => actOnProduct("collapse") },
+    { label: "表示設定", click: () => actOnProduct("settings") },
+    { label: "依頼の詳細", click: () => actOnProduct("expand") },
+    { label: "通知用の認証情報をロック", enabled: typeof productServer?.lockNotificationCredentials === "function", click: lockNotificationCredentials },
+    { label: "従来のブラウザチャット", click: () => void showBar() },
+    { type: "separator" }, { label: "終了", click: () => app.quit() },
+  ]));
+}
+
 
 function rendererUrl(): string { return resolveRendererUrl(app.isPackaged, process.env.ELECTRON_RENDERER_URL); }
 function registerRendererProtocol() {
@@ -511,7 +548,8 @@ if (hasSingleInstanceLock) {
   const productShutdown = createProductShutdown({
     close: async () => {
       const server = productServer ?? await productStarting;
-      await server?.close();
+      // The sole quit coordinator locks before the server owns storage teardown.
+      try { await server?.lockNotificationCredentials?.(); } finally { await server?.close(); }
     },
     ready: () => { isQuitting = true; productPreferencesUnsubscribe?.(); app.quit(); },
     failed: () => {
@@ -531,14 +569,10 @@ if (hasSingleInstanceLock) {
     }
     tray = new Tray(createTrayIcon());
     tray.setToolTip("ChatGPT Bridge Control");
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: "Bridge v2 を表示", click: () => actOnProduct("restore") },
-      { label: "常駐バーへ畳む", click: () => actOnProduct("collapse") },
-      { label: "表示設定", click: () => actOnProduct("settings") },
-      { label: "依頼の詳細", click: () => actOnProduct("expand") },
-      { label: "従来のブラウザチャット", click: () => void showBar() },
-      { type: "separator" }, { label: "終了", click: () => app.quit() },
-    ]));
+    updateTrayMenu();
+    powerMonitor.on("suspend", lockNotificationCredentials);
+    powerMonitor.on("lock-screen", lockNotificationCredentials);
+    powerMonitor.on("user-did-resign-active", lockNotificationCredentials);
     tray.on("click", () => actOnProduct("restore"));
     ipcMain.handle("bridge-product:state", event => {
       if (!trustedProductSender(event)) throw new Error("product_sender_denied");
