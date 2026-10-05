@@ -375,6 +375,35 @@ describe("pure materialization-to-bundle mapping", () => {
     });
     expect(() => materializationToNtfsBundle(input, original)).toThrow("mismatch");
   });
+  it.each([
+    { length: 256 * 1024, accepted: true },
+    { length: 256 * 1024 + 1, accepted: false },
+  ])(
+    "checks the signed-envelope boundary at $length bytes with matching original identity",
+    ({ length, accepted }) => {
+      const { input, original } = fixture();
+      // Synthetic opaque original envelope, supplied independently before making any container.
+      const originalEnvelope = Buffer.alloc(length, 0x61);
+      input.signedDeliveryManifestBytes = Uint8Array.from(originalEnvelope);
+      original.members = original.members.map((item) =>
+        item.name === "results/delivery-manifest.signed.json"
+          ? { name: item.name, length: originalEnvelope.length, sha256: hash(originalEnvelope) }
+          : item,
+      );
+      if (accepted) {
+        const container = materializationToNtfsBundle(input, original);
+        expect(
+          decodeNtfsBundle(container, original.members).memberBytes(
+            "results/delivery-manifest.signed.json",
+          ),
+        ).toEqual(Uint8Array.from(originalEnvelope));
+      } else {
+        expect(() => materializationToNtfsBundle(input, original)).toThrow(
+          "materialization_bundle_mismatch",
+        );
+      }
+    },
+  );
   it("preserves unavailable optional artifact metadata without manufacturing bytes", () => {
     const { input, original, manifest } = fixture();
     manifest.artifacts.push({
