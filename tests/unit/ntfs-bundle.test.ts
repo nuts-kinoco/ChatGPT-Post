@@ -74,6 +74,30 @@ describe("ntfs-bundle-1 format only", () => {
     expect(result).not.toHaveProperty("ackCandidate");
     expect(result).not.toHaveProperty("windowsStorageEnabled");
   });
+  it("matches an independent nonempty multi-member golden vector", () => {
+    const golden = Buffer.concat([
+      Buffer.from("4e544653424e4431000000d500000002", "hex"),
+      Buffer.from(
+        '{"members":[{"name":"a","length":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},{"name":"b","length":5,"sha256":"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}]}',
+      ),
+      Buffer.from("61626368656c6c6f", "hex"),
+    ]);
+    expect(Buffer.from(encodeNtfsBundle([data("b", "hello"), data("a", "abc")]))).toEqual(golden);
+    const result = decodeNtfsBundle(golden, [
+      {
+        name: "a",
+        length: 3,
+        sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      },
+      {
+        name: "b",
+        length: 5,
+        sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      },
+    ]);
+    expect(result.memberBytes("a")).toEqual(Uint8Array.of(97, 98, 99));
+    expect(result.memberBytes("b")).toEqual(Uint8Array.of(104, 101, 108, 108, 111));
+  });
   it("roundtrips raw binary, zero bytes and nested member names", () => {
     const members = [
       data("result.json"),
